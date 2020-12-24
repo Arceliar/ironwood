@@ -12,7 +12,7 @@ type PacketConn interface {
 }
 
 type core struct {
-	crypto interface{} // crypto info, e.g. pubkeys and sign/verify wrapper functions
+	crypto crypto      // crypto info, e.g. pubkeys and sign/verify wrapper functions
 	tree   interface{} // spanning tree
 	dht    interface{} // distributed hash table
 	peers  interface{} // info about peers (from HandleConn), makes routing decisions and passes protocol traffic to relevant parts of the code
@@ -21,6 +21,7 @@ type core struct {
 
 func NewPacketConn(secret ed25519.PrivateKey) (PacketConn, error) {
 	c := new(core)
+	c.crypto.init(secret)
 	panic("TODO initialize core")
 	return c, nil
 }

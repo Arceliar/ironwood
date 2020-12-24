@@ -1,7 +1,13 @@
 package main
 
-import _ "github.com/Arceliar/ironwood/net"
+import (
+	"crypto/ed25519"
+
+	inet "github.com/Arceliar/ironwood/net"
+)
 
 func main() {
 	// Dummy
+	_, priv, _ := ed25519.GenerateKey(nil)
+	_, _ = inet.NewPacketConn(priv)
 }
