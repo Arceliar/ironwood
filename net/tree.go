@@ -118,6 +118,34 @@ func (info *treeInfo) add(priv privateKey, next publicKey) *treeInfo {
 	return &newInfo
 }
 
+func (info *treeInfo) MarshalBinary() (data []byte, err error) {
+	data = append(data, info.root...)
+	for _, hop := range info.hops {
+		data = append(data, hop.next...)
+		data = append(data, hop.sig...)
+	}
+	return
+}
+
+func (info *treeInfo) UnmarshalBinary(data []byte) error {
+	nfo := treeInfo{}
+	if !wireChopBytes((*[]byte)(&nfo.root), &data, publicKeySize) {
+		return wireUnmarshalBinaryError
+	}
+	for len(data) > 0 {
+		hop := treeHop{}
+		switch {
+		case !wireChopBytes((*[]byte)(&hop.next), &data, publicKeySize):
+			return wireUnmarshalBinaryError
+		case !wireChopBytes((*[]byte)(&hop.sig), &data, signatureSize):
+			return wireUnmarshalBinaryError
+		}
+		nfo.hops = append(nfo.hops, hop)
+	}
+	*info = nfo
+	return nil
+}
+
 /*********************
  * utility functions *
  *********************/
