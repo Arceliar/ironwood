@@ -35,15 +35,29 @@ type treeHop struct {
 }
 
 func (t *treeInfo) check() bool {
-	panic("TODO: check, prepare bytes and validate")
+	var bs []byte
+	key := t.root
+	bs = append(bs, t.root...)
+	for _, hop := range t.hops {
+		bs = append(bs, hop.next...)
+		if !key.verify(bs, hop.sig) {
+			return false
+		}
+		key = hop.next
+	}
 	return true
 }
 
-func (t *treeInfo) add(next publicKey) *treeInfo {
+func (t *treeInfo) add(priv privateKey, next publicKey) *treeInfo {
 	info := *t
 	info.hops = append([]treeHop(nil), info.hops...)
-	var sig signature
-	panic("TODO add, prepare bytes and sign")
+	var bs []byte
+	bs = append(bs, t.root...)
+	for _, hop := range t.hops {
+		bs = append(bs, hop.next...)
+	}
+	bs = append(bs, next...)
+	sig := priv.sign(bs)
 	info.hops = append(info.hops, treeHop{next: next, sig: sig})
 	return &info
 }
