@@ -1,5 +1,7 @@
 package net
 
+import "bytes"
+
 /********
  * tree *
  ********/
@@ -7,7 +9,7 @@ package net
 type tree struct {
 	core  *core
 	infos map[string]*treeInfo // map[string(publicKey)]*treeInfo
-	self  *treeInfo            // self coords, parent, etc
+	self  *treeInfo            // self info
 }
 
 func (t *tree) init(c *core) {
@@ -16,8 +18,47 @@ func (t *tree) init(c *core) {
 	t.self = &treeInfo{root: t.core.crypto.publicKey}
 }
 
-func (t *tree) handleInfo(info *treeInfo) {
-	panic("TODO handleInfo")
+func (t *tree) update(info *treeInfo) {
+	// The tree info should have been checked before this point
+	key := info.from()
+	t.infos[string(key)] = info
+	if bytes.Equal(key, t.self.from()) {
+		t.self = nil
+	}
+	t.fix()
+}
+
+func (t *tree) remove(info *treeInfo) {
+	key := info.from()
+	delete(t.infos, string(key))
+	if bytes.Equal(key, t.self.from()) {
+		t.self = nil
+		t.fix()
+	}
+}
+
+func (t *tree) fix() {
+	if t.self == nil || treeLess(t.self.root, t.core.crypto.publicKey) {
+		t.self = &treeInfo{root: t.core.crypto.publicKey}
+	}
+	for _, info := range t.infos {
+		switch {
+		case treeLess(t.self.root, info.root):
+			// This is a better root
+			t.self = info
+		case treeLess(info.root, t.self.root):
+			// This is a worse root, so don't do anything with it
+		case len(info.hops) < len(t.self.hops):
+			// This is a shorter path to the root
+			t.self = info
+		case len(info.hops) > len(t.self.hops):
+			// This is a longer path to the root, so don't do anything with it
+		case treeLess(t.self.from(), info.from()):
+			// This peer has a higher key than our current parent
+			t.self = info
+		}
+	}
+	panic("TODO fix, send changes")
 }
 
 /************
@@ -34,11 +75,26 @@ type treeHop struct {
 	sig  signature
 }
 
-func (t *treeInfo) check() bool {
+func (info *treeInfo) from() publicKey {
+	key := info.root
+	if len(info.hops) > 1 {
+		// last hop is to this node, 2nd to last is to the previous hop, which is who this is from
+		hop := info.hops[len(info.hops)-2]
+		key = hop.next
+	}
+	return key
+}
+
+func (info *treeInfo) check() bool {
 	var bs []byte
-	key := t.root
-	bs = append(bs, t.root...)
-	for _, hop := range t.hops {
+	key := info.root
+	keys := make(map[string]bool) // Used to avoid loops
+	bs = append(bs, info.root...)
+	for _, hop := range info.hops {
+		if keys[string(key)] {
+			return false
+		}
+		keys[string(key)] = true
 		bs = append(bs, hop.next...)
 		if !key.verify(bs, hop.sig) {
 			return false
@@ -48,18 +104,18 @@ func (t *treeInfo) check() bool {
 	return true
 }
 
-func (t *treeInfo) add(priv privateKey, next publicKey) *treeInfo {
-	info := *t
-	info.hops = append([]treeHop(nil), info.hops...)
+func (info *treeInfo) add(priv privateKey, next publicKey) *treeInfo {
+	newInfo := *info
+	newInfo.hops = append([]treeHop(nil), info.hops...)
 	var bs []byte
-	bs = append(bs, t.root...)
-	for _, hop := range t.hops {
+	bs = append(bs, info.root...)
+	for _, hop := range info.hops {
 		bs = append(bs, hop.next...)
 	}
 	bs = append(bs, next...)
 	sig := priv.sign(bs)
-	info.hops = append(info.hops, treeHop{next: next, sig: sig})
-	return &info
+	newInfo.hops = append(info.hops, treeHop{next: next, sig: sig})
+	return &newInfo
 }
 
 /*********************
