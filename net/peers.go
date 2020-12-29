@@ -22,14 +22,50 @@ func (ps *peers) init(c *core) {
 	ps.peers = make(map[string]*peer)
 }
 
+func (ps *peers) addPeer(from publicKey, conn net.Conn) (*peer, error) {
+	var p *peer
+	var err error
+	phony.Block(ps, func() {
+		if _, isIn := ps.peers[string(from)]; isIn {
+			err = errors.New("peer already exists")
+		} else {
+			p = new(peer)
+			p.peers = ps
+			p.conn = conn
+			p.from = from
+			ps.peers[string(from)] = p
+		}
+	})
+	return p, err
+}
+
+func (ps *peers) removePeer(from publicKey) error {
+	var err error
+	phony.Block(ps, func() {
+		if _, isIn := ps.peers[string(from)]; !isIn {
+			err = errors.New("peer not found")
+		} else {
+			delete(ps.peers, string(from))
+		}
+	})
+	return err
+}
+
 type peer struct {
-	phony.Actor // Used by some protocol traffic, while the handler deal with reading etc...
+	phony.Actor // Only used to process or send some protocol traffic
 	peers       *peers
 	conn        net.Conn
+	from        publicKey
 	info        *treeInfo
 }
 
 func (p *peer) handler() error {
+	defer func() {
+		if p.info != nil {
+			p.peers.core.tree.remove(nil, p.info)
+		}
+	}()
+	// TODO send keep-alive traffic to prevent these deadlines from passing
 	for {
 		var lenBuf [8]byte
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
@@ -74,12 +110,10 @@ func (p *peer) handleTree(bs []byte) error {
 	if !info.checkSigs() {
 		return errors.New("invalid signature")
 	}
-	if p.info != nil && !bytes.Equal(p.info.from(), info.from()) {
+	if !bytes.Equal(p.from, info.from()) {
 		return errors.New("unrecognized publicKey")
 	}
-	p.Act(nil, func() {
-		p.info = info
-		p.peers.core.tree.update(p, info)
-	})
+	p.info = info
+	p.peers.core.tree.update(nil, info)
 	return nil
 }
