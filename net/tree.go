@@ -71,8 +71,7 @@ func (t *tree) fix() {
 		}
 	}
 	if t.self != oldSelf {
-		panic("TODO fix, send changes")
-		// TODO get peers, loop over them, send new info...
+		t.core.peers.sendTree(t, t.self)
 	}
 }
 

@@ -63,7 +63,17 @@ func (pc *packetConn) SetWriteDeadline(t time.Time) error {
 }
 
 func (pc *packetConn) HandleConn(conn net.Conn) error {
-	// Note: This should block until we're done with the Conn, then return without closing it
 	panic("TODO implement HandleConn")
-	return nil
+	// Note: This should block until we're done with the Conn, then return without closing it
+	var key publicKey
+	// TODO some kind of protocol exchange to learn each others keys
+	p, err := pc.core.peers.addPeer(key, conn)
+	if err != nil {
+		return err
+	}
+	err = p.handler()
+	if e := pc.core.peers.removePeer(key); e != nil {
+		return e
+	}
+	return err
 }

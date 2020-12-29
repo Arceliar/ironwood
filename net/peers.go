@@ -12,9 +12,9 @@ import (
 )
 
 type peers struct {
-	phony.Actor
-	core  *core
-	peers map[string]*peer
+	phony.Actor // Used to create/remove peers
+	core        *core
+	peers       map[string]*peer
 }
 
 func (ps *peers) init(c *core) {
@@ -49,6 +49,14 @@ func (ps *peers) removePeer(from publicKey) error {
 		}
 	})
 	return err
+}
+
+func (ps *peers) sendTree(from phony.Actor, info *treeInfo) {
+	ps.Act(from, func() {
+		for _, p := range ps.peers {
+			p.sendTree(ps, info)
+		}
+	})
 }
 
 type peer struct {
@@ -116,4 +124,15 @@ func (p *peer) handleTree(bs []byte) error {
 	p.info = info
 	p.peers.core.tree.update(nil, info)
 	return nil
+}
+
+func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
+	p.Act(from, func() {
+		info = info.add(p.peers.core.crypto.privateKey, p.from)
+		temp, _ := info.MarshalBinary()
+		var bs []byte
+		binary.BigEndian.PutUint64(bs, uint64(len(temp)))
+		bs = append(bs, temp...)
+		p.conn.Write(bs)
+	})
 }
