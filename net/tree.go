@@ -1,12 +1,17 @@
 package net
 
-import "bytes"
+import (
+	"bytes"
+
+	"github.com/Arceliar/phony"
+)
 
 /********
  * tree *
  ********/
 
 type tree struct {
+	phony.Actor
 	core  *core
 	infos map[string]*treeInfo // map[string(publicKey)]*treeInfo
 	self  *treeInfo            // self info
@@ -18,26 +23,31 @@ func (t *tree) init(c *core) {
 	t.self = &treeInfo{root: t.core.crypto.publicKey}
 }
 
-func (t *tree) update(info *treeInfo) {
-	// The tree info should have been checked before this point
-	key := info.from()
-	t.infos[string(key)] = info
-	if bytes.Equal(key, t.self.from()) {
-		t.self = nil
-	}
-	t.fix()
+func (t *tree) update(from phony.Actor, info *treeInfo) {
+	t.Act(from, func() {
+		// The tree info should have been checked before this point
+		key := info.from()
+		t.infos[string(key)] = info
+		if bytes.Equal(key, t.self.from()) {
+			t.self = nil
+		}
+		t.fix()
+	})
 }
 
-func (t *tree) remove(info *treeInfo) {
-	key := info.from()
-	delete(t.infos, string(key))
-	if bytes.Equal(key, t.self.from()) {
-		t.self = nil
-		t.fix()
-	}
+func (t *tree) remove(from phony.Actor, info *treeInfo) {
+	t.Act(from, func() {
+		key := info.from()
+		delete(t.infos, string(key))
+		if bytes.Equal(key, t.self.from()) {
+			t.self = nil
+			t.fix()
+		}
+	})
 }
 
 func (t *tree) fix() {
+	oldSelf := t.self
 	if t.self == nil || treeLess(t.self.root, t.core.crypto.publicKey) {
 		t.self = &treeInfo{root: t.core.crypto.publicKey}
 	}
@@ -60,7 +70,10 @@ func (t *tree) fix() {
 			t.self = info
 		}
 	}
-	panic("TODO fix, send changes")
+	if t.self != oldSelf {
+		panic("TODO fix, send changes")
+		// TODO get peers, loop over them, send new info...
+	}
 }
 
 /************

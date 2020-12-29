@@ -17,11 +17,14 @@ type packetConn struct {
 
 func NewPacketConn(secret ed25519.PrivateKey) (PacketConn, error) {
 	c := new(core)
-	c.pconn.core = c
-	c.crypto.init(secret)
-	c.tree.init(c)
-	panic("TODO initialize core")
+	if err := c.init(secret); err != nil {
+		return nil, err
+	}
 	return &c.pconn, nil
+}
+
+func (pc *packetConn) init(c *core) {
+	pc.core = c
 }
 
 func (pc *packetConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {

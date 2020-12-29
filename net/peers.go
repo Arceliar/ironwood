@@ -7,88 +7,79 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/Arceliar/phony"
 )
 
 type peers struct {
-	core *core
+	phony.Actor
+	core  *core
+	peers map[string]*peer
+}
+
+func (ps *peers) init(c *core) {
+	ps.core = c
+	ps.peers = make(map[string]*peer)
 }
 
 type peer struct {
-	peers *peers
-	conn  net.Conn
-	info  *treeInfo
+	phony.Actor // Used by some protocol traffic, while the handler deal with reading etc...
+	peers       *peers
+	conn        net.Conn
+	info        *treeInfo
 }
 
 func (p *peer) handler() error {
-	ch := make(chan error)
-	done := make(chan struct{})
-	close(done)
-	var reader func()
-	reader = func() {
-		wait := done
-		done = make(chan struct{})
-		defer close(done)
+	for {
 		var lenBuf [8]byte
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
-			ch <- err
-			return
+			return err
 		}
 		if _, err := io.ReadFull(p.conn, lenBuf[:]); err != nil {
-			ch <- err
-			return
+			return err
 		}
 		l := binary.BigEndian.Uint64(lenBuf[:])
 		bs := alloc(int(l))
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
-			ch <- err
-			return
+			return err
 		}
 		if _, err := io.ReadFull(p.conn, bs); err != nil {
-			ch <- err
-			return
+			return err
 		}
-		handler, err := p.getHandler(bs)
-		if err != nil {
-			ch <- err
-			return
+		if err := p.handlePacket(bs); err != nil {
+			return err
 		}
-		go reader()
-		<-wait
-		handler(bs)
 	}
-	go reader()
-	return <-ch
 }
 
-func (p *peer) getHandler(bs []byte) (func([]byte), error) {
+func (p *peer) handlePacket(bs []byte) error {
 	if len(bs) == 0 {
-		return nil, errors.New("empty packet")
+		return errors.New("empty packet")
 	}
 	switch pType := bs[0]; pType {
 	case wireDummy:
-		return func(_ []byte) {}, nil
+		return nil
 	case wireProtoTree:
-		return p.getTreeHandler(bs)
+		return p.handleTree(bs)
 	default:
-		return nil, errors.New("unrecognized packet type")
+		return errors.New("unrecognized packet type")
 	}
 }
 
-func (p *peer) getTreeHandler(bs []byte) (func([]byte), error) {
+func (p *peer) handleTree(bs []byte) error {
 	info := new(treeInfo)
 	if err := info.UnmarshalBinary(bs); err != nil {
-		return nil, err
+		return err
 	}
 	if !info.checkSigs() {
-		return nil, errors.New("invalid signature")
+		return errors.New("invalid signature")
 	}
 	if p.info != nil && !bytes.Equal(p.info.from(), info.from()) {
-		return nil, errors.New("unrecognized publicKey")
+		return errors.New("unrecognized publicKey")
 	}
-	p.info = info
-	handler := func(_ []byte) {
-		panic("TODO getTreeHandler.handler, make thread safe")
-		p.peers.core.tree.update(info)
-	}
-	return handler, nil
+	p.Act(nil, func() {
+		p.info = info
+		p.peers.core.tree.update(p, info)
+	})
+	return nil
 }
