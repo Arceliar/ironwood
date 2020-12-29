@@ -43,6 +43,8 @@ func (t *tree) fix() {
 	}
 	for _, info := range t.infos {
 		switch {
+		case !info.checkLoops():
+			// This has a loop, e.g. it's from a child, so skip it
 		case treeLess(t.self.root, info.root):
 			// This is a better root
 			t.self = info
@@ -85,16 +87,11 @@ func (info *treeInfo) from() publicKey {
 	return key
 }
 
-func (info *treeInfo) check() bool {
+func (info *treeInfo) checkSigs() bool {
 	var bs []byte
 	key := info.root
-	keys := make(map[string]bool) // Used to avoid loops
 	bs = append(bs, info.root...)
 	for _, hop := range info.hops {
-		if keys[string(key)] {
-			return false
-		}
-		keys[string(key)] = true
 		bs = append(bs, hop.next...)
 		if !key.verify(bs, hop.sig) {
 			return false
@@ -102,6 +99,19 @@ func (info *treeInfo) check() bool {
 		key = hop.next
 	}
 	return true
+}
+
+func (info *treeInfo) checkLoops() bool {
+	key := info.root
+	keys := make(map[string]bool) // Used to avoid loops
+	for _, hop := range info.hops {
+		if keys[string(key)] {
+			return false
+		}
+		keys[string(key)] = true
+		key = hop.next
+	}
+	return !keys[string(key)]
 }
 
 func (info *treeInfo) add(priv privateKey, next publicKey) *treeInfo {

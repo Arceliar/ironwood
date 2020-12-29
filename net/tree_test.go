@@ -19,8 +19,10 @@ func TestTreeInfo(t *testing.T) {
 			panic(err)
 		}
 		info = info.add(privateKey(priv), publicKey(newPub))
-		if !info.check() {
-			panic("check failed")
+		if !info.checkSigs() {
+			panic("checkSigs failed")
+		} else if !info.checkLoops() {
+			panic("checkLoops failed")
 		}
 		pub, priv = newPub, newPriv
 	}
@@ -49,7 +51,9 @@ func TestTreeInfo(t *testing.T) {
 			panic("unequal sig")
 		}
 	}
-	if !newInfo.check() {
-		panic("new check failed")
+	if !newInfo.checkSigs() {
+		panic("new checkSigs failed")
+	} else if !newInfo.checkLoops() {
+		panic("new checkLoops failed")
 	}
 }
