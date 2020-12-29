@@ -2,13 +2,14 @@ package net
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"net"
 	"time"
 )
 
 type PacketConn interface {
 	net.PacketConn
-	HandleConn(net.Conn) error
+	HandleConn(ed25519.PublicKey, net.Conn) error
 }
 
 type packetConn struct {
@@ -62,17 +63,17 @@ func (pc *packetConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-func (pc *packetConn) HandleConn(conn net.Conn) error {
-	panic("TODO implement HandleConn")
+func (pc *packetConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	// Note: This should block until we're done with the Conn, then return without closing it
-	var key publicKey
-	// TODO some kind of protocol exchange to learn each others keys
-	p, err := pc.core.peers.addPeer(key, conn)
+	if len(key) != publicKeySize {
+		return errors.New("incorrect key length")
+	}
+	p, err := pc.core.peers.addPeer(publicKey(key), conn)
 	if err != nil {
 		return err
 	}
 	err = p.handler()
-	if e := pc.core.peers.removePeer(key); e != nil {
+	if e := pc.core.peers.removePeer(publicKey(key)); e != nil {
 		return e
 	}
 	return err
