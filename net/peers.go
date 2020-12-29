@@ -67,13 +67,32 @@ type peer struct {
 	info        *treeInfo
 }
 
+func (p *peer) write(bs []byte) {
+	var size []byte
+	binary.BigEndian.PutUint64(size, uint64(len(bs)))
+	buf := net.Buffers{size, bs}
+	buf.WriteTo(p.conn)
+}
+
 func (p *peer) handler() error {
 	defer func() {
 		if p.info != nil {
 			p.peers.core.tree.remove(nil, p.info)
 		}
 	}()
-	// TODO send keep-alive traffic to prevent these deadlines from passing
+	done := make(chan struct{})
+	defer close(done)
+	var keepAlive func()
+	keepAlive = func() {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		p.write([]byte{wireDummy})
+		time.AfterFunc(time.Second, keepAlive)
+	}
+	go keepAlive()
 	for {
 		var lenBuf [8]byte
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
@@ -133,10 +152,8 @@ func (p *peer) handleTree(bs []byte) error {
 func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
 	p.Act(from, func() {
 		info = info.add(p.peers.core.crypto.privateKey, p.from)
-		temp, _ := info.MarshalBinary()
-		var bs []byte
-		binary.BigEndian.PutUint64(bs, uint64(len(temp)))
-		bs = append(bs, temp...)
-		p.conn.Write(bs)
+		bs, _ := info.MarshalBinary()
+		bs = append([]byte{wireProtoTree}, bs...)
+		p.write(bs)
 	})
 }
