@@ -1,6 +1,7 @@
 package net
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -67,23 +68,27 @@ func (p *peer) getHandler(bs []byte) (func([]byte), error) {
 	case wireDummy:
 		return func(_ []byte) {}, nil
 	case wireProtoTree:
-		return nil, p.handleTree(bs)
+		return p.getTreeHandler(bs)
 	default:
 		return nil, errors.New("unrecognized packet type")
 	}
 }
 
-func (p *peer) handleTree(bs []byte) error {
+func (p *peer) getTreeHandler(bs []byte) (func([]byte), error) {
 	info := new(treeInfo)
 	if err := info.UnmarshalBinary(bs); err != nil {
-		return err
+		return nil, err
 	}
 	if !info.checkSigs() {
-		return errors.New("invalid signature")
+		return nil, errors.New("invalid signature")
 	}
-	panic("TODO handleTree")
-	// TODO check if info is sane compared to p.info, e.g. same keys
+	if p.info != nil && !bytes.Equal(p.info.from(), info.from()) {
+		return nil, errors.New("unrecognized publicKey")
+	}
 	p.info = info
-	p.peers.core.tree.update(info) // TODO make this thread safe
-	return nil
+	handler := func(_ []byte) {
+		panic("TODO getTreeHandler.handler, make thread safe")
+		p.peers.core.tree.update(info)
+	}
+	return handler, nil
 }
