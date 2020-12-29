@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,9 +30,11 @@ func TestDummy(t *testing.T) {
  *************/
 
 type dummyConn struct {
-	recv    chan []byte
-	recvBuf []byte
-	send    chan []byte
+	readLock  sync.Mutex
+	recv      chan []byte
+	recvBuf   []byte
+	writeLock sync.Mutex
+	send      chan []byte
 }
 
 func newDummyConn(keyA, keyB ed25519.PublicKey) (*dummyConn, *dummyConn) {
@@ -43,6 +46,8 @@ func newDummyConn(keyA, keyB ed25519.PublicKey) (*dummyConn, *dummyConn) {
 }
 
 func (d *dummyConn) Read(b []byte) (n int, err error) {
+	d.readLock.Lock()
+	defer d.readLock.Unlock()
 	if len(d.recvBuf) == 0 {
 		bs := <-d.recv
 		d.recvBuf = append(d.recvBuf, bs...)
@@ -57,6 +62,8 @@ func (d *dummyConn) Read(b []byte) (n int, err error) {
 }
 
 func (d *dummyConn) Write(b []byte) (n int, err error) {
+	d.writeLock.Lock()
+	defer d.writeLock.Unlock()
 	bs := append([]byte(nil), b...)
 	d.send <- bs
 	return len(bs), nil
