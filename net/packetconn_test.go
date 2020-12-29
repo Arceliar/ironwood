@@ -29,8 +29,9 @@ func TestDummy(t *testing.T) {
  *************/
 
 type dummyConn struct {
-	recv chan []byte
-	send chan []byte
+	recv    chan []byte
+	recvBuf []byte
+	send    chan []byte
 }
 
 func newDummyConn(keyA, keyB ed25519.PublicKey) (*dummyConn, *dummyConn) {
@@ -42,12 +43,16 @@ func newDummyConn(keyA, keyB ed25519.PublicKey) (*dummyConn, *dummyConn) {
 }
 
 func (d *dummyConn) Read(b []byte) (n int, err error) {
-	bs := <-d.recv
-	copy(b, bs)
-	n = len(bs)
-	if len(b) < len(bs) {
-		n = len(b)
+	if len(d.recvBuf) == 0 {
+		bs := <-d.recv
+		d.recvBuf = append(d.recvBuf, bs...)
 	}
+	n = len(b)
+	if len(d.recvBuf) < n {
+		n = len(d.recvBuf)
+	}
+	copy(b, d.recvBuf[:n])
+	d.recvBuf = d.recvBuf[n:]
 	return n, nil
 }
 

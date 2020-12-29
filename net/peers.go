@@ -68,13 +68,14 @@ type peer struct {
 }
 
 func (p *peer) write(bs []byte) {
-	size := make([]byte, 8)
-	binary.BigEndian.PutUint64(size, uint64(len(bs)))
-	buf := net.Buffers{size, bs}
-	buf.WriteTo(p.conn)
+	out := alloc(8 + len(bs))
+	binary.BigEndian.PutUint64(out[:8], uint64(len(bs)))
+	copy(out[8:], bs)
+	p.conn.Write(out)
 }
 
 func (p *peer) handler() error {
+	// TODO? don't block reading while writing a packet
 	defer func() {
 		if p.info != nil {
 			p.peers.core.tree.remove(nil, p.info)
@@ -98,38 +99,59 @@ func (p *peer) handler() error {
 	})
 	p.sendTree(nil, info)
 	go keepAlive()
-	for {
+	ch := make(chan error)
+	var reader func()
+	next := make(chan struct{})
+	close(next)
+	reader = func() {
+		wait := next
+		next = make(chan struct{})
+		defer close(next)
 		var lenBuf [8]byte
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
-			return err
+			ch <- err
+			return
 		}
 		if _, err := io.ReadFull(p.conn, lenBuf[:]); err != nil {
-			return err
+			ch <- err
+			return
 		}
 		l := binary.BigEndian.Uint64(lenBuf[:])
 		bs := alloc(int(l))
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
-			return err
+			ch <- err
+			return
 		}
 		if _, err := io.ReadFull(p.conn, bs); err != nil {
-			return err
+			ch <- err
+			return
 		}
-		if err := p.handlePacket(bs); err != nil {
-			return err
+		if err := p.handlePacket(bs, wait, reader); err != nil {
+			ch <- err
+			return
 		}
+		go reader()
 	}
+	go reader()
+	return <-ch
 }
 
-func (p *peer) handlePacket(bs []byte) error {
+func (p *peer) handlePacket(bs []byte, wait chan struct{}, reader func()) error {
 	if len(bs) == 0 {
 		return errors.New("empty packet")
 	}
 	switch pType := bs[0]; pType {
 	case wireDummy:
+		<-wait
+		go reader()
 		return nil
 	case wireProtoTree:
-		return p.handleTree(bs[1:])
+		<-wait
+		err := p.handleTree(bs[1:])
+		go reader()
+		return err
 	default:
+		<-wait
 		return errors.New("unrecognized packet type")
 	}
 }
