@@ -12,7 +12,7 @@ import (
 )
 
 type peers struct {
-	phony.Actor // Used to create/remove peers
+	phony.Inbox // Used to create/remove peers
 	core        *core
 	peers       map[string]*peer
 }
@@ -22,18 +22,18 @@ func (ps *peers) init(c *core) {
 	ps.peers = make(map[string]*peer)
 }
 
-func (ps *peers) addPeer(from publicKey, conn net.Conn) (*peer, error) {
+func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 	var p *peer
 	var err error
 	phony.Block(ps, func() {
-		if _, isIn := ps.peers[string(from)]; isIn {
+		if _, isIn := ps.peers[string(key)]; isIn {
 			err = errors.New("peer already exists")
 		} else {
 			p = new(peer)
 			p.peers = ps
 			p.conn = conn
-			p.from = from
-			ps.peers[string(from)] = p
+			p.key = key
+			ps.peers[string(key)] = p
 		}
 	})
 	return p, err
@@ -60,15 +60,15 @@ func (ps *peers) sendTree(from phony.Actor, info *treeInfo) {
 }
 
 type peer struct {
-	phony.Actor // Only used to process or send some protocol traffic
+	phony.Inbox // Only used to process or send some protocol traffic
 	peers       *peers
 	conn        net.Conn
-	from        publicKey
+	key         publicKey
 	info        *treeInfo
 }
 
 func (p *peer) write(bs []byte) {
-	var size []byte
+	size := make([]byte, 8)
 	binary.BigEndian.PutUint64(size, uint64(len(bs)))
 	buf := net.Buffers{size, bs}
 	buf.WriteTo(p.conn)
@@ -92,6 +92,11 @@ func (p *peer) handler() error {
 		p.write([]byte{wireDummy})
 		time.AfterFunc(time.Second, keepAlive)
 	}
+	var info *treeInfo
+	phony.Block(&p.peers.core.tree, func() {
+		info = p.peers.core.tree.self
+	})
+	p.sendTree(nil, info)
 	go keepAlive()
 	for {
 		var lenBuf [8]byte
@@ -123,7 +128,7 @@ func (p *peer) handlePacket(bs []byte) error {
 	case wireDummy:
 		return nil
 	case wireProtoTree:
-		return p.handleTree(bs)
+		return p.handleTree(bs[1:])
 	default:
 		return errors.New("unrecognized packet type")
 	}
@@ -137,7 +142,7 @@ func (p *peer) handleTree(bs []byte) error {
 	if !info.checkSigs() {
 		return errors.New("invalid signature")
 	}
-	if !bytes.Equal(p.from, info.from()) {
+	if !bytes.Equal(p.key, info.from()) {
 		return errors.New("unrecognized publicKey")
 	}
 	dest := info.hops[len(info.hops)-1].next
@@ -151,7 +156,7 @@ func (p *peer) handleTree(bs []byte) error {
 
 func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
 	p.Act(from, func() {
-		info = info.add(p.peers.core.crypto.privateKey, p.from)
+		info = info.add(p.peers.core.crypto.privateKey, p.key)
 		bs, _ := info.MarshalBinary()
 		bs = append([]byte{wireProtoTree}, bs...)
 		p.write(bs)

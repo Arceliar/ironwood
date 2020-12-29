@@ -11,7 +11,7 @@ import (
  ********/
 
 type tree struct {
-	phony.Actor
+	phony.Inbox
 	core  *core
 	infos map[string]*treeInfo // map[string(publicKey)]*treeInfo
 	self  *treeInfo            // self info
