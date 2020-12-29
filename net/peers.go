@@ -121,6 +121,10 @@ func (p *peer) handleTree(bs []byte) error {
 	if !bytes.Equal(p.from, info.from()) {
 		return errors.New("unrecognized publicKey")
 	}
+	dest := info.hops[len(info.hops)-1].next
+	if !bytes.Equal(p.peers.core.crypto.publicKey, dest) {
+		return errors.New("incorrect destination")
+	}
 	p.info = info
 	p.peers.core.tree.update(nil, info)
 	return nil

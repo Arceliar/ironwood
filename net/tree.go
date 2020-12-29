@@ -100,6 +100,9 @@ func (info *treeInfo) from() publicKey {
 }
 
 func (info *treeInfo) checkSigs() bool {
+	if len(info.hops) == 0 {
+		return false
+	}
 	var bs []byte
 	key := info.root
 	bs = append(bs, info.root...)
