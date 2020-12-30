@@ -71,7 +71,6 @@ func TestTwoNodes(t *testing.T) {
 		}
 		break
 	}
-
 }
 
 /*************
