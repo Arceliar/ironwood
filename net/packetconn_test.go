@@ -23,6 +23,7 @@ func TestTwoNodes(t *testing.T) {
 	go a.HandleConn(pubB, cA)
 	go b.HandleConn(pubA, cB)
 	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
 	tA := &a.(*packetConn).core.tree
 	tB := &b.(*packetConn).core.tree
 	for {
@@ -42,28 +43,35 @@ func TestTwoNodes(t *testing.T) {
 			break
 		}
 	}
-	var sA, sB *treeInfo
-	phony.Block(tA, func() {
-		sA = tA.self
-	})
-	phony.Block(tB, func() {
-		sB = tB.self
-	})
-	var aL, bL publicKey
-	phony.Block(tA, func() {
-		aL = tA._lookup(sB)
-	})
-	phony.Block(tB, func() {
-		bL = tB._lookup(sA)
-	})
-	if !bytes.Equal(aL, tB.core.crypto.publicKey) {
-		println(aL[0], tB.core.crypto.publicKey[0], tA.core.crypto.publicKey[0])
-		panic("wrong lookup result aL")
+	for {
+		select {
+		case <-timer.C:
+			panic("timeout")
+		default:
+		}
+		var sA, sB *treeInfo
+		phony.Block(tA, func() {
+			sA = tA.self
+		})
+		phony.Block(tB, func() {
+			sB = tB.self
+		})
+		var aL, bL publicKey
+		phony.Block(tA, func() {
+			aL = tA._lookup(sB)
+		})
+		phony.Block(tB, func() {
+			bL = tB._lookup(sA)
+		})
+		if !bytes.Equal(aL, tB.core.crypto.publicKey) {
+			continue
+		}
+		if !bytes.Equal(bL, tA.core.crypto.publicKey) {
+			continue
+		}
+		break
 	}
-	if !bytes.Equal(bL, tA.core.crypto.publicKey) {
-		println(bL[0], tA.core.crypto.publicKey[0], tB.core.crypto.publicKey[0])
-		panic("wrong lookup result bL")
-	}
+
 }
 
 /*************
