@@ -68,7 +68,7 @@ type peer struct {
 }
 
 func (p *peer) write(bs []byte) {
-	out := alloc(8 + len(bs))
+	out := make([]byte, 8+len(bs))
 	binary.BigEndian.PutUint64(out[:8], uint64(len(bs)))
 	copy(out[8:], bs)
 	p.conn.Write(out)
@@ -99,59 +99,41 @@ func (p *peer) handler() error {
 	})
 	p.sendTree(nil, info)
 	go keepAlive()
-	ch := make(chan error)
-	var reader func()
-	next := make(chan struct{})
-	close(next)
-	reader = func() {
-		wait := next
-		next = make(chan struct{})
-		defer close(next)
+	for {
 		var lenBuf [8]byte
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
-			ch <- err
-			return
+			return err
 		}
 		if _, err := io.ReadFull(p.conn, lenBuf[:]); err != nil {
-			ch <- err
-			return
+			return err
 		}
 		l := binary.BigEndian.Uint64(lenBuf[:])
-		bs := alloc(int(l))
+		bs := make([]byte, int(l))
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
-			ch <- err
-			return
+			return err
 		}
 		if _, err := io.ReadFull(p.conn, bs); err != nil {
-			ch <- err
-			return
+			return err
 		}
-		if err := p.handlePacket(bs, wait, reader); err != nil {
-			ch <- err
-			return
+		if err := p.handlePacket(bs); err != nil {
+			return err
 		}
-		go reader()
 	}
-	go reader()
-	return <-ch
 }
 
-func (p *peer) handlePacket(bs []byte, wait chan struct{}, reader func()) error {
+func (p *peer) handlePacket(bs []byte) error {
+	// Note: this function should be non-blocking.
+	// Individual handlers should send actor messages as needed.
 	if len(bs) == 0 {
 		return errors.New("empty packet")
 	}
 	switch pType := bs[0]; pType {
 	case wireDummy:
-		<-wait
-		go reader()
 		return nil
 	case wireProtoTree:
-		<-wait
 		err := p.handleTree(bs[1:])
-		go reader()
 		return err
 	default:
-		<-wait
 		return errors.New("unrecognized packet type")
 	}
 }
