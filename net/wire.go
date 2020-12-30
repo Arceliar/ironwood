@@ -5,6 +5,9 @@ import "errors"
 const (
 	wireDummy = iota // unused
 	wireProtoTree
+	wireProtoDHTBootstrap
+	wireProtoDHTSetup
+	WireProtoDHTTeardown
 )
 
 var wireMarshalBinaryError = errors.New("wire MarshalBinary error")

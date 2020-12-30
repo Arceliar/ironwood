@@ -45,6 +45,7 @@ func (t *dhtree) remove(from phony.Actor, info *treeInfo) {
 			t.self = nil
 			t._fix()
 		}
+		// TODO tear down dht paths that go through this node
 	})
 }
 
@@ -149,6 +150,14 @@ func (t *dhtree) _keyspaceLookup(dest publicKey, reverse bool) publicKey {
 		}
 	}
 	return bestPeer
+}
+
+func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
+	setup := new(dhtSetup)
+	setup.source = t.core.crypto.publicKey
+	setup.dest = *dest
+	setup.sig = t.core.crypto.privateKey.sign(setup.bytesForSig())
+	return setup
 }
 
 /************
@@ -275,6 +284,62 @@ type dhtInfo struct {
 	prev   publicKey
 	next   publicKey
 	dest   publicKey
+}
+
+/************
+ * dhtSetup *
+ ************/
+
+type dhtSetup struct {
+	sig    signature
+	source publicKey
+	dest   treeInfo
+}
+
+func (s *dhtSetup) bytesForSig() []byte {
+	var bs []byte
+	bs = append(bs, s.source...)
+	bs = append(bs, s.dest.root...)
+	for _, hop := range s.dest.hops {
+		bs = append(bs, hop.next...)
+	}
+	return bs
+}
+
+func (s *dhtSetup) check() bool {
+	return s.dest.checkLoops() && s.source.verify(s.bytesForSig(), s.sig) && s.dest.checkSigs()
+}
+
+func (s *dhtSetup) MarshalBinary() (data []byte, err error) {
+	var tmp []byte
+	if tmp, err = s.dest.MarshalBinary(); err != nil {
+		return
+	}
+	data = append(data, s.sig...)
+	data = append(data, s.source...)
+	data = append(data, tmp...)
+	return
+}
+
+func (s *dhtSetup) UnmarshalBinary(data []byte) error {
+	var tmp dhtSetup
+	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
+		return wireUnmarshalBinaryError
+	} else if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
+		return wireUnmarshalBinaryError
+	} else if err := tmp.dest.UnmarshalBinary(data); err != nil {
+		return err
+	}
+	*s = tmp
+	return nil
+}
+
+/***************
+ * dhtTeardown *
+ ***************/
+
+type dhtTeardown struct {
+	source publicKey
 }
 
 /*********************
