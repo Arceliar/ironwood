@@ -31,7 +31,7 @@ func (t *tree) update(from phony.Actor, info *treeInfo) {
 		if bytes.Equal(key, t.self.from()) {
 			t.self = nil
 		}
-		t.fix()
+		t._fix()
 	})
 }
 
@@ -41,12 +41,12 @@ func (t *tree) remove(from phony.Actor, info *treeInfo) {
 		delete(t.infos, string(key))
 		if bytes.Equal(key, t.self.from()) {
 			t.self = nil
-			t.fix()
+			t._fix()
 		}
 	})
 }
 
-func (t *tree) fix() {
+func (t *tree) _fix() {
 	oldSelf := t.self
 	if t.self == nil || treeLess(t.self.root, t.core.crypto.publicKey) {
 		t.self = &treeInfo{root: t.core.crypto.publicKey}
@@ -73,6 +73,33 @@ func (t *tree) fix() {
 	if t.self != oldSelf {
 		t.core.peers.sendTree(t, t.self)
 	}
+}
+
+func (t *tree) _lookup(dest *treeInfo) publicKey {
+	best := t.self
+	bestDist := best.dist(dest)
+	for _, info := range t.infos {
+		tmp := *info
+		tmp.hops = tmp.hops[:len(tmp.hops)-1]
+		dist := tmp.dist(dest)
+		var isBetter bool
+		switch {
+		case dist < bestDist:
+			isBetter = true
+		case dist > bestDist:
+		case treeLess(best.from(), info.from()):
+			isBetter = true
+		}
+		if isBetter {
+			best = info
+			bestDist = dist
+		}
+	}
+	if !bytes.Equal(best.root, dest.root) {
+		// Dead end, so stay here
+		return t.core.crypto.publicKey
+	}
+	return best.from()
 }
 
 /************
@@ -141,6 +168,25 @@ func (info *treeInfo) add(priv privateKey, next publicKey) *treeInfo {
 	sig := priv.sign(bs)
 	newInfo.hops = append(info.hops, treeHop{next: next, sig: sig})
 	return &newInfo
+}
+
+func (info *treeInfo) dist(dest *treeInfo) int {
+	if !bytes.Equal(info.root, dest.root) {
+		return int(^(uint(0)) >> 1) // max int, but you should really check this first
+	}
+	a := info.hops
+	b := dest.hops
+	if len(b) < len(a) {
+		a, b = b, a
+	}
+	lcaIdx := -1 // last common ancestor
+	for idx := range a {
+		if !bytes.Equal(a[idx].next, b[idx].next) {
+			break
+		}
+		lcaIdx = idx
+	}
+	return len(a) + len(b) - 2*lcaIdx
 }
 
 func (info *treeInfo) MarshalBinary() (data []byte, err error) {

@@ -12,7 +12,7 @@ import (
 	"github.com/Arceliar/phony"
 )
 
-func TestDummy(t *testing.T) {
+func TestTwoNodes(t *testing.T) {
 	pubA, privA, _ := ed25519.GenerateKey(nil)
 	pubB, privB, _ := ed25519.GenerateKey(nil)
 	a, _ := NewPacketConn(privA)
@@ -23,6 +23,8 @@ func TestDummy(t *testing.T) {
 	go a.HandleConn(pubB, cA)
 	go b.HandleConn(pubA, cB)
 	timer := time.NewTimer(time.Second)
+	tA := &a.(*packetConn).core.tree
+	tB := &b.(*packetConn).core.tree
 	for {
 		select {
 		case <-timer.C:
@@ -30,15 +32,37 @@ func TestDummy(t *testing.T) {
 		default:
 		}
 		var rA, rB publicKey
-		phony.Block(&a.(*packetConn).core.tree, func() {
-			rA = a.(*packetConn).core.tree.self.root
+		phony.Block(tA, func() {
+			rA = tA.self.root
 		})
-		phony.Block(&b.(*packetConn).core.tree, func() {
-			rB = b.(*packetConn).core.tree.self.root
+		phony.Block(tB, func() {
+			rB = tB.self.root
 		})
 		if bytes.Equal(rA, rB) {
 			break
 		}
+	}
+	var sA, sB *treeInfo
+	phony.Block(tA, func() {
+		sA = tA.self
+	})
+	phony.Block(tB, func() {
+		sB = tB.self
+	})
+	var aL, bL publicKey
+	phony.Block(tA, func() {
+		aL = tA._lookup(sB)
+	})
+	phony.Block(tB, func() {
+		bL = tB._lookup(sA)
+	})
+	if !bytes.Equal(aL, tB.core.crypto.publicKey) {
+		println(aL[0], tB.core.crypto.publicKey[0], tA.core.crypto.publicKey[0])
+		panic("wrong lookup result aL")
+	}
+	if !bytes.Equal(bL, tA.core.crypto.publicKey) {
+		println(bL[0], tA.core.crypto.publicKey[0], tB.core.crypto.publicKey[0])
+		panic("wrong lookup result bL")
 	}
 }
 
