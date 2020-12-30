@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Arceliar/phony"
 )
 
 func TestDummy(t *testing.T) {
@@ -20,11 +22,23 @@ func TestDummy(t *testing.T) {
 	defer cB.Close()
 	go a.HandleConn(pubB, cA)
 	go b.HandleConn(pubA, cB)
-	time.Sleep(time.Second)
-	rA := a.(*packetConn).core.tree.self.root
-	rB := b.(*packetConn).core.tree.self.root
-	if !bytes.Equal(rA, rB) {
-		panic("not equal")
+	timer := time.NewTimer(time.Second)
+	for {
+		select {
+		case <-timer.C:
+			panic("timeout")
+		default:
+		}
+		var rA, rB publicKey
+		phony.Block(&a.(*packetConn).core.tree, func() {
+			rA = a.(*packetConn).core.tree.self.root
+		})
+		phony.Block(&b.(*packetConn).core.tree, func() {
+			rB = b.(*packetConn).core.tree.self.root
+		})
+		if bytes.Equal(rA, rB) {
+			break
+		}
 	}
 }
 
