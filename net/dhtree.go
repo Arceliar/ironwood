@@ -179,8 +179,7 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	dinfo.next = next
 	dinfo.dest = dkey
 	t.dinfos[string(dinfo.source)] = dinfo
-	// TODO forward the setup to the next hop
-	panic("TODO")
+	t.core.peers.sendSetup(t, next, setup)
 }
 
 func (t *dhtree) _teardown(from, source publicKey) {
@@ -198,6 +197,12 @@ func (t *dhtree) _teardown(from, source publicKey) {
 	} else {
 		panic("DEBUG teardown of nonexistant path")
 	}
+}
+
+func (t *dhtree) teardown(from phony.Actor, peerKey, source publicKey) {
+	t.Act(from, func() {
+		t._teardown(peerKey, source)
+	})
 }
 
 /************

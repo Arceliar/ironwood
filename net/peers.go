@@ -67,6 +67,16 @@ func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, source public
 	})
 }
 
+func (ps *peers) sendSetup(from phony.Actor, peerKey publicKey, setup *dhtSetup) {
+	ps.Act(from, func() {
+		if p, isIn := ps.peers[string(peerKey)]; isIn {
+			p.sendSetup(ps, setup)
+		} else {
+			ps.core.dhtree.teardown(ps, peerKey, setup.source)
+		}
+	})
+}
+
 type peer struct {
 	phony.Inbox // Only used to process or send some protocol traffic
 	peers       *peers
@@ -178,5 +188,11 @@ func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
 func (p *peer) sendTeardown(from phony.Actor, source publicKey) {
 	p.Act(from, func() {
 		panic("TODO send teardown")
+	})
+}
+
+func (p *peer) sendSetup(from phony.Actor, setup *dhtSetup) {
+	p.Act(from, func() {
+		panic("TODO send setup")
 	})
 }
