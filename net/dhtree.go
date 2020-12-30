@@ -45,7 +45,11 @@ func (t *dhtree) remove(from phony.Actor, info *treeInfo) {
 			t.self = nil
 			t._fix()
 		}
-		// TODO tear down dht paths that go through this node
+		for _, dinfo := range t.dinfos {
+			if bytes.Equal(key, dinfo.prev) || bytes.Equal(key, dinfo.prev) {
+				t._teardown(key, dinfo.source)
+			}
+		}
 	})
 }
 
@@ -180,6 +184,24 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	t.dinfos[string(dinfo.source)] = dinfo
 	// TODO forward the setup to the next hop
 	panic("TODO")
+}
+
+func (t *dhtree) _teardown(from, source publicKey) {
+	if dinfo, isIn := t.dinfos[string(source)]; isIn {
+		var next publicKey
+		if bytes.Equal(from, dinfo.prev) {
+			next = dinfo.next
+		} else if bytes.Equal(from, dinfo.next) {
+			next = dinfo.prev
+		} else {
+			panic("DEBUG teardown of nonexistant path")
+		}
+		delete(t.dinfos, string(source))
+		// TODO forward teardown to next
+		_ = next
+	} else {
+		panic("DEBUG teardown of nonexistant path")
+	}
 }
 
 /************
