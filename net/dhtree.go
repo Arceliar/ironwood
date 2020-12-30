@@ -10,24 +10,26 @@ import (
  * tree *
  ********/
 
-type tree struct {
+type dhtree struct {
 	phony.Inbox
-	core  *core
-	infos map[string]*treeInfo // map[string(publicKey)]*treeInfo
-	self  *treeInfo            // self info
+	core   *core
+	tinfos map[string]*treeInfo // map[string(publicKey)]*treeInfo, key=peer
+	dinfos map[string]*dhtInfo  // map[string(publicKey)]*dhtInfo, key=source
+	self   *treeInfo            // self info
 }
 
-func (t *tree) init(c *core) {
+func (t *dhtree) init(c *core) {
 	t.core = c
-	t.infos = make(map[string]*treeInfo)
+	t.tinfos = make(map[string]*treeInfo)
+	t.dinfos = make(map[string]*dhtInfo)
 	t.self = &treeInfo{root: t.core.crypto.publicKey}
 }
 
-func (t *tree) update(from phony.Actor, info *treeInfo) {
+func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 	t.Act(from, func() {
 		// The tree info should have been checked before this point
 		key := info.from()
-		t.infos[string(key)] = info
+		t.tinfos[string(key)] = info
 		if bytes.Equal(key, t.self.from()) {
 			t.self = nil
 		}
@@ -35,10 +37,10 @@ func (t *tree) update(from phony.Actor, info *treeInfo) {
 	})
 }
 
-func (t *tree) remove(from phony.Actor, info *treeInfo) {
+func (t *dhtree) remove(from phony.Actor, info *treeInfo) {
 	t.Act(from, func() {
 		key := info.from()
-		delete(t.infos, string(key))
+		delete(t.tinfos, string(key))
 		if bytes.Equal(key, t.self.from()) {
 			t.self = nil
 			t._fix()
@@ -46,12 +48,12 @@ func (t *tree) remove(from phony.Actor, info *treeInfo) {
 	})
 }
 
-func (t *tree) _fix() {
+func (t *dhtree) _fix() {
 	oldSelf := t.self
 	if t.self == nil || treeLess(t.self.root, t.core.crypto.publicKey) {
 		t.self = &treeInfo{root: t.core.crypto.publicKey}
 	}
-	for _, info := range t.infos {
+	for _, info := range t.tinfos {
 		switch {
 		case !info.checkLoops():
 			// This has a loop, e.g. it's from a child, so skip it
@@ -75,10 +77,10 @@ func (t *tree) _fix() {
 	}
 }
 
-func (t *tree) _lookup(dest *treeInfo) publicKey {
+func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 	best := t.self
 	bestDist := best.dist(dest)
-	for _, info := range t.infos {
+	for _, info := range t.tinfos {
 		tmp := *info
 		tmp.hops = tmp.hops[:len(tmp.hops)-1]
 		dist := tmp.dist(dest)
@@ -100,6 +102,19 @@ func (t *tree) _lookup(dest *treeInfo) publicKey {
 		return t.core.crypto.publicKey
 	}
 	return best.from()
+}
+
+func (t *dhtree) _dhtLookup(dest publicKey) publicKey {
+	best := t.core.crypto.publicKey
+	bestPeer := best
+	for _, info := range t.dinfos {
+		if dhtOrdered(info.source, dest, best) {
+			best = info.source
+			bestPeer = info.prev
+		}
+	}
+	// TODO check peers and tree for something better
+	return bestPeer
 }
 
 /************
@@ -217,6 +232,17 @@ func (info *treeInfo) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+/***********
+ * dhtInfo *
+ ***********/
+
+type dhtInfo struct {
+	source publicKey
+	prev   publicKey
+	next   publicKey
+	dest   publicKey
+}
+
 /*********************
  * utility functions *
  *********************/
@@ -229,6 +255,21 @@ func treeLess(key1, key2 publicKey) bool {
 		case key1[idx] > key2[idx]:
 			return false
 		}
+	}
+	return false
+}
+
+func dhtOrdered(first, second, third publicKey) bool {
+	less12 := treeLess(first, second)
+	less23 := treeLess(second, third)
+	less31 := treeLess(third, first)
+	switch {
+	case less12 && less23:
+		return true
+	case less23 && less31:
+		return true
+	case less31 && less12:
+		return true
 	}
 	return false
 }

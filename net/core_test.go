@@ -24,8 +24,8 @@ func TestTwoNodes(t *testing.T) {
 	go b.HandleConn(pubA, cB)
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
-	tA := &a.(*packetConn).core.tree
-	tB := &b.(*packetConn).core.tree
+	tA := &a.(*packetConn).core.dhtree
+	tB := &b.(*packetConn).core.dhtree
 	for {
 		select {
 		case <-timer.C:
@@ -56,17 +56,17 @@ func TestTwoNodes(t *testing.T) {
 		phony.Block(tB, func() {
 			sB = tB.self
 		})
-		var aL, bL publicKey
+		var lA, lB publicKey
 		phony.Block(tA, func() {
-			aL = tA._lookup(sB)
+			lA = tA._treeLookup(sB)
 		})
 		phony.Block(tB, func() {
-			bL = tB._lookup(sA)
+			lB = tB._treeLookup(sA)
 		})
-		if !bytes.Equal(aL, tB.core.crypto.publicKey) {
+		if !bytes.Equal(lA, tB.core.crypto.publicKey) {
 			continue
 		}
-		if !bytes.Equal(bL, tA.core.crypto.publicKey) {
+		if !bytes.Equal(lB, tA.core.crypto.publicKey) {
 			continue
 		}
 		break

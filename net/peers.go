@@ -78,7 +78,7 @@ func (p *peer) handler() error {
 	// TODO? don't block reading while writing a packet
 	defer func() {
 		if p.info != nil {
-			p.peers.core.tree.remove(nil, p.info)
+			p.peers.core.dhtree.remove(nil, p.info)
 		}
 	}()
 	done := make(chan struct{})
@@ -94,8 +94,8 @@ func (p *peer) handler() error {
 		time.AfterFunc(time.Second, keepAlive)
 	}
 	var info *treeInfo
-	phony.Block(&p.peers.core.tree, func() {
-		info = p.peers.core.tree.self
+	phony.Block(&p.peers.core.dhtree, func() {
+		info = p.peers.core.dhtree.self
 	})
 	p.sendTree(nil, info)
 	go keepAlive()
@@ -154,7 +154,7 @@ func (p *peer) handleTree(bs []byte) error {
 		return errors.New("incorrect destination")
 	}
 	p.info = info
-	p.peers.core.tree.update(nil, info)
+	p.peers.core.dhtree.update(nil, info)
 	return nil
 }
 
