@@ -160,6 +160,28 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 	return setup
 }
 
+func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
+	if _, isIn := t.dinfos[string(setup.source)]; isIn {
+		// TODO cancel the setup and tear down instead
+		panic("TODO")
+	}
+	next := t._treeLookup(&setup.dest)
+	dkey := setup.destKey()
+	if bytes.Equal(t.core.crypto.publicKey, next) && !bytes.Equal(next, dkey) {
+		// We're the next hop, but not the destination
+		// TODO cancel the setup and tear down instead
+		panic("TODO")
+	}
+	dinfo := new(dhtInfo)
+	dinfo.source = setup.source
+	dinfo.prev = prev
+	dinfo.next = next
+	dinfo.dest = dkey
+	t.dinfos[string(dinfo.source)] = dinfo
+	// TODO forward the setup to the next hop
+	panic("TODO")
+}
+
 /************
  * treeInfo *
  ************/
@@ -294,6 +316,14 @@ type dhtSetup struct {
 	sig    signature
 	source publicKey
 	dest   treeInfo
+}
+
+func (s *dhtSetup) destKey() publicKey {
+	key := s.dest.root
+	if len(s.dest.hops) > 0 {
+		key = s.dest.hops[len(s.dest.hops)-1].next
+	}
+	return key
 }
 
 func (s *dhtSetup) bytesForSig() []byte {
