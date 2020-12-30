@@ -105,16 +105,24 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 }
 
 func (t *dhtree) _dhtLookup(dest publicKey) publicKey {
+	return t._keyspaceLookup(dest, false)
+}
+
+func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
+	return t._keyspaceLookup(dest, true)
+}
+
+func (t *dhtree) _keyspaceLookup(dest publicKey, reverse bool) publicKey {
 	// Initialize to self
 	best := t.core.crypto.publicKey
 	bestPeer := best
 	// First check treeInfo
-	if dhtOrdered(dest, t.self.root, best) {
+	if dhtOrdered(dest, t.self.root, best, reverse) {
 		best = t.self.root
 		bestPeer = t.self.from()
 	}
 	for _, hop := range t.self.hops {
-		if dhtOrdered(dest, hop.next, best) {
+		if dhtOrdered(dest, hop.next, best, reverse) {
 			best = t.self.root
 			bestPeer = t.self.from()
 		}
@@ -122,16 +130,22 @@ func (t *dhtree) _dhtLookup(dest publicKey) publicKey {
 	// Next check peers
 	for _, info := range t.tinfos {
 		peer := info.from()
-		if dhtOrdered(dest, peer, best) {
+		if dhtOrdered(dest, peer, best, reverse) {
 			best = peer
 			bestPeer = peer
 		}
 	}
 	// Finally check paths from the dht
 	for _, info := range t.dinfos {
-		if dhtOrdered(dest, info.source, best) {
+		if !reverse && dhtOrdered(dest, info.source, best, false) {
 			best = info.source
 			bestPeer = info.prev
+		} else if reverse && dhtOrdered(dest, info.dest, best, true) {
+			best = info.dest
+			bestPeer = info.next
+		} else if reverse && bytes.Equal(best, info.dest) && treeLess(bestPeer, info.next) {
+			best = info.dest
+			bestPeer = info.next
 		}
 	}
 	return bestPeer
@@ -279,7 +293,10 @@ func treeLess(key1, key2 publicKey) bool {
 	return false
 }
 
-func dhtOrdered(first, second, third publicKey) bool {
+func dhtOrdered(first, second, third publicKey, reverse bool) bool {
+	if reverse {
+		first, third = third, first
+	}
 	less12 := treeLess(first, second)
 	less23 := treeLess(second, third)
 	less31 := treeLess(third, first)
