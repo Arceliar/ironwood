@@ -57,3 +57,46 @@ func TestTreeInfo(t *testing.T) {
 		panic("new checkLoops failed")
 	}
 }
+
+func TestMarshalDHTSetup(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		panic(err)
+	}
+	info := new(treeInfo)
+	info.root = publicKey(pub)
+	for idx := 0; idx < 10; idx++ {
+		newPub, newPriv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			panic(err)
+		}
+		info = info.add(privateKey(priv), publicKey(newPub))
+		if !info.checkSigs() {
+			panic("checkSigs failed")
+		} else if !info.checkLoops() {
+			panic("checkLoops failed")
+		}
+		pub, priv = newPub, newPriv
+	}
+	_, sourcePriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		panic(err)
+	}
+	pc, _ := NewPacketConn(sourcePriv)
+	dt := pc.(*packetConn).core.dhtree
+	setup := dt.newSetup(info)
+	if !setup.check() {
+		panic("initial check failed")
+	}
+	bs, err := setup.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+	newSetup := new(dhtSetup)
+	if err = newSetup.UnmarshalBinary(bs); err != nil {
+		panic(err)
+	}
+	if !newSetup.check() {
+		panic("final check failed")
+	}
+}
