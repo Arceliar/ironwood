@@ -59,6 +59,14 @@ func (ps *peers) sendTree(from phony.Actor, info *treeInfo) {
 	})
 }
 
+func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, source publicKey) {
+	ps.Act(from, func() {
+		if p, isIn := ps.peers[string(peerKey)]; isIn {
+			p.sendTeardown(ps, source)
+		}
+	})
+}
+
 type peer struct {
 	phony.Inbox // Only used to process or send some protocol traffic
 	peers       *peers
@@ -164,5 +172,11 @@ func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
 		bs, _ := info.MarshalBinary()
 		bs = append([]byte{wireProtoTree}, bs...)
 		p.write(bs)
+	})
+}
+
+func (p *peer) sendTeardown(from phony.Actor, source publicKey) {
+	p.Act(from, func() {
+		panic("TODO send teardown")
 	})
 }

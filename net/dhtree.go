@@ -166,15 +166,12 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 
 func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if _, isIn := t.dinfos[string(setup.source)]; isIn {
-		// TODO cancel the setup and tear down instead
-		panic("TODO")
+		t.core.peers.sendTeardown(t, prev, setup.source)
 	}
 	next := t._treeLookup(&setup.dest)
 	dkey := setup.destKey()
 	if bytes.Equal(t.core.crypto.publicKey, next) && !bytes.Equal(next, dkey) {
-		// We're the next hop, but not the destination
-		// TODO cancel the setup and tear down instead
-		panic("TODO")
+		t.core.peers.sendTeardown(t, prev, setup.source)
 	}
 	dinfo := new(dhtInfo)
 	dinfo.source = setup.source
@@ -197,8 +194,7 @@ func (t *dhtree) _teardown(from, source publicKey) {
 			panic("DEBUG teardown of nonexistant path")
 		}
 		delete(t.dinfos, string(source))
-		// TODO forward teardown to next
-		_ = next
+		t.core.peers.sendTeardown(t, next, source)
 	} else {
 		panic("DEBUG teardown of nonexistant path")
 	}
