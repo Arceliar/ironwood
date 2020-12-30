@@ -105,15 +105,35 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 }
 
 func (t *dhtree) _dhtLookup(dest publicKey) publicKey {
+	// Initialize to self
 	best := t.core.crypto.publicKey
 	bestPeer := best
+	// First check treeInfo
+	if dhtOrdered(dest, t.self.root, best) {
+		best = t.self.root
+		bestPeer = t.self.from()
+	}
+	for _, hop := range t.self.hops {
+		if dhtOrdered(dest, hop.next, best) {
+			best = t.self.root
+			bestPeer = t.self.from()
+		}
+	}
+	// Next check peers
+	for _, info := range t.tinfos {
+		peer := info.from()
+		if dhtOrdered(dest, peer, best) {
+			best = peer
+			bestPeer = peer
+		}
+	}
+	// Finally check paths from the dht
 	for _, info := range t.dinfos {
-		if dhtOrdered(info.source, dest, best) {
+		if dhtOrdered(dest, info.source, best) {
 			best = info.source
 			bestPeer = info.prev
 		}
 	}
-	// TODO check peers and tree for something better
 	return bestPeer
 }
 
