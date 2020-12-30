@@ -3,6 +3,7 @@ package net
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -15,6 +16,8 @@ func TestDummy(t *testing.T) {
 	a, _ := NewPacketConn(privA)
 	b, _ := NewPacketConn(privB)
 	cA, cB := newDummyConn(pubA, pubB)
+	defer cA.Close()
+	defer cB.Close()
 	go a.HandleConn(pubB, cA)
 	go b.HandleConn(pubA, cB)
 	time.Sleep(time.Second)
@@ -35,13 +38,17 @@ type dummyConn struct {
 	recvBuf   []byte
 	writeLock sync.Mutex
 	send      chan []byte
+	closeLock *sync.Mutex
+	closed    chan struct{}
 }
 
 func newDummyConn(keyA, keyB ed25519.PublicKey) (*dummyConn, *dummyConn) {
 	toA := make(chan []byte)
 	toB := make(chan []byte)
-	connA := dummyConn{recv: toA, send: toB}
-	connB := dummyConn{recv: toB, send: toA}
+	cl := new(sync.Mutex)
+	closed := make(chan struct{})
+	connA := dummyConn{recv: toA, send: toB, closeLock: cl, closed: closed}
+	connB := dummyConn{recv: toB, send: toA, closeLock: cl, closed: closed}
 	return &connA, &connB
 }
 
@@ -49,8 +56,12 @@ func (d *dummyConn) Read(b []byte) (n int, err error) {
 	d.readLock.Lock()
 	defer d.readLock.Unlock()
 	if len(d.recvBuf) == 0 {
-		bs := <-d.recv
-		d.recvBuf = append(d.recvBuf, bs...)
+		select {
+		case <-d.closed:
+			return 0, errors.New("closed")
+		case bs := <-d.recv:
+			d.recvBuf = append(d.recvBuf, bs...)
+		}
 	}
 	n = len(b)
 	if len(d.recvBuf) < n {
@@ -65,12 +76,23 @@ func (d *dummyConn) Write(b []byte) (n int, err error) {
 	d.writeLock.Lock()
 	defer d.writeLock.Unlock()
 	bs := append([]byte(nil), b...)
-	d.send <- bs
-	return len(bs), nil
+	select {
+	case <-d.closed:
+		return 0, errors.New("closed")
+	case d.send <- bs:
+		return len(bs), nil
+	}
 }
 
 func (d *dummyConn) Close() error {
-	panic("TODO Close")
+	d.closeLock.Lock()
+	defer d.closeLock.Unlock()
+	select {
+	case <-d.closed:
+		return errors.New("closed")
+	default:
+		close(d.closed)
+	}
 	return nil
 }
 
