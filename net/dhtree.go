@@ -146,17 +146,26 @@ func (t *dhtree) _keyspaceLookup(dest publicKey, reverse bool) publicKey {
 		}
 	}
 	// Finally check paths from the dht
-	//FIXME this is broken when dest equals the source/dest
 	for _, info := range t.dinfos {
-		if !reverse && dhtOrdered(dest, info.source, best, false) {
-			best = info.source
-			bestPeer = info.prev
-		} else if reverse && dhtOrdered(dest, info.dest, best, true) {
-			best = info.dest
-			bestPeer = info.next
-		} else if reverse && bytes.Equal(best, info.dest) && treeLess(bestPeer, info.next) {
-			best = info.dest
-			bestPeer = info.next
+		var doUpdate bool
+		var target, peer publicKey
+		if !reverse {
+			target, peer = info.source, info.prev
+		} else {
+			target, peer = info.dest, info.next
+		}
+		if bytes.Equal(dest, target) {
+			if !bytes.Equal(best, target) {
+				doUpdate = true
+			} else if treeLess(bestPeer, peer) {
+				doUpdate = true
+			}
+		} else if dhtOrdered(dest, target, best, reverse) {
+			doUpdate = true
+		}
+		if doUpdate {
+			best = target
+			bestPeer = peer
 		}
 	}
 	return bestPeer
@@ -166,6 +175,7 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	dest := bootstrap.info.dest()
 	switch {
 	case !bytes.Equal(dest, t.core.crypto.privateKey):
+		// FIXME I'm pretty sure the above condition is wrong...
 		next := t._dhtBootstrapLookup(dest)
 		t.core.peers.sendBootstrap(t, next, bootstrap)
 		return
