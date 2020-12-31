@@ -59,6 +59,14 @@ func (ps *peers) sendTree(from phony.Actor, info *treeInfo) {
 	})
 }
 
+func (ps *peers) sendBootstrap(from phony.Actor, peerKey publicKey, bootstrap *dhtBootstrap) {
+	ps.Act(from, func() {
+		if p, isIn := ps.peers[string(peerKey)]; isIn {
+			p.sendBootstrap(ps, bootstrap)
+		}
+	})
+}
+
 func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, teardown *dhtTeardown) {
 	ps.Act(from, func() {
 		if p, isIn := ps.peers[string(peerKey)]; isIn {
@@ -150,6 +158,8 @@ func (p *peer) handlePacket(bs []byte) error {
 		return nil
 	case wireProtoTree:
 		return p.handleTree(bs[1:])
+	case wireProtoDHTBootstrap:
+		return p.handleBootstrap(bs[1:])
 	case wireProtoDHTSetup:
 		return p.handleSetup(bs[1:])
 	case wireProtoDHTTeardown:
@@ -189,6 +199,24 @@ func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
 	p.Act(from, func() {
 		info = info.add(p.peers.core.crypto.privateKey, p.key)
 		p._sendProto(wireProtoTree, info)
+	})
+}
+
+func (p *peer) handleBootstrap(bs []byte) error {
+	bootstrap := new(dhtBootstrap)
+	if err := bootstrap.UnmarshalBinary(bs); err != nil {
+		return err
+	}
+	if !bootstrap.check() {
+		return errors.New("invalid bootstrap")
+	}
+	p.peers.core.dhtree.handleBootstrap(nil, bootstrap)
+	return nil
+}
+
+func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
+	p.Act(from, func() {
+		p._sendProto(wireProtoDHTBootstrap, bootstrap)
 	})
 }
 

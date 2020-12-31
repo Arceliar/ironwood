@@ -156,6 +156,18 @@ func (t *dhtree) _keyspaceLookup(dest publicKey, reverse bool) publicKey {
 	return bestPeer
 }
 
+func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
+	t.Act(from, func() {
+		if dest := bootstrap.destKey(); !bytes.Equal(dest, t.core.crypto.privateKey) {
+			next := t._dhtBootstrapLookup(dest)
+			// TODO forward
+			_ = next
+		} else {
+			// TODO decide if we should set up a route
+		}
+	})
+}
+
 func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 	setup := new(dhtSetup)
 	setup.source = t.core.crypto.publicKey
@@ -343,6 +355,14 @@ type dhtBootstrap struct {
 
 func (dbs *dhtBootstrap) check() bool {
 	return dbs.info.checkLoops() && dbs.info.checkSigs()
+}
+
+func (dbs *dhtBootstrap) destKey() publicKey {
+	key := dbs.info.root
+	if len(dbs.info.hops) > 0 {
+		key = dbs.info.hops[len(dbs.info.hops)-1].next
+	}
+	return key
 }
 
 func (dbs *dhtBootstrap) MarshalBinary() (data []byte, err error) {
