@@ -59,10 +59,10 @@ func (ps *peers) sendTree(from phony.Actor, info *treeInfo) {
 	})
 }
 
-func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, source publicKey) {
+func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, teardown *dhtTeardown) {
 	ps.Act(from, func() {
 		if p, isIn := ps.peers[string(peerKey)]; isIn {
-			p.sendTeardown(ps, source)
+			p.sendTeardown(ps, teardown)
 		}
 	})
 }
@@ -72,7 +72,7 @@ func (ps *peers) sendSetup(from phony.Actor, peerKey publicKey, setup *dhtSetup)
 		if p, isIn := ps.peers[string(peerKey)]; isIn {
 			p.sendSetup(ps, setup)
 		} else {
-			ps.core.dhtree.teardown(ps, peerKey, setup.source)
+			ps.core.dhtree.teardown(ps, peerKey, &dhtTeardown{source: setup.source})
 		}
 	})
 }
@@ -200,9 +200,7 @@ func (p *peer) handleSetup(bs []byte) error {
 	if !setup.check() {
 		return errors.New("invalid setup")
 	}
-	p.peers.core.dhtree.Act(nil, func() {
-		p.peers.core.dhtree._handleSetup(p.key, setup)
-	})
+	p.peers.core.dhtree.handleSetup(nil, p.key, setup)
 	return nil
 }
 
@@ -213,19 +211,16 @@ func (p *peer) sendSetup(from phony.Actor, setup *dhtSetup) {
 }
 
 func (p *peer) handleTeardown(bs []byte) error {
-	if len(bs) != publicKeySize {
-		return wireUnmarshalBinaryError
+	teardown := new(dhtTeardown)
+	if err := teardown.UnmarshalBinary(bs); err != nil {
+		return err
 	}
-	source := publicKey(bs)
-	p.peers.core.dhtree.Act(nil, func() {
-		p.peers.core.dhtree._teardown(p.key, source)
-	})
+	p.peers.core.dhtree.teardown(nil, p.key, teardown)
 	return nil
 }
 
-func (p *peer) sendTeardown(from phony.Actor, source publicKey) {
+func (p *peer) sendTeardown(from phony.Actor, teardown *dhtTeardown) {
 	p.Act(from, func() {
-		bs := append([]byte{wireProtoDHTTeardown}, source...)
-		p._write(bs)
+		p._sendProto(wireProtoDHTTeardown, teardown)
 	})
 }

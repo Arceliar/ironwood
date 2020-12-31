@@ -47,7 +47,7 @@ func (t *dhtree) remove(from phony.Actor, info *treeInfo) {
 		}
 		for _, dinfo := range t.dinfos {
 			if bytes.Equal(key, dinfo.prev) || bytes.Equal(key, dinfo.prev) {
-				t._teardown(key, dinfo.source)
+				t._teardown(key, &dhtTeardown{source: dinfo.source})
 			}
 		}
 	})
@@ -164,26 +164,28 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 	return setup
 }
 
-func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
-	if _, isIn := t.dinfos[string(setup.source)]; isIn {
-		t.core.peers.sendTeardown(t, prev, setup.source)
-	}
-	next := t._treeLookup(&setup.dest)
-	dkey := setup.destKey()
-	if bytes.Equal(t.core.crypto.publicKey, next) && !bytes.Equal(next, dkey) {
-		t.core.peers.sendTeardown(t, prev, setup.source)
-	}
-	dinfo := new(dhtInfo)
-	dinfo.source = setup.source
-	dinfo.prev = prev
-	dinfo.next = next
-	dinfo.dest = dkey
-	t.dinfos[string(dinfo.source)] = dinfo
-	t.core.peers.sendSetup(t, next, setup)
+func (t *dhtree) handleSetup(from phony.Actor, prev publicKey, setup *dhtSetup) {
+	t.Act(from, func() {
+		if _, isIn := t.dinfos[string(setup.source)]; isIn {
+			t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
+		}
+		next := t._treeLookup(&setup.dest)
+		dkey := setup.destKey()
+		if bytes.Equal(t.core.crypto.publicKey, next) && !bytes.Equal(next, dkey) {
+			t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
+		}
+		dinfo := new(dhtInfo)
+		dinfo.source = setup.source
+		dinfo.prev = prev
+		dinfo.next = next
+		dinfo.dest = dkey
+		t.dinfos[string(dinfo.source)] = dinfo
+		t.core.peers.sendSetup(t, next, setup)
+	})
 }
 
-func (t *dhtree) _teardown(from, source publicKey) {
-	if dinfo, isIn := t.dinfos[string(source)]; isIn {
+func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
+	if dinfo, isIn := t.dinfos[string(teardown.source)]; isIn {
 		var next publicKey
 		if bytes.Equal(from, dinfo.prev) {
 			next = dinfo.next
@@ -192,16 +194,16 @@ func (t *dhtree) _teardown(from, source publicKey) {
 		} else {
 			panic("DEBUG teardown of nonexistant path")
 		}
-		delete(t.dinfos, string(source))
-		t.core.peers.sendTeardown(t, next, source)
+		delete(t.dinfos, string(teardown.source))
+		t.core.peers.sendTeardown(t, next, teardown)
 	} else {
 		panic("DEBUG teardown of nonexistant path")
 	}
 }
 
-func (t *dhtree) teardown(from phony.Actor, peerKey, source publicKey) {
+func (t *dhtree) teardown(from phony.Actor, peerKey publicKey, teardown *dhtTeardown) {
 	t.Act(from, func() {
-		t._teardown(peerKey, source)
+		t._teardown(peerKey, teardown)
 	})
 }
 
@@ -393,6 +395,21 @@ func (s *dhtSetup) UnmarshalBinary(data []byte) error {
 
 type dhtTeardown struct {
 	source publicKey
+}
+
+func (t *dhtTeardown) MarshalBinary() (data []byte, err error) {
+	return append([]byte(nil), t.source...), nil
+}
+
+func (t *dhtTeardown) UnmarshalBinary(data []byte) error {
+	var tmp dhtTeardown
+	if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
+		return wireUnmarshalBinaryError
+	} else if len(data) != 0 {
+		return wireUnmarshalBinaryError
+	}
+	*t = tmp
+	return nil
 }
 
 /*********************
