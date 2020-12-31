@@ -206,6 +206,8 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 
 func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if _, isIn := t.dinfos[string(setup.source)]; isIn {
+		// Already have a path from this source
+		// FIXME need to delete the old path too... anything else?
 		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
 		return
 	}
@@ -433,6 +435,8 @@ func (dbs *dhtBootstrap) UnmarshalBinary(data []byte) error {
 /************
  * dhtSetup *
  ************/
+
+// FIXME setup probably needs a path ID or something, to prevent races between setups and teardowns...
 
 type dhtSetup struct {
 	sig    signature
