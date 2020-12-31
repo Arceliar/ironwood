@@ -207,11 +207,13 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if _, isIn := t.dinfos[string(setup.source)]; isIn {
 		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
+		return
 	}
 	next := t._treeLookup(&setup.dest)
 	dest := setup.dest.dest()
 	if bytes.Equal(t.core.crypto.publicKey, next) && !bytes.Equal(next, dest) {
 		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
+		return
 	}
 	dinfo := new(dhtInfo)
 	dinfo.source = setup.source

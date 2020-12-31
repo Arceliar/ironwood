@@ -48,7 +48,7 @@ func TestTwoNodes(t *testing.T) {
 	for {
 		select {
 		case <-timer.C:
-			panic("timeout") // FIXME, thing seem to busyloop and prevent the tree from reaching a working state
+			panic("timeout")
 		default:
 		}
 		var sA, sB *treeInfo
@@ -88,10 +88,7 @@ func TestTwoNodes(t *testing.T) {
 		phony.Block(tB, func() {
 			sB = tB.succ != nil && !bytes.Equal(tB.succ.dest(), tB.core.crypto.publicKey)
 		})
-		if !sA {
-			continue
-		}
-		if !sB {
+		if !sA || !sB {
 			continue
 		}
 		break
