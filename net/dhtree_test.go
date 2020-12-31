@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestTreeInfo(t *testing.T) {
+func TestMarshalTreeInfo(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		panic(err)
@@ -55,6 +55,45 @@ func TestTreeInfo(t *testing.T) {
 		panic("new checkSigs failed")
 	} else if !newInfo.checkLoops() {
 		panic("new checkLoops failed")
+	}
+}
+
+func TestMarshalDHTBootstrap(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		panic(err)
+	}
+	info := new(treeInfo)
+	info.root = publicKey(pub)
+	for idx := 0; idx < 10; idx++ {
+		newPub, newPriv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			panic(err)
+		}
+		info = info.add(privateKey(priv), publicKey(newPub))
+		if !info.checkSigs() {
+			panic("checkSigs failed")
+		} else if !info.checkLoops() {
+			panic("checkLoops failed")
+		}
+		pub, priv = newPub, newPriv
+	}
+	bootstrap := new(dhtBootstrap)
+	bootstrap.info = *info
+	if !bootstrap.check() {
+		panic("failed to check bootstrap")
+	}
+	bs, err := bootstrap.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+	newBootstrap := new(dhtBootstrap)
+	err = newBootstrap.UnmarshalBinary(bs)
+	if err != nil {
+		panic(err)
+	}
+	if !newBootstrap.check() {
+		panic("failed to check new bootstrap")
 	}
 }
 
