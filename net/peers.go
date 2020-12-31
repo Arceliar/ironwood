@@ -101,7 +101,6 @@ func (p *peer) _write(bs []byte) {
 }
 
 func (p *peer) handler() error {
-	// TODO? don't block reading while writing a packet
 	defer func() {
 		if p.info != nil {
 			p.peers.core.dhtree.remove(nil, p.info)

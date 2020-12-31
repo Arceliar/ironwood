@@ -16,6 +16,7 @@ type dhtree struct {
 	tinfos map[string]*treeInfo // map[string(publicKey)]*treeInfo, key=peer
 	dinfos map[string]*dhtInfo  // map[string(publicKey)]*dhtInfo, key=source
 	self   *treeInfo            // self info
+	succ   *treeInfo            // successor in tree, who we maintain a path to
 }
 
 func (t *dhtree) init(c *core) {
@@ -158,13 +159,23 @@ func (t *dhtree) _keyspaceLookup(dest publicKey, reverse bool) publicKey {
 
 func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	t.Act(from, func() {
-		if dest := bootstrap.destKey(); !bytes.Equal(dest, t.core.crypto.privateKey) {
+		dest := bootstrap.info.dest()
+		switch {
+		case !bytes.Equal(dest, t.core.crypto.privateKey):
 			next := t._dhtBootstrapLookup(dest)
-			// TODO forward
-			_ = next
-		} else {
-			// TODO decide if we should set up a route
+			t.core.peers.sendBootstrap(t, next, bootstrap)
+			return
+		case t.succ == nil:
+		case dhtOrdered(t.core.crypto.publicKey, dest, t.succ.dest(), false):
+		default:
+			// We already have a better successor
+			return
 		}
+		if t.succ != nil {
+			t._teardown(t.core.crypto.publicKey, &dhtTeardown{source: t.succ.dest()})
+		}
+		t.succ = &bootstrap.info
+		t._handleSetup(t.core.crypto.publicKey, t.newSetup(t.succ))
 	})
 }
 
@@ -176,23 +187,27 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 	return setup
 }
 
+func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
+	if _, isIn := t.dinfos[string(setup.source)]; isIn {
+		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
+	}
+	next := t._treeLookup(&setup.dest)
+	dest := setup.dest.dest()
+	if bytes.Equal(t.core.crypto.publicKey, next) && !bytes.Equal(next, dest) {
+		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
+	}
+	dinfo := new(dhtInfo)
+	dinfo.source = setup.source
+	dinfo.prev = prev
+	dinfo.next = next
+	dinfo.dest = dest
+	t.dinfos[string(dinfo.source)] = dinfo
+	t.core.peers.sendSetup(t, next, setup)
+}
+
 func (t *dhtree) handleSetup(from phony.Actor, prev publicKey, setup *dhtSetup) {
 	t.Act(from, func() {
-		if _, isIn := t.dinfos[string(setup.source)]; isIn {
-			t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
-		}
-		next := t._treeLookup(&setup.dest)
-		dkey := setup.destKey()
-		if bytes.Equal(t.core.crypto.publicKey, next) && !bytes.Equal(next, dkey) {
-			t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
-		}
-		dinfo := new(dhtInfo)
-		dinfo.source = setup.source
-		dinfo.prev = prev
-		dinfo.next = next
-		dinfo.dest = dkey
-		t.dinfos[string(dinfo.source)] = dinfo
-		t.core.peers.sendSetup(t, next, setup)
+		t._handleSetup(prev, setup)
 	})
 }
 
@@ -233,12 +248,19 @@ type treeHop struct {
 	sig  signature
 }
 
+func (info *treeInfo) dest() publicKey {
+	key := info.root
+	if len(info.hops) > 0 {
+		key = info.hops[len(info.hops)-1].next
+	}
+	return key
+}
+
 func (info *treeInfo) from() publicKey {
 	key := info.root
 	if len(info.hops) > 1 {
 		// last hop is to this node, 2nd to last is to the previous hop, which is who this is from
-		hop := info.hops[len(info.hops)-2]
-		key = hop.next
+		key = info.hops[len(info.hops)-2].next
 	}
 	return key
 }
@@ -357,14 +379,6 @@ func (dbs *dhtBootstrap) check() bool {
 	return dbs.info.checkLoops() && dbs.info.checkSigs()
 }
 
-func (dbs *dhtBootstrap) destKey() publicKey {
-	key := dbs.info.root
-	if len(dbs.info.hops) > 0 {
-		key = dbs.info.hops[len(dbs.info.hops)-1].next
-	}
-	return key
-}
-
 func (dbs *dhtBootstrap) MarshalBinary() (data []byte, err error) {
 	return dbs.info.MarshalBinary()
 }
@@ -386,14 +400,6 @@ type dhtSetup struct {
 	sig    signature
 	source publicKey
 	dest   treeInfo
-}
-
-func (s *dhtSetup) destKey() publicKey {
-	key := s.dest.root
-	if len(s.dest.hops) > 0 {
-		key = s.dest.hops[len(s.dest.hops)-1].next
-	}
-	return key
 }
 
 func (s *dhtSetup) bytesForSig() []byte {
