@@ -2,6 +2,7 @@ package net
 
 import (
 	"bytes"
+	"time"
 
 	"github.com/Arceliar/phony"
 )
@@ -17,6 +18,7 @@ type dhtree struct {
 	dinfos map[string]*dhtInfo  // map[string(publicKey)]*dhtInfo, key=source
 	self   *treeInfo            // self info
 	succ   *treeInfo            // successor in tree, who we maintain a path to
+	timer  *time.Timer          // time.AfterFunc to send bootstrap packets
 }
 
 func (t *dhtree) init(c *core) {
@@ -24,6 +26,7 @@ func (t *dhtree) init(c *core) {
 	t.tinfos = make(map[string]*treeInfo)
 	t.dinfos = make(map[string]*dhtInfo)
 	t.self = &treeInfo{root: t.core.crypto.publicKey}
+	t.timer = time.AfterFunc(0, func() { t.Act(nil, t._findSuccessor) })
 }
 
 func (t *dhtree) update(from phony.Actor, info *treeInfo) {
@@ -35,6 +38,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 			t.self = nil
 		}
 		t._fix()
+		t._findSuccessor()
 	})
 }
 
@@ -157,25 +161,29 @@ func (t *dhtree) _keyspaceLookup(dest publicKey, reverse bool) publicKey {
 	return bestPeer
 }
 
+func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
+	dest := bootstrap.info.dest()
+	switch {
+	case !bytes.Equal(dest, t.core.crypto.privateKey):
+		next := t._dhtBootstrapLookup(dest)
+		t.core.peers.sendBootstrap(t, next, bootstrap)
+		return
+	case t.succ == nil:
+	case dhtOrdered(t.core.crypto.publicKey, dest, t.succ.dest(), false):
+	default:
+		// We already have a better successor
+		return
+	}
+	if t.succ != nil {
+		t._teardown(t.core.crypto.publicKey, &dhtTeardown{source: t.succ.dest()})
+	}
+	t.succ = &bootstrap.info
+	t._handleSetup(t.core.crypto.publicKey, t.newSetup(t.succ))
+}
+
 func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	t.Act(from, func() {
-		dest := bootstrap.info.dest()
-		switch {
-		case !bytes.Equal(dest, t.core.crypto.privateKey):
-			next := t._dhtBootstrapLookup(dest)
-			t.core.peers.sendBootstrap(t, next, bootstrap)
-			return
-		case t.succ == nil:
-		case dhtOrdered(t.core.crypto.publicKey, dest, t.succ.dest(), false):
-		default:
-			// We already have a better successor
-			return
-		}
-		if t.succ != nil {
-			t._teardown(t.core.crypto.publicKey, &dhtTeardown{source: t.succ.dest()})
-		}
-		t.succ = &bootstrap.info
-		t._handleSetup(t.core.crypto.publicKey, t.newSetup(t.succ))
+		t._handleBootstrap(bootstrap)
 	})
 }
 
@@ -223,6 +231,15 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 		}
 		delete(t.dinfos, string(teardown.source))
 		t.core.peers.sendTeardown(t, next, teardown)
+		if t.succ == nil {
+			return
+		} else if !bytes.Equal(dinfo.source, t.core.crypto.publicKey) {
+			return
+		} else if !bytes.Equal(dinfo.dest, t.succ.dest()) {
+			return
+		}
+		t.succ = nil
+		t._findSuccessor()
 	} else {
 		panic("DEBUG teardown of nonexistant path")
 	}
@@ -232,6 +249,14 @@ func (t *dhtree) teardown(from phony.Actor, peerKey publicKey, teardown *dhtTear
 	t.Act(from, func() {
 		t._teardown(peerKey, teardown)
 	})
+}
+
+func (t *dhtree) _findSuccessor() {
+	if t.timer != nil && t.succ == nil {
+		t._handleBootstrap(&dhtBootstrap{info: *t.self})
+		t.timer.Stop()
+		t.timer = time.AfterFunc(time.Second, func() { t.Act(nil, t._findSuccessor) })
+	}
 }
 
 /************
