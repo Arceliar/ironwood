@@ -333,6 +333,31 @@ type dhtInfo struct {
 	dest   publicKey
 }
 
+/****************
+ * dhtBootstrap *
+ ****************/
+
+type dhtBootstrap struct {
+	info treeInfo
+}
+
+func (dbs *dhtBootstrap) check() bool {
+	return dbs.info.checkLoops() && dbs.info.checkSigs()
+}
+
+func (dbs *dhtBootstrap) MarshalBinary() (data []byte, err error) {
+	return dbs.info.MarshalBinary()
+}
+
+func (dbs *dhtBootstrap) UnmarshalBinary(data []byte) error {
+	var tmp dhtBootstrap
+	if err := tmp.info.UnmarshalBinary(data); err != nil {
+		return err
+	}
+	*dbs = tmp
+	return nil
+}
+
 /************
  * dhtSetup *
  ************/
