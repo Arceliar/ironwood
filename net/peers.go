@@ -85,7 +85,7 @@ type peer struct {
 	info        *treeInfo
 }
 
-func (p *peer) write(bs []byte) {
+func (p *peer) _write(bs []byte) {
 	out := make([]byte, 8+len(bs))
 	binary.BigEndian.PutUint64(out[:8], uint64(len(bs)))
 	copy(out[8:], bs)
@@ -108,7 +108,7 @@ func (p *peer) handler() error {
 			return
 		default:
 		}
-		p.write([]byte{wireDummy})
+		p._write([]byte{wireDummy})
 		time.AfterFunc(time.Second, keepAlive)
 	}
 	var info *treeInfo
@@ -149,8 +149,11 @@ func (p *peer) handlePacket(bs []byte) error {
 	case wireDummy:
 		return nil
 	case wireProtoTree:
-		err := p.handleTree(bs[1:])
-		return err
+		return p.handleTree(bs[1:])
+	case wireProtoDHTSetup:
+		return p.handleSetup(bs[1:])
+	case wireProtoDHTTeardown:
+		return p.handleTeardown(bs[1:])
 	default:
 		return errors.New("unrecognized packet type")
 	}
@@ -176,23 +179,53 @@ func (p *peer) handleTree(bs []byte) error {
 	return nil
 }
 
+func (p *peer) _sendProto(pType byte, data binaryMarshaler) {
+	bs, _ := data.MarshalBinary()
+	bs = append([]byte{pType}, bs...)
+	p._write(bs)
+}
+
 func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
 	p.Act(from, func() {
 		info = info.add(p.peers.core.crypto.privateKey, p.key)
-		bs, _ := info.MarshalBinary()
-		bs = append([]byte{wireProtoTree}, bs...)
-		p.write(bs)
+		p._sendProto(wireProtoTree, info)
 	})
 }
 
-func (p *peer) sendTeardown(from phony.Actor, source publicKey) {
-	p.Act(from, func() {
-		panic("TODO send teardown")
+func (p *peer) handleSetup(bs []byte) error {
+	setup := new(dhtSetup)
+	if err := setup.UnmarshalBinary(bs); err != nil {
+		return err
+	}
+	if !setup.check() {
+		return errors.New("invalid setup")
+	}
+	p.peers.core.dhtree.Act(nil, func() {
+		p.peers.core.dhtree._handleSetup(p.key, setup)
 	})
+	return nil
 }
 
 func (p *peer) sendSetup(from phony.Actor, setup *dhtSetup) {
 	p.Act(from, func() {
-		panic("TODO send setup")
+		p._sendProto(wireProtoDHTSetup, setup)
+	})
+}
+
+func (p *peer) handleTeardown(bs []byte) error {
+	if len(bs) != publicKeySize {
+		return wireUnmarshalBinaryError
+	}
+	source := publicKey(bs)
+	p.peers.core.dhtree.Act(nil, func() {
+		p.peers.core.dhtree._teardown(p.key, source)
+	})
+	return nil
+}
+
+func (p *peer) sendTeardown(from phony.Actor, source publicKey) {
+	p.Act(from, func() {
+		bs := append([]byte{wireProtoDHTTeardown}, source...)
+		p._write(bs)
 	})
 }

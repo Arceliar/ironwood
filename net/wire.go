@@ -1,14 +1,20 @@
 package net
 
-import "errors"
+import (
+	"encoding"
+	"errors"
+)
 
 const (
 	wireDummy = iota // unused
 	wireProtoTree
 	wireProtoDHTBootstrap
 	wireProtoDHTSetup
-	WireProtoDHTTeardown
+	wireProtoDHTTeardown
 )
+
+type binaryMarshaler encoding.BinaryMarshaler
+type binaryUnmarshaler encoding.BinaryUnmarshaler
 
 var wireMarshalBinaryError = errors.New("wire MarshalBinary error")
 var wireUnmarshalBinaryError = errors.New("wire UnmarshalBinary error")
