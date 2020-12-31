@@ -146,6 +146,7 @@ func (t *dhtree) _keyspaceLookup(dest publicKey, reverse bool) publicKey {
 		}
 	}
 	// Finally check paths from the dht
+	//FIXME this is broken when dest equals the source/dest
 	for _, info := range t.dinfos {
 		if !reverse && dhtOrdered(dest, info.source, best, false) {
 			best = info.source

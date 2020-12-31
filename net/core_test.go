@@ -43,6 +43,8 @@ func TestTwoNodes(t *testing.T) {
 			break
 		}
 	}
+	timer.Stop()
+	timer = time.NewTimer(time.Second)
 	for {
 		select {
 		case <-timer.C:
@@ -67,6 +69,29 @@ func TestTwoNodes(t *testing.T) {
 			continue
 		}
 		if !bytes.Equal(lB, tA.core.crypto.publicKey) {
+			continue
+		}
+		break
+	}
+	timer.Stop()
+	timer = time.NewTimer(3 * time.Second)
+	for {
+		select {
+		case <-timer.C:
+			panic("timeout")
+		default:
+		}
+		var sA, sB bool
+		phony.Block(tA, func() {
+			sA = tA.succ != nil
+		})
+		phony.Block(tB, func() {
+			sB = tB.succ != nil
+		})
+		if !sA {
+			continue
+		}
+		if !sB {
 			continue
 		}
 		break
