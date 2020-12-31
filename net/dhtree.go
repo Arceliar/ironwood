@@ -123,24 +123,21 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
 }
 
 func (t *dhtree) _keyspaceLookup(dest publicKey, isBootstrap bool) publicKey {
-	// Initialize to self
-	best := t.core.crypto.publicKey
-	bestPeer := best
-	// First check treeInfo
-	if dhtOrdered(dest, t.self.root, best, isBootstrap) {
-		best = t.self.root
-		bestPeer = t.self.from()
-	}
+	// Initialize to root, note that this may be self in some cases...
+	best := t.self.root
+	bestPeer := t.self.from()
+	equalFix := func() bool { return isBootstrap && bytes.Equal(dest, best) }
 	for _, hop := range t.self.hops {
-		if dhtOrdered(dest, hop.next, best, isBootstrap) {
-			best = t.self.root
+		// FIXME? edge case where dest/best/next are exactly equal?
+		if equalFix() || dhtOrdered(dest, hop.next, best, isBootstrap) {
+			best = hop.next
 			bestPeer = t.self.from()
 		}
 	}
 	// Next check peers
 	for _, info := range t.tinfos {
 		peer := info.from()
-		if dhtOrdered(dest, peer, best, isBootstrap) {
+		if equalFix() || dhtOrdered(dest, peer, best, isBootstrap) {
 			best = peer
 			bestPeer = peer
 		}
@@ -151,16 +148,15 @@ func (t *dhtree) _keyspaceLookup(dest publicKey, isBootstrap bool) publicKey {
 		var target, peer publicKey
 		if !isBootstrap {
 			target, peer = info.source, info.prev
-		} else {
-			target, peer = info.dest, info.next
-		}
-		if bytes.Equal(dest, target) {
 			if !bytes.Equal(best, target) {
 				doUpdate = true
 			} else if treeLess(bestPeer, peer) {
 				doUpdate = true
 			}
-		} else if dhtOrdered(dest, target, best, isBootstrap) {
+		} else {
+			target, peer = info.dest, info.next
+		}
+		if equalFix() || dhtOrdered(dest, target, best, isBootstrap) {
 			doUpdate = true
 		}
 		if doUpdate {
@@ -178,6 +174,9 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	case !bytes.Equal(next, t.core.crypto.publicKey):
 		t.core.peers.sendBootstrap(t, next, bootstrap)
 		return
+	case bytes.Equal(bootstrap.info.dest(), t.core.crypto.publicKey):
+		// This is our own bootstrap, but we failed to find a next hop
+		return
 	case t.succ == nil:
 	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest(), false):
 	default:
@@ -187,7 +186,6 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	if t.succ != nil {
 		t._teardown(t.core.crypto.publicKey, &dhtTeardown{source: t.succ.dest()})
 	}
-	// FIXME this is broken, sometimes succ == self
 	t.succ = &bootstrap.info
 	t._handleSetup(t.core.crypto.publicKey, t.newSetup(t.succ))
 }

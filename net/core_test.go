@@ -48,7 +48,7 @@ func TestTwoNodes(t *testing.T) {
 	for {
 		select {
 		case <-timer.C:
-			panic("timeout")
+			panic("timeout") // FIXME, thing seem to busyloop and prevent the tree from reaching a working state
 		default:
 		}
 		var sA, sB *treeInfo
