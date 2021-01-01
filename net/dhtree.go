@@ -1,7 +1,6 @@
 package net
 
 import (
-	"bytes"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -34,7 +33,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 		// The tree info should have been checked before this point
 		key := info.from()
 		t.tinfos[string(key)] = info
-		if bytes.Equal(key, t.self.from()) {
+		if key.equal(t.self.from()) {
 			t.self = nil
 		}
 		t._fix()
@@ -46,12 +45,12 @@ func (t *dhtree) remove(from phony.Actor, info *treeInfo) {
 	t.Act(from, func() {
 		key := info.from()
 		delete(t.tinfos, string(key))
-		if bytes.Equal(key, t.self.from()) {
+		if key.equal(t.self.from()) {
 			t.self = nil
 			t._fix()
 		}
 		for _, dinfo := range t.dinfos {
-			if bytes.Equal(key, dinfo.prev) || bytes.Equal(key, dinfo.prev) {
+			if key.equal(dinfo.prev) || key.equal(dinfo.prev) {
 				t._teardown(key, &dhtTeardown{source: dinfo.source})
 			}
 		}
@@ -107,7 +106,7 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 			bestDist = dist
 		}
 	}
-	if !bytes.Equal(best.root, dest.root) {
+	if !best.root.equal(dest.root) {
 		// Dead end, so stay here
 		return t.core.crypto.publicKey
 	}
@@ -126,7 +125,7 @@ func (t *dhtree) _keyspaceLookup(dest publicKey, isBootstrap bool) publicKey {
 	// Initialize to root, note that this may be self in some cases...
 	best := t.self.root
 	bestPeer := t.self.from()
-	equalFix := func() bool { return isBootstrap && bytes.Equal(dest, best) }
+	equalFix := func() bool { return isBootstrap && dest.equal(best) }
 	for _, hop := range t.self.hops {
 		// FIXME? edge case where dest/best/next are exactly equal?
 		if equalFix() || dhtOrdered(dest, hop.next, best, isBootstrap) {
@@ -148,7 +147,7 @@ func (t *dhtree) _keyspaceLookup(dest publicKey, isBootstrap bool) publicKey {
 		var target, peer publicKey
 		if !isBootstrap {
 			target, peer = info.source, info.prev
-			if !bytes.Equal(best, target) {
+			if !best.equal(target) {
 				doUpdate = true
 			} else if treeLess(bestPeer, peer) {
 				doUpdate = true
@@ -171,10 +170,10 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	source := bootstrap.info.dest()
 	next := t._dhtBootstrapLookup(source)
 	switch {
-	case !bytes.Equal(next, t.core.crypto.publicKey):
+	case !t.core.crypto.publicKey.equal(next):
 		t.core.peers.sendBootstrap(t, next, bootstrap)
 		return
-	case bytes.Equal(bootstrap.info.dest(), t.core.crypto.publicKey):
+	case t.core.crypto.publicKey.equal(bootstrap.info.dest()):
 		// This is our own bootstrap, but we failed to find a next hop
 		return
 	case t.succ == nil:
@@ -213,7 +212,7 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	}
 	next := t._treeLookup(&setup.dest)
 	dest := setup.dest.dest()
-	if bytes.Equal(t.core.crypto.publicKey, next) && !bytes.Equal(next, dest) {
+	if t.core.crypto.publicKey.equal(next) && !next.equal(dest) {
 		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
 		return
 	}
@@ -235,9 +234,9 @@ func (t *dhtree) handleSetup(from phony.Actor, prev publicKey, setup *dhtSetup) 
 func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 	if dinfo, isIn := t.dinfos[string(teardown.source)]; isIn {
 		var next publicKey
-		if bytes.Equal(from, dinfo.prev) {
+		if from.equal(dinfo.prev) {
 			next = dinfo.next
-		} else if bytes.Equal(from, dinfo.next) {
+		} else if from.equal(dinfo.next) {
 			next = dinfo.prev
 		} else {
 			panic("DEBUG teardown of nonexistant path")
@@ -246,9 +245,9 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 		t.core.peers.sendTeardown(t, next, teardown)
 		if t.succ == nil {
 			return
-		} else if !bytes.Equal(dinfo.source, t.core.crypto.publicKey) {
+		} else if !dinfo.source.equal(t.core.crypto.publicKey) {
 			return
-		} else if !bytes.Equal(dinfo.dest, t.succ.dest()) {
+		} else if !dinfo.dest.equal(t.succ.dest()) {
 			return
 		}
 		t.succ = nil
@@ -348,7 +347,7 @@ func (info *treeInfo) add(priv privateKey, next publicKey) *treeInfo {
 }
 
 func (info *treeInfo) dist(dest *treeInfo) int {
-	if !bytes.Equal(info.root, dest.root) {
+	if !info.root.equal(dest.root) {
 		return int(^(uint(0)) >> 1) // max int, but you should really check this first
 	}
 	a := info.hops
@@ -358,7 +357,7 @@ func (info *treeInfo) dist(dest *treeInfo) int {
 	}
 	lcaIdx := -1 // last common ancestor
 	for idx := range a {
-		if !bytes.Equal(a[idx].next, b[idx].next) {
+		if !a[idx].next.equal(b[idx].next) {
 			break
 		}
 		lcaIdx = idx

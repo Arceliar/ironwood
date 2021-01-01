@@ -1,7 +1,6 @@
 package net
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -176,11 +175,11 @@ func (p *peer) handleTree(bs []byte) error {
 	if !info.checkSigs() {
 		return errors.New("invalid signature")
 	}
-	if !bytes.Equal(p.key, info.from()) {
+	if !p.key.equal(info.from()) {
 		return errors.New("unrecognized publicKey")
 	}
 	dest := info.hops[len(info.hops)-1].next
-	if !bytes.Equal(p.peers.core.crypto.publicKey, dest) {
+	if !p.peers.core.crypto.publicKey.equal(dest) {
 		return errors.New("incorrect destination")
 	}
 	p.info = info
