@@ -11,6 +11,7 @@ const (
 	wireProtoDHTBootstrap
 	wireProtoDHTSetup
 	wireProtoDHTTeardown
+	wireDHTTraffic
 )
 
 type binaryMarshaler encoding.BinaryMarshaler

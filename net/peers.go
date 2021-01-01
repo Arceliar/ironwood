@@ -84,6 +84,14 @@ func (ps *peers) sendSetup(from phony.Actor, peerKey publicKey, setup *dhtSetup)
 	})
 }
 
+func (ps *peers) sendDHTTraffic(from phony.Actor, peerKey publicKey, tr *dhtTraffic) {
+	ps.Act(from, func() {
+		if p, isIn := ps.peers[string(peerKey)]; isIn {
+			p.sendDHTTraffic(ps, tr)
+		}
+	})
+}
+
 type peer struct {
 	phony.Inbox // Only used to process or send some protocol traffic
 	peers       *peers
@@ -250,5 +258,20 @@ func (p *peer) handleTeardown(bs []byte) error {
 func (p *peer) sendTeardown(from phony.Actor, teardown *dhtTeardown) {
 	p.Act(from, func() {
 		p._sendProto(wireProtoDHTTeardown, teardown)
+	})
+}
+
+func (p *peer) handleDHTTraffic(bs []byte) error {
+	tr := new(dhtTraffic)
+	if err := tr.UnmarshalBinary(bs); err != nil {
+		return err
+	}
+	p.peers.core.dhtree.handleDHTTraffic(nil, tr)
+	return nil
+}
+
+func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
+	p.Act(from, func() {
+		p._sendProto(wireDHTTraffic, tr)
 	})
 }

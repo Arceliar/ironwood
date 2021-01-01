@@ -255,6 +255,18 @@ func (t *dhtree) _findSuccessor() {
 	}
 }
 
+func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic) {
+	t.Act(from, func() {
+		next := t._dhtLookup(tr.dest)
+		if next.equal(t.core.crypto.publicKey) {
+			// TODO handle traffic to self
+			panic("TODO handle traffic to self")
+		} else {
+			t.core.peers.sendDHTTraffic(t, next, tr)
+		}
+	})
+}
+
 /************
  * treeInfo *
  ************/
@@ -485,6 +497,37 @@ func (t *dhtTeardown) UnmarshalBinary(data []byte) error {
 		return wireUnmarshalBinaryError
 	}
 	*t = tmp
+	return nil
+}
+
+/**************
+ * dhtTraffic *
+ **************/
+
+type dhtTraffic struct {
+	source  publicKey
+	dest    publicKey
+	payload []byte
+}
+
+func (t *dhtTraffic) MarshalBinary() (data []byte, err error) {
+	data = append(data, t.source...)
+	data = append(data, t.dest...)
+	data = append(data, t.payload...)
+	return
+}
+
+func (t *dhtTraffic) UnmarshalBinary(data []byte) error {
+	var tr dhtTraffic
+	if !wireChopBytes((*[]byte)(&tr.source), &data, publicKeySize) {
+		return wireUnmarshalBinaryError
+	} else if !wireChopBytes((*[]byte)(&tr.dest), &data, publicKeySize) {
+		return wireUnmarshalBinaryError
+	} else if len(data) == 0 {
+		return wireUnmarshalBinaryError
+	}
+	t.payload = append([]byte(nil), data...)
+	*t = tr
 	return nil
 }
 
