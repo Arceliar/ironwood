@@ -93,6 +93,46 @@ func TestTwoNodes(t *testing.T) {
 		}
 		break
 	}
+	timer.Stop()
+	timer = time.NewTimer(3 * time.Second)
+	addrA := a.LocalAddr()
+	addrB := b.LocalAddr()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		msg := make([]byte, 2048)
+		n, from, err := b.ReadFrom(msg)
+		panic(2)
+		if err != nil {
+			panic("err")
+		}
+		msg = msg[:n]
+		aA := *(addrA.(*Addr))
+		fA := *(from.(*Addr))
+		if !bytes.Equal(aA, fA) {
+			panic("wrong source address")
+		}
+	}()
+	go func() {
+		msg := []byte("test")
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			println("DEBUG send:", addrA.String(), addrB.String())
+			if _, err := a.WriteTo(msg, addrB); err != nil {
+				panic(err)
+			}
+			time.Sleep(time.Second)
+		}
+	}()
+	select {
+	case <-timer.C:
+		panic("timeout")
+	case <-done:
+	}
 }
 
 /*************

@@ -70,6 +70,8 @@ func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, teardown *dht
 	ps.Act(from, func() {
 		if p, isIn := ps.peers[string(peerKey)]; isIn {
 			p.sendTeardown(ps, teardown)
+		} else {
+			panic("DEBUG tried to send teardown to nonexistant peer")
 		}
 	})
 }
@@ -105,6 +107,9 @@ func (p *peer) _write(bs []byte) {
 	binary.BigEndian.PutUint64(out[:8], uint64(len(bs)))
 	copy(out[8:], bs)
 	p.conn.Write(out)
+	if bs[0] == wireProtoDHTTeardown {
+		panic("DEBUG write")
+	}
 }
 
 func (p *peer) handler() error {
@@ -247,6 +252,7 @@ func (p *peer) sendSetup(from phony.Actor, setup *dhtSetup) {
 }
 
 func (p *peer) handleTeardown(bs []byte) error {
+	panic("DEBUG ht1") // FIXME this isn't triggered, even though we send teardowns...
 	teardown := new(dhtTeardown)
 	if err := teardown.UnmarshalBinary(bs); err != nil {
 		return err

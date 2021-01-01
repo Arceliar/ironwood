@@ -23,6 +23,14 @@ type packetConn struct {
 
 type Addr publicKey
 
+func (key *publicKey) addr() *Addr {
+	return (*Addr)(key)
+}
+
+func (a *Addr) key() publicKey {
+	return publicKey(*a)
+}
+
 func (a *Addr) Network() string {
 	return "ed25519.PublicKey"
 }
@@ -46,14 +54,14 @@ func (pc *packetConn) init(c *core) {
 
 func (pc *packetConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	// TODO timeout, also sanity check dest address
+	//  maybe return an error that contains the dest address if it's not an exact match?
 	tr := <-pc.recv
 	copy(p, tr.payload)
 	n = len(tr.payload)
 	if len(p) < len(tr.payload) {
 		n = len(p)
 	}
-	a := Addr(tr.source)
-	addr = &a
+	addr = tr.source.addr()
 	return
 }
 
@@ -61,7 +69,7 @@ func (pc *packetConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if _, ok := addr.(*Addr); !ok {
 		return 0, errors.New("incorrect address type")
 	}
-	dest := publicKey(*addr.(*Addr))
+	dest := addr.(*Addr).key()
 	if len(dest) != publicKeySize {
 		return 0, errors.New("incorrect address length")
 	}
@@ -79,8 +87,8 @@ func (pc *packetConn) Close() error {
 }
 
 func (pc *packetConn) LocalAddr() net.Addr {
-	panic("TODO implemnet LocalAddr")
-	return nil
+	a := Addr(pc.core.crypto.publicKey)
+	return &a
 }
 
 func (pc *packetConn) SetDeadline(t time.Time) error {
@@ -114,7 +122,7 @@ func (pc *packetConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	return err
 }
 
-func (pc *packetConn) handlePacket(from phony.Actor, tr *dhtTraffic) {
+func (pc *packetConn) handleTraffic(from phony.Actor, tr *dhtTraffic) {
 	from = nil // TODO buffer things intelligently, instead of just the actor queue
 	pc.actor.Act(from, func() {
 		pc.recv <- tr
