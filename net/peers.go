@@ -188,8 +188,10 @@ func (p *peer) handleTree(bs []byte) error {
 }
 
 func (p *peer) _sendProto(pType byte, data binaryMarshaler) {
-	bs, _ := data.MarshalBinary()
-	bs = append([]byte{pType}, bs...)
+	bs, err := wireEncode(pType, data)
+	if err != nil {
+		panic(err)
+	}
 	p._write(bs)
 }
 

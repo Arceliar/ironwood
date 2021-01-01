@@ -190,7 +190,7 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if _, isIn := t.dinfos[string(setup.source)]; isIn {
 		// Already have a path from this source
 		// FIXME need to delete the old path too... anything else?
-		panic("DEBUG")
+		panic("DEBUG duplicate setup")
 		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
 		return
 	}
