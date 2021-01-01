@@ -1,7 +1,6 @@
 package net
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -88,6 +87,9 @@ func (t *dhtree) _fix() {
 }
 
 func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
+	if t.core.crypto.publicKey.equal(dest.dest()) {
+		return t.core.crypto.publicKey
+	}
 	best := t.self
 	bestDist := best.dist(dest)
 	for _, info := range t.tinfos {
@@ -188,7 +190,6 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if _, isIn := t.dinfos[string(setup.source)]; isIn {
 		// Already have a path from this source
 		// FIXME need to delete the old path too... anything else?
-		fmt.Println("DEBUG", t.core.crypto.publicKey, setup.source, prev)
 		panic("DEBUG")
 		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
 		return
