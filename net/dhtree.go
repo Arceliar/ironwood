@@ -1,6 +1,7 @@
 package net
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -114,55 +115,35 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 }
 
 func (t *dhtree) _dhtLookup(dest publicKey) publicKey {
-	return t._keyspaceLookup(dest, false)
+	best := t.core.crypto.publicKey
+	bestPeer := t.core.crypto.publicKey
+	for _, info := range t.dinfos {
+		if info.source.equal(dest) || dhtOrdered(dest, info.source, best) {
+			best = info.source
+			bestPeer = info.prev
+		}
+	}
+	// TODO use self/peer info, and share code with the below...
+	return bestPeer
 }
 
 func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
-	return t._keyspaceLookup(dest, true)
-}
-
-func (t *dhtree) _keyspaceLookup(dest publicKey, isBootstrap bool) publicKey {
-	// Initialize to root, note that this may be self in some cases...
 	best := t.self.root
 	bestPeer := t.self.from()
-	equalFix := func() bool { return isBootstrap && dest.equal(best) }
-	for _, hop := range t.self.hops {
-		// FIXME? edge case where dest/best/next are exactly equal?
-		if equalFix() || dhtOrdered(dest, hop.next, best, isBootstrap) {
-			best = hop.next
-			bestPeer = t.self.from()
-		}
-	}
-	// Next check peers
 	for _, info := range t.tinfos {
 		peer := info.from()
-		if equalFix() || dhtOrdered(dest, peer, best, isBootstrap) {
+		if best.equal(dest) || dhtOrdered(best, peer, dest) {
 			best = peer
 			bestPeer = peer
 		}
 	}
-	// Finally check paths from the dht
 	for _, info := range t.dinfos {
-		var doUpdate bool
-		var target, peer publicKey
-		if !isBootstrap {
-			target, peer = info.source, info.prev
-			if !best.equal(target) {
-				doUpdate = true
-			} else if treeLess(bestPeer, peer) {
-				doUpdate = true
-			}
-		} else {
-			target, peer = info.dest, info.next
-		}
-		if equalFix() || dhtOrdered(dest, target, best, isBootstrap) {
-			doUpdate = true
-		}
-		if doUpdate {
-			best = target
-			bestPeer = peer
+		if best.equal(dest) || dhtOrdered(best, info.dest, dest) {
+			best = info.dest
+			bestPeer = info.next
 		}
 	}
+	// FIXME use all hops in self info, and share code with the above...
 	return bestPeer
 }
 
@@ -177,7 +158,7 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 		// This is our own bootstrap, but we failed to find a next hop
 		return
 	case t.succ == nil:
-	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest(), false):
+	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest()):
 	default:
 		// We already have a better successor
 		return
@@ -207,6 +188,8 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if _, isIn := t.dinfos[string(setup.source)]; isIn {
 		// Already have a path from this source
 		// FIXME need to delete the old path too... anything else?
+		fmt.Println("DEBUG", t.core.crypto.publicKey, setup.source, prev)
+		panic("DEBUG")
 		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
 		return
 	}
@@ -520,10 +503,7 @@ func treeLess(key1, key2 publicKey) bool {
 	return false
 }
 
-func dhtOrdered(first, second, third publicKey, reverse bool) bool {
-	if reverse {
-		first, third = third, first
-	}
+func dhtOrdered(first, second, third publicKey) bool {
 	less12 := treeLess(first, second)
 	less23 := treeLess(second, third)
 	less31 := treeLess(third, first)
