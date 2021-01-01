@@ -2,9 +2,12 @@ package net
 
 import (
 	"crypto/ed25519"
+	"encoding/hex"
 	"errors"
 	"net"
 	"time"
+
+	"github.com/Arceliar/phony"
 )
 
 type PacketConn interface {
@@ -13,7 +16,19 @@ type PacketConn interface {
 }
 
 type packetConn struct {
-	core *core
+	actor phony.Inbox
+	core  *core
+	recv  chan *dhtTraffic // read buffer
+}
+
+type Addr publicKey
+
+func (a *Addr) Network() string {
+	return "ed25519.PublicKey"
+}
+
+func (a *Addr) String() string {
+	return hex.EncodeToString(*a)
 }
 
 func NewPacketConn(secret ed25519.PrivateKey) (PacketConn, error) {
@@ -26,16 +41,36 @@ func NewPacketConn(secret ed25519.PrivateKey) (PacketConn, error) {
 
 func (pc *packetConn) init(c *core) {
 	pc.core = c
+	pc.recv = make(chan *dhtTraffic, 1)
 }
 
 func (pc *packetConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	panic("TODO implement ReadFrom")
+	// TODO timeout, also sanity check dest address
+	tr := <-pc.recv
+	copy(p, tr.payload)
+	n = len(tr.payload)
+	if len(p) < len(tr.payload) {
+		n = len(p)
+	}
+	a := Addr(tr.source)
+	addr = &a
 	return
 }
 
 func (pc *packetConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	panic("TODO implement WriteTo")
-	return
+	if _, ok := addr.(*Addr); !ok {
+		return 0, errors.New("incorrect address type")
+	}
+	dest := publicKey(*addr.(*Addr))
+	if len(dest) != publicKeySize {
+		return 0, errors.New("incorrect address length")
+	}
+	tr := new(dhtTraffic)
+	tr.source = append(tr.source, pc.core.crypto.publicKey...)
+	tr.dest = append(tr.dest, dest...)
+	tr.payload = append(tr.payload, p...)
+	pc.core.dhtree.handleDHTTraffic(nil, tr)
+	return len(p), nil
 }
 
 func (pc *packetConn) Close() error {
@@ -77,4 +112,11 @@ func (pc *packetConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 		return e
 	}
 	return err
+}
+
+func (pc *packetConn) handlePacket(from phony.Actor, tr *dhtTraffic) {
+	from = nil // TODO buffer things intelligently, instead of just the actor queue
+	pc.actor.Act(from, func() {
+		pc.recv <- tr
+	})
 }
