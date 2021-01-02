@@ -206,11 +206,8 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	dinfo.prev = prev
 	dinfo.next = next
 	dinfo.dest = dest
-	println("DEBUG s:", t.core.crypto.publicKey.addr().String(), dinfo.source.addr().String(), dinfo.dest.addr().String())
 	t.dinfos[string(dinfo.source)] = dinfo
-	if true || !t.core.crypto.publicKey.equal(next) {
-		// FIXME we send ourself a teardown if this is to ourself (because of the true || part)
-		// We *should* forward this teardown to the source, but we don't?
+	if !t.core.crypto.publicKey.equal(next) {
 		t.core.peers.sendSetup(t, next, setup)
 	}
 }
@@ -235,15 +232,13 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 		if !next.equal(t.core.crypto.publicKey) {
 			t.core.peers.sendTeardown(t, next, teardown)
 		}
-		println("DEBUG t:", t.core.crypto.publicKey.addr().String(), teardown.source.addr().String(), from.addr().String(), next.addr().String())
 		if t.succ == nil {
 			return
 		} else if !dinfo.source.equal(t.core.crypto.publicKey) {
 			return
-		} else if false && !dinfo.dest.equal(t.succ.dest()) {
+		} else if !dinfo.dest.equal(t.succ.dest()) {
 			return
 		}
-		panic("DEBUG")
 		t.succ = nil
 		t._findSuccessor()
 	} else {
@@ -268,10 +263,6 @@ func (t *dhtree) _findSuccessor() {
 func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 	t.Act(from, func() {
 		next := t._dhtLookup(tr.dest)
-		println("DEBUG h1:", t.core.crypto.publicKey.addr().String(), tr.source.addr().String(), tr.dest.addr().String(), next.addr().String(), len(t.dinfos))
-		for _, info := range t.dinfos {
-			println("DEBUG h2:", t.core.crypto.publicKey.addr().String(), info.source.addr().String(), info.dest.addr().String())
-		}
 		if next.equal(t.core.crypto.publicKey) {
 			t.core.pconn.handleTraffic(t, tr)
 		} else {

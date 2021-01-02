@@ -102,7 +102,6 @@ func TestTwoNodes(t *testing.T) {
 		defer close(done)
 		msg := make([]byte, 2048)
 		n, from, err := b.ReadFrom(msg)
-		panic(2)
 		if err != nil {
 			panic("err")
 		}
@@ -121,7 +120,6 @@ func TestTwoNodes(t *testing.T) {
 				return
 			default:
 			}
-			println("DEBUG send:", addrA.String(), addrB.String())
 			if _, err := a.WriteTo(msg, addrB); err != nil {
 				panic(err)
 			}

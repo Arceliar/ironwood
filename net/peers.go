@@ -172,6 +172,8 @@ func (p *peer) handlePacket(bs []byte) error {
 		return p.handleSetup(bs[1:])
 	case wireProtoDHTTeardown:
 		return p.handleTeardown(bs[1:])
+	case wireDHTTraffic:
+		return p.handleDHTTraffic(bs[1:])
 	default:
 		return errors.New("unrecognized packet type")
 	}

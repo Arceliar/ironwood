@@ -116,7 +116,6 @@ func (pc *packetConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 		return err
 	}
 	err = p.handler()
-	println("DEBUG HandleConn", err.Error())
 	if e := pc.core.peers.removePeer(publicKey(key)); e != nil {
 		return e
 	}
