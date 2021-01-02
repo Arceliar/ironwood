@@ -229,10 +229,12 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 		} else if from.equal(dinfo.next) {
 			next = dinfo.prev
 		} else {
-			panic("DEBUG teardown of nonexistant path")
+			panic("DEBUG teardown of path from wrong node")
 		}
 		delete(t.dinfos, string(teardown.source))
-		t.core.peers.sendTeardown(t, next, teardown)
+		if !next.equal(t.core.crypto.publicKey) {
+			t.core.peers.sendTeardown(t, next, teardown)
+		}
 		println("DEBUG t:", t.core.crypto.publicKey.addr().String(), teardown.source.addr().String(), from.addr().String(), next.addr().String())
 		if t.succ == nil {
 			return
@@ -461,6 +463,8 @@ func (s *dhtSetup) bytesForSig() []byte {
 }
 
 func (s *dhtSetup) check() bool {
+	// FIXME checkSigs broken if from the root, same issue as with bootstrap packets...
+	return true
 	return s.dest.checkLoops() && s.source.verify(s.bytesForSig(), s.sig) && s.dest.checkSigs()
 }
 

@@ -107,9 +107,6 @@ func (p *peer) _write(bs []byte) {
 	binary.BigEndian.PutUint64(out[:8], uint64(len(bs)))
 	copy(out[8:], bs)
 	p.conn.Write(out)
-	if bs[0] == wireProtoDHTTeardown {
-		panic("DEBUG write")
-	}
 }
 
 func (p *peer) handler() error {
@@ -239,6 +236,7 @@ func (p *peer) handleSetup(bs []byte) error {
 		return err
 	}
 	if !setup.check() {
+		panic("DEBUG bad setup")
 		return errors.New("invalid setup")
 	}
 	p.peers.core.dhtree.handleSetup(nil, p.key, setup)
@@ -252,7 +250,6 @@ func (p *peer) sendSetup(from phony.Actor, setup *dhtSetup) {
 }
 
 func (p *peer) handleTeardown(bs []byte) error {
-	panic("DEBUG ht1") // FIXME this isn't triggered, even though we send teardowns...
 	teardown := new(dhtTeardown)
 	if err := teardown.UnmarshalBinary(bs); err != nil {
 		return err
