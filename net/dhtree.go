@@ -153,6 +153,8 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
 }
 
 func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
+  // FIXME we need better sanity checks before removing an existing successor
+  //  e.g. test _treeLookup first
 	source := bootstrap.info.dest()
 	next := t._dhtBootstrapLookup(source)
 	switch {
@@ -181,7 +183,7 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	setup := t.newSetup(&bootstrap.info)
 	t._handleSetup(t.core.crypto.publicKey, setup)
 	if t.succ == nil {
-		panic("this also should never happen")
+		//panic("this also should never happen")
 		// FIXME this can happen if treeLookup fails to find a next hop...
 		//  but then, we shouldn't be getting rid of our old successor...
 	}
@@ -207,9 +209,11 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if dinfo, isIn := t.dinfos[string(setup.source)]; isIn {
 		// Already have a path from this source
 		// FIXME need to delete the old path too... anything else?
-		println("DEBUG duplicate setup", t.core.crypto.publicKey.addr().String(), prev.addr().String(), setup.source.addr().String(), setup.seq, dinfo.source.addr().String(), dinfo.seq)
-		panic("DEBUG duplicate setup")
-		t.core.peers.sendTeardown(t, prev, setup.getTeardown())
+		if dinfo.seq != setup.seq {
+		  println("DEBUG duplicate setup", t.core.crypto.publicKey.addr().String(), prev.addr().String(), setup.source.addr().String(), setup.seq, dinfo.source.addr().String(), dinfo.seq)
+		  panic("DEBUG duplicate setup")
+		  t.core.peers.sendTeardown(t, prev, setup.getTeardown())
+		}
 		return
 	}
 	next := t._treeLookup(&setup.dest)
@@ -224,6 +228,7 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 		return
 	}
 	dinfo := new(dhtInfo)
+	dinfo.seq = setup.seq
 	dinfo.source = setup.source
 	dinfo.prev = prev
 	dinfo.next = next
@@ -287,7 +292,7 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 		t.succ = nil
 		t._findSuccessor()
 	} else {
-		panic("DEBUG teardown of nonexistant path")
+		//panic("DEBUG teardown of nonexistant path")
 	}
 }
 

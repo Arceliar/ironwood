@@ -166,7 +166,8 @@ func TestLineNetwork(t *testing.T) {
 	}
 	close(wait)
 	// TODO test sending packets
-	time.Sleep(time.Second)
+	time.Sleep(10*time.Second)
+	panic("debug")
 }
 
 /*************
