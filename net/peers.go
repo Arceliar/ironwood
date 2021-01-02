@@ -195,6 +195,8 @@ func (p *peer) handleTree(bs []byte) error {
 	}
 	dest := info.hops[len(info.hops)-1].next
 	if !p.peers.core.crypto.publicKey.equal(dest) {
+		println("DEBUG: incorrect destination:", p.peers.core.crypto.publicKey.addr().String(), dest.addr().String())
+		panic("This shouldn't happen in testing")
 		return errors.New("incorrect destination")
 	}
 	p.info = info
