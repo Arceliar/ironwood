@@ -83,10 +83,10 @@ func TestTwoNodes(t *testing.T) {
 		}
 		var sA, sB bool
 		phony.Block(tA, func() {
-			sA = tA.succ != nil && !bytes.Equal(tA.succ.dest(), tA.core.crypto.publicKey)
+			sA = tA.succ != nil && !bytes.Equal(tA.succ.dest, tA.core.crypto.publicKey)
 		})
 		phony.Block(tB, func() {
-			sB = tB.succ != nil && !bytes.Equal(tB.succ.dest(), tB.core.crypto.publicKey)
+			sB = tB.succ != nil && !bytes.Equal(tB.succ.dest, tB.core.crypto.publicKey)
 		})
 		if !sA || !sB {
 			continue

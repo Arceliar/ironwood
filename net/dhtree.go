@@ -17,8 +17,8 @@ type dhtree struct {
 	tinfos map[string]*treeInfo // map[string(publicKey)]*treeInfo, key=peer
 	dinfos map[string]*dhtInfo  // map[string(publicKey)]*dhtInfo, key=source
 	self   *treeInfo            // self info
-	succ   *treeInfo            // successor in tree, who we maintain a path to
-	seq    uint64               // incremented whenever we start a new successor path, really it just needs to be any non-repeating value
+	succ   *dhtInfo             // successor in tree, who we maintain a path to
+	seq    uint64               // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
 	timer  *time.Timer          // time.AfterFunc to send bootstrap packets
 }
 
@@ -27,6 +27,7 @@ func (t *dhtree) init(c *core) {
 	t.tinfos = make(map[string]*treeInfo)
 	t.dinfos = make(map[string]*dhtInfo)
 	t.self = &treeInfo{root: t.core.crypto.publicKey}
+	t.seq = uint64(time.Now().UnixNano())
 	t.timer = time.AfterFunc(0, func() { t.Act(nil, t._findSuccessor) })
 }
 
@@ -162,7 +163,7 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 		// This is our own bootstrap, but we failed to find a next hop
 		return
 	case t.succ == nil:
-	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest()):
+	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest):
 	default:
 		// We already have a better successor
 		return
@@ -173,9 +174,17 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 			panic("no dhtInfo for successor, this should never happen")
 		}
 		t._teardown(t.core.crypto.publicKey, sinfo.getTeardown())
+		if t.succ != nil {
+			panic("this should never happen")
+		}
 	}
-	t.succ = &bootstrap.info
-	t._handleSetup(t.core.crypto.publicKey, t.newSetup(t.succ))
+	setup := t.newSetup(&bootstrap.info)
+	t._handleSetup(t.core.crypto.publicKey, setup)
+	if t.succ == nil {
+		panic("this also should never happen")
+		// FIXME this can happen if treeLookup fails to find a next hop...
+		//  but then, we shouldn't be getting rid of our old successor...
+	}
 }
 
 func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
@@ -195,9 +204,10 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 }
 
 func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
-	if _, isIn := t.dinfos[string(setup.source)]; isIn {
+	if dinfo, isIn := t.dinfos[string(setup.source)]; isIn {
 		// Already have a path from this source
 		// FIXME need to delete the old path too... anything else?
+		println("DEBUG duplicate setup", t.core.crypto.publicKey.addr().String(), prev.addr().String(), setup.source.addr().String(), setup.seq, dinfo.source.addr().String(), dinfo.seq)
 		panic("DEBUG duplicate setup")
 		t.core.peers.sendTeardown(t, prev, setup.getTeardown())
 		return
@@ -219,6 +229,17 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	dinfo.next = next
 	dinfo.dest = dest
 	t.dinfos[string(dinfo.source)] = dinfo
+	if prev.equal(t.core.crypto.publicKey) {
+		// sanity checks, this should only happen when setting up our successor
+		if !setup.source.equal(prev) {
+			panic("wrong source")
+		} else if setup.seq != t.seq {
+			panic("wrong seq")
+		} else if t.succ != nil {
+			panic("already have a successor")
+		}
+		t.succ = dinfo
+	}
 	if !t.core.crypto.publicKey.equal(next) {
 		t.core.peers.sendSetup(t, next, setup)
 	}
@@ -256,11 +277,11 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 		}
 		if t.succ == nil {
 			return
-		} else if dinfo.seq != t.seq {
+		} else if dinfo.seq != t.succ.seq {
 			return
-		} else if !dinfo.source.equal(t.core.crypto.publicKey) {
+		} else if !dinfo.source.equal(t.succ.source) {
 			return
-		} else if !dinfo.dest.equal(t.succ.dest()) {
+		} else if !dinfo.dest.equal(t.succ.dest) {
 			return
 		}
 		t.succ = nil
@@ -551,6 +572,8 @@ func (t *dhtTeardown) UnmarshalBinary(data []byte) error {
 	}
 	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
 	if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
+		return wireUnmarshalBinaryError
+	} else if !wireChopBytes((*[]byte)(&tmp.dest), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
 	} else if len(data) != 0 {
 		return wireUnmarshalBinaryError

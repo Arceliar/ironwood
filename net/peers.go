@@ -152,6 +152,7 @@ func (p *peer) handler() error {
 			return err
 		}
 		if err := p.handlePacket(bs); err != nil {
+			println("Exiting:", bs[0])
 			return err
 		}
 	}
