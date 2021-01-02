@@ -197,7 +197,7 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	next := t._treeLookup(&setup.dest)
 	dest := setup.dest.dest()
 	if t.core.crypto.publicKey.equal(next) && !next.equal(dest) {
-		panic("DEBUG dead end")
+		//panic("DEBUG dead end")
 		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
 		return
 	}

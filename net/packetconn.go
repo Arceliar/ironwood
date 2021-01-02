@@ -21,7 +21,7 @@ type packetConn struct {
 	recv  chan *dhtTraffic // read buffer
 }
 
-type Addr publicKey
+type Addr ed25519.PublicKey
 
 func (key *publicKey) addr() *Addr {
 	return (*Addr)(key)
