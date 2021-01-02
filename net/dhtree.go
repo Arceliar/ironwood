@@ -1,6 +1,7 @@
 package net
 
 import (
+	"encoding/binary"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -17,6 +18,7 @@ type dhtree struct {
 	dinfos map[string]*dhtInfo  // map[string(publicKey)]*dhtInfo, key=source
 	self   *treeInfo            // self info
 	succ   *treeInfo            // successor in tree, who we maintain a path to
+	seq    uint64               // incremented whenever we start a new successor path, really it just needs to be any non-repeating value
 	timer  *time.Timer          // time.AfterFunc to send bootstrap packets
 }
 
@@ -51,7 +53,7 @@ func (t *dhtree) remove(from phony.Actor, info *treeInfo) {
 		}
 		for _, dinfo := range t.dinfos {
 			if key.equal(dinfo.prev) || key.equal(dinfo.prev) {
-				t._teardown(key, &dhtTeardown{source: dinfo.source})
+				t._teardown(key, dinfo.getTeardown())
 			}
 		}
 	})
@@ -166,7 +168,11 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 		return
 	}
 	if t.succ != nil {
-		t._teardown(t.core.crypto.publicKey, &dhtTeardown{source: t.succ.dest()})
+		sinfo := t.dinfos[string(t.core.crypto.publicKey)]
+		if sinfo == nil {
+			panic("no dhtInfo for successor, this should never happen")
+		}
+		t._teardown(t.core.crypto.publicKey, sinfo.getTeardown())
 	}
 	t.succ = &bootstrap.info
 	t._handleSetup(t.core.crypto.publicKey, t.newSetup(t.succ))
@@ -179,7 +185,9 @@ func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 }
 
 func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
+	t.seq++
 	setup := new(dhtSetup)
+	setup.seq = t.seq
 	setup.source = t.core.crypto.publicKey
 	setup.dest = *dest
 	setup.sig = t.core.crypto.privateKey.sign(setup.bytesForSig())
@@ -191,14 +199,18 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 		// Already have a path from this source
 		// FIXME need to delete the old path too... anything else?
 		panic("DEBUG duplicate setup")
-		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
+		t.core.peers.sendTeardown(t, prev, setup.getTeardown())
 		return
 	}
 	next := t._treeLookup(&setup.dest)
 	dest := setup.dest.dest()
 	if t.core.crypto.publicKey.equal(next) && !next.equal(dest) {
+		// FIXME this has problems if prev is self (from changes to tree state?)
 		//panic("DEBUG dead end")
-		t.core.peers.sendTeardown(t, prev, &dhtTeardown{source: setup.source})
+		if !prev.equal(t.core.crypto.publicKey) {
+			println("DEBUG sending dead-end teardown", t.core.crypto.publicKey.addr().String(), prev.addr().String(), next.addr().String(), dest.addr().String())
+			t.core.peers.sendTeardown(t, prev, setup.getTeardown())
+		}
 		return
 	}
 	dinfo := new(dhtInfo)
@@ -220,6 +232,15 @@ func (t *dhtree) handleSetup(from phony.Actor, prev publicKey, setup *dhtSetup) 
 
 func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 	if dinfo, isIn := t.dinfos[string(teardown.source)]; isIn {
+		if teardown.seq != dinfo.seq {
+			return
+		} else if !teardown.source.equal(dinfo.source) {
+			panic("DEBUG this should never happen")
+			return
+		} else if !teardown.dest.equal(dinfo.dest) {
+			panic("DEBUG if this happens then there's a design problem")
+			return
+		}
 		var next publicKey
 		if from.equal(dinfo.prev) {
 			next = dinfo.next
@@ -230,9 +251,12 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 		}
 		delete(t.dinfos, string(teardown.source))
 		if !next.equal(t.core.crypto.publicKey) {
+			println("DEBUG going to send teardown:", t.core.crypto.publicKey.addr().String(), next.addr().String())
 			t.core.peers.sendTeardown(t, next, teardown)
 		}
 		if t.succ == nil {
+			return
+		} else if dinfo.seq != t.seq {
 			return
 		} else if !dinfo.source.equal(t.core.crypto.publicKey) {
 			return
@@ -398,10 +422,15 @@ func (info *treeInfo) UnmarshalBinary(data []byte) error {
  ***********/
 
 type dhtInfo struct {
+	seq    uint64
 	source publicKey
 	prev   publicKey
 	next   publicKey
 	dest   publicKey
+}
+
+func (info *dhtInfo) getTeardown() *dhtTeardown {
+	return &dhtTeardown{seq: info.seq, source: info.source, dest: info.dest}
 }
 
 /****************
@@ -440,11 +469,13 @@ func (dbs *dhtBootstrap) UnmarshalBinary(data []byte) error {
 type dhtSetup struct {
 	sig    signature
 	source publicKey
+	seq    uint64
 	dest   treeInfo
 }
 
 func (s *dhtSetup) bytesForSig() []byte {
-	var bs []byte
+	bs := make([]byte, 8)
+	binary.BigEndian.PutUint64(bs, s.seq)
 	bs = append(bs, s.source...)
 	bs = append(bs, s.dest.root...)
 	for _, hop := range s.dest.hops {
@@ -459,13 +490,20 @@ func (s *dhtSetup) check() bool {
 	return s.dest.checkLoops() && s.source.verify(s.bytesForSig(), s.sig) && s.dest.checkSigs()
 }
 
+func (s *dhtSetup) getTeardown() *dhtTeardown {
+	return &dhtTeardown{seq: s.seq, source: s.source, dest: s.dest.dest()}
+}
+
 func (s *dhtSetup) MarshalBinary() (data []byte, err error) {
 	var tmp []byte
 	if tmp, err = s.dest.MarshalBinary(); err != nil {
 		return
 	}
+	seq := make([]byte, 8)
+	binary.BigEndian.PutUint64(seq, s.seq)
 	data = append(data, s.sig...)
 	data = append(data, s.source...)
+	data = append(data, seq...)
 	data = append(data, tmp...)
 	return
 }
@@ -476,7 +514,12 @@ func (s *dhtSetup) UnmarshalBinary(data []byte) error {
 		return wireUnmarshalBinaryError
 	} else if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
-	} else if err := tmp.dest.UnmarshalBinary(data); err != nil {
+	}
+	if len(data) < 8 {
+		return wireUnmarshalBinaryError
+	}
+	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
+	if err := tmp.dest.UnmarshalBinary(data); err != nil {
 		return err
 	}
 	*s = tmp
@@ -488,15 +531,25 @@ func (s *dhtSetup) UnmarshalBinary(data []byte) error {
  ***************/
 
 type dhtTeardown struct {
+	seq    uint64
 	source publicKey
+	dest   publicKey
 }
 
 func (t *dhtTeardown) MarshalBinary() (data []byte, err error) {
-	return append([]byte(nil), t.source...), nil
+	data = make([]byte, 8)
+	binary.BigEndian.PutUint64(data, t.seq)
+	data = append(data, t.source...)
+	data = append(data, t.dest...)
+	return
 }
 
 func (t *dhtTeardown) UnmarshalBinary(data []byte) error {
 	var tmp dhtTeardown
+	if len(data) < 8 {
+		return wireUnmarshalBinaryError
+	}
+	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
 	if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
 	} else if len(data) != 0 {

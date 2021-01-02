@@ -18,8 +18,8 @@ func TestTwoNodes(t *testing.T) {
 	a, _ := NewPacketConn(privA)
 	b, _ := NewPacketConn(privB)
 	cA, cB := newDummyConn(pubA, pubB)
-	defer cA.Close()
-	defer cB.Close()
+	//defer cA.Close()
+	//defer cB.Close()
 	go a.HandleConn(pubB, cA)
 	go b.HandleConn(pubA, cB)
 	timer := time.NewTimer(time.Second)
@@ -156,10 +156,12 @@ func TestLineNetwork(t *testing.T) {
 		go func() {
 			<-wait
 			prev.HandleConn(keyB, linkA)
+			//linkA.Close()
 		}()
 		go func() {
 			<-wait
 			here.HandleConn(keyA, linkB)
+			//linkB.Close()
 		}()
 	}
 	close(wait)
