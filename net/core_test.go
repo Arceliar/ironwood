@@ -133,6 +133,40 @@ func TestTwoNodes(t *testing.T) {
 	}
 }
 
+func TestLineNetwork(t *testing.T) {
+	var conns []*packetConn
+	for idx := 0; idx < 32; idx++ {
+		_, priv, _ := ed25519.GenerateKey(nil)
+		conn, err := NewPacketConn(priv)
+		if err != nil {
+			panic(err)
+		}
+		conns = append(conns, conn.(*packetConn))
+	}
+	wait := make(chan struct{})
+	for idx := range conns {
+		if idx == 0 {
+			continue
+		}
+		prev := conns[idx-1]
+		here := conns[idx]
+		keyA := ed25519.PublicKey(prev.LocalAddr().(*Addr).key())
+		keyB := ed25519.PublicKey(here.LocalAddr().(*Addr).key())
+		linkA, linkB := newDummyConn(keyA, keyB)
+		go func() {
+			<-wait
+			prev.HandleConn(keyB, linkA)
+		}()
+		go func() {
+			<-wait
+			here.HandleConn(keyA, linkB)
+		}()
+	}
+	close(wait)
+	// TODO test sending packets
+	time.Sleep(time.Second)
+}
+
 /*************
  * dummyConn *
  *************/
