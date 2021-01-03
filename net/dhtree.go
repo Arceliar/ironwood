@@ -34,7 +34,6 @@ func (t *dhtree) init(c *core) {
 
 func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 	t.Act(from, func() {
-		oldSelf := t.self
 		// The tree info should have been checked before this point
 		key := info.from()
 		t.tinfos[string(key)] = info
@@ -43,7 +42,6 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 		}
 		t._fix()
 		t._doBootstrap() // FIXME don't do this every time, only when we need to...
-		println("DEBUG recv tree update:", time.Now().String(), t.core.crypto.publicKey.addr().String(), info.root.addr().String(), oldSelf.root.addr().String(), t.self.root.addr().String())
 	})
 }
 
@@ -87,25 +85,13 @@ func (t *dhtree) _fix() {
 			t.self = info
 		}
 	}
-	hasSelf := t.self != nil && t.self.root.equal(t.core.crypto.publicKey)
-	for _, info := range t.tinfos {
-		if treeLess(t.self.root, info.root) {
-			println("DEBUG bad root:", t.core.crypto.publicKey.addr().String(), t.self.root.addr().String(), info.root.addr().String(), info.checkLoops())
-			panic("DEBUG")
-		}
-		if t.self == info {
-			hasSelf = true
-		}
-	}
-	if !hasSelf {
-		panic("inconsistent tree")
-	}
 	if t.self != oldSelf {
 		t.core.peers.sendTree(t, t.self)
 		// TODO? don't tear down every time thing change
 		//  Strictly required whenever the root changes
 		//  Ideally we probably want to tear down in at least some other case too
 		//  Otherwise we would keep an old path forever after better ones appear
+		//  Maybe in doBootstrap instead? That gets called after every tree update...
 		if t.pred != nil {
 			t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
 		}
@@ -140,7 +126,6 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 	}
 	if !best.root.equal(dest.root) {
 		// Dead end, so stay here
-		println("DEBUG bad tree", t.core.crypto.publicKey.addr().String(), best.root.addr().String(), dest.root.addr().String())
 		return t.core.crypto.publicKey
 	}
 	return best.from()
@@ -190,16 +175,11 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 		return
 	case t.core.crypto.publicKey.equal(bootstrap.info.dest()):
 		// This is our own bootstrap, but we failed to find a next hop
-		println("DEBUG hb: 1")
 		return
 	case t.succ == nil:
-		println("DEBUG hb: 2")
 	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest):
-		println("DEBUG hb: 3")
 	default:
 		// We already have a better (FIXME? or equal) successor
-		println("DEBUG hb: 4")
-		println("DEBUG details:", t.core.crypto.publicKey.addr().String(), t.succ.dest.addr().String(), source.addr().String())
 		return
 	}
 	if t.succ != nil {
@@ -207,7 +187,6 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 		if sinfo == nil {
 			panic("no dhtInfo for successor, this should never happen")
 		}
-		println("DEBUG removing old succ:", t.core.crypto.publicKey.addr().String(), sinfo.dest.addr().String(), source.addr().String())
 		t._teardown(t.core.crypto.publicKey, sinfo.getTeardown())
 		if t.succ != nil {
 			panic("this should never happen")
@@ -216,12 +195,10 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	setup := t.newSetup(&bootstrap.info)
 	t._handleSetup(t.core.crypto.publicKey, setup)
 	if t.succ == nil {
-		println("DEBUG hb: 5")
-		//panic("this also should never happen")
-		// FIXME this can happen if treeLookup fails to find a next hop...
-		//  but then, we shouldn't be getting rid of our old successor...
+		// This can happen if the treeLookup in handleSetup fails
+		// FIXME we should avoid letting this happen
+		//  E.g. check that the lookup will succeed, or at least that the roots match
 	}
-	println("DEBUG hb: 6")
 }
 
 func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
@@ -241,31 +218,17 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 }
 
 func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
-	if dinfo, isIn := t.dinfos[string(setup.source)]; isIn {
+	if _, isIn := t.dinfos[string(setup.source)]; isIn {
 		// Already have a path from this source
-		// FIXME need to delete the old path too... anything else?
-		if dinfo.seq != setup.seq {
-			println("DEBUG duplicate setup", t.core.crypto.publicKey.addr().String(), prev.addr().String(), setup.source.addr().String(), setup.seq, dinfo.source.addr().String(), dinfo.seq)
-			//panic("DEBUG duplicate setup")
-			t.core.peers.sendTeardown(t, prev, setup.getTeardown())
-		} else {
-			println("DEBUG duplicate setup with same seq", t.core.crypto.publicKey.addr().String(), prev.addr().String(), setup.source.addr().String(), setup.seq, dinfo.source.addr().String(), dinfo.seq)
-			t.core.peers.sendTeardown(t, prev, setup.getTeardown())
-			//panic("this should never happen in testing")
-		}
+		t.core.peers.sendTeardown(t, prev, setup.getTeardown())
 		return
 	}
 	next := t._treeLookup(&setup.dest)
 	dest := setup.dest.dest()
 	if t.core.crypto.publicKey.equal(next) && !next.equal(dest) {
-		// FIXME this has problems if prev is self (from changes to tree state?)
-		//panic("DEBUG dead end")
+		// FIXME? this has problems if prev is self (from changes to tree state?)
 		if !prev.equal(t.core.crypto.publicKey) {
-			println("DEBUG sending dead-end teardown", t.core.crypto.publicKey.addr().String(), prev.addr().String(), next.addr().String(), dest.addr().String())
 			t.core.peers.sendTeardown(t, prev, setup.getTeardown())
-		} else {
-			// TODO? something?
-			//println("DEBUG *not* sending dead-end teardown", t.core.crypto.publicKey.addr().String(), prev.addr().String(), next.addr().String(), dest.addr().String())
 		}
 		return
 	}
@@ -290,9 +253,7 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if !t.core.crypto.publicKey.equal(next) {
 		t.core.peers.sendSetup(t, next, setup)
 	} else {
-		// TODO special case, this is our predecessor
 		if t.pred != nil {
-			println("DEBUG going to teardown old pred:", t.core.crypto.publicKey.addr().String(), t.pred.source.addr().String(), dinfo.source.addr().String())
 			t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
 		}
 		t.pred = dinfo
@@ -326,18 +287,14 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 		}
 		delete(t.dinfos, string(teardown.source))
 		if !next.equal(t.core.crypto.publicKey) {
-			//println("DEBUG going to send teardown:", t.core.crypto.publicKey.addr().String(), next.addr().String())
 			t.core.peers.sendTeardown(t, next, teardown)
 		}
 		if t.pred == dinfo {
-			println("Removed pred:", t.core.crypto.publicKey.addr().String(), dinfo.source.addr().String())
 			t.pred = nil
 			t._doBootstrap()
 		}
 		if t.succ == dinfo {
-			println("Removed succ:", t.core.crypto.publicKey.addr().String(), dinfo.dest.addr().String())
 			t.succ = nil
-			//t._findSuccessor()
 		}
 	} else {
 		//panic("DEBUG teardown of nonexistant path")
@@ -352,7 +309,6 @@ func (t *dhtree) teardown(from phony.Actor, peerKey publicKey, teardown *dhtTear
 
 func (t *dhtree) _doBootstrap() {
 	if t.timer != nil && t.pred == nil {
-		println("DEBUG findSuccessor:", t.core.crypto.publicKey.addr().String())
 		t._handleBootstrap(&dhtBootstrap{info: *t.self})
 		t.timer.Stop()
 		t.timer = time.AfterFunc(time.Second, func() { t.Act(nil, t._doBootstrap) })
@@ -657,7 +613,6 @@ func (t *dhtTraffic) MarshalBinary() (data []byte, err error) {
 
 func (t *dhtTraffic) UnmarshalBinary(data []byte) error {
 	var tmp dhtTraffic
-	println(len(data))
 	if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
 	} else if !wireChopBytes((*[]byte)(&tmp.dest), &data, publicKeySize) {
