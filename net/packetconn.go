@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -16,6 +17,8 @@ type PacketConn struct {
 	core         *core
 	recv         chan *dhtTraffic // read buffer
 	recvWrongKey chan *dhtTraffic // read buffer for packets sent to a different key
+	closeMutex   sync.Mutex
+	closed       chan struct{}
 }
 
 type Addr ed25519.PublicKey
@@ -51,7 +54,12 @@ func (pc *PacketConn) init(c *core) {
 }
 
 func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
-	tr := <-pc.recv
+	var tr *dhtTraffic
+	select {
+	case <-pc.closed:
+		return 0, nil, errors.New("closed")
+	case tr = <-pc.recv:
+	}
 	copy(p, tr.payload)
 	n = len(tr.payload)
 	if len(p) < len(tr.payload) {
@@ -62,6 +70,11 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 }
 
 func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	select {
+	case <-pc.closed:
+		return 0, errors.New("closed")
+	default:
+	}
 	if _, ok := addr.(*Addr); !ok {
 		return 0, errors.New("incorrect address type")
 	}
@@ -78,7 +91,14 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 }
 
 func (pc *PacketConn) Close() error {
-	panic("TODO implement Close")
+	pc.closeMutex.Lock()
+	defer pc.closeMutex.Unlock()
+	select {
+	case <-pc.closed:
+		return errors.New("closed")
+	default:
+	}
+	close(pc.closed)
 	return nil
 }
 
