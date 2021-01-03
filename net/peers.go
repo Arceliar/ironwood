@@ -129,12 +129,13 @@ func (p *peer) handler() error {
 		p._write([]byte{wireDummy})
 		time.AfterFunc(time.Second, keepAlive)
 	}
-	var info *treeInfo
-	phony.Block(&p.peers.core.dhtree, func() {
-		info = p.peers.core.dhtree.self
-	})
-	p.sendTree(nil, info)
 	go keepAlive()
+	p.peers.core.dhtree.Act(nil, func() {
+		info := p.peers.core.dhtree.self
+		p.peers.Act(&p.peers.core.dhtree, func() {
+			p.sendTree(p.peers, info)
+		})
+	})
 	for {
 		var lenBuf [8]byte
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {

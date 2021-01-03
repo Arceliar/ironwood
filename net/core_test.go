@@ -135,7 +135,7 @@ func TestTwoNodes(t *testing.T) {
 
 func TestLineNetwork(t *testing.T) {
 	var conns []*packetConn
-	for idx := 0; idx < 16; idx++ {
+	for idx := 0; idx < 32; idx++ {
 		_, priv, _ := ed25519.GenerateKey(nil)
 		conn, err := NewPacketConn(priv)
 		if err != nil {
@@ -167,7 +167,7 @@ func TestLineNetwork(t *testing.T) {
 	close(wait)
 	// TODO test sending packets
 	time.Sleep(10 * time.Second)
-	panic("debug")
+	panic(time.Now().String())
 }
 
 /*************
