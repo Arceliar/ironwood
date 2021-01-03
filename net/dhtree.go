@@ -164,6 +164,15 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
 	return bestPeer
 }
 
+func (t *dhtree) _dhtSetupAllowed(setup *dhtSetup) bool {
+	// Return false if we know a better successor for the source
+	//  This is to prevent nodes from setting up arbitrary paths to other nodes
+	//  That would be bad for the intermediate nodes in the network
+	// Also tear down paths where this is better?
+	// TODO the above
+	return true
+}
+
 func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	// FIXME we need better sanity checks before removing an existing successor
 	//  e.g. test _treeLookup first
@@ -222,6 +231,9 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 		// Already have a path from this source
 		t.core.peers.sendTeardown(t, prev, setup.getTeardown())
 		return
+	}
+	if !t._dhtSetupAllowed(setup) {
+		t.core.peers.sendTeardown(t, prev, setup.getTeardown())
 	}
 	next := t._treeLookup(&setup.dest)
 	dest := setup.dest.dest()

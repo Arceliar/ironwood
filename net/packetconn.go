@@ -13,6 +13,7 @@ import (
 type PacketConn interface {
 	net.PacketConn
 	HandleConn(ed25519.PublicKey, net.Conn) error
+	Resolve(string) (net.Addr, error)
 }
 
 type packetConn struct {
@@ -126,8 +127,21 @@ func (pc *packetConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 }
 
 func (pc *packetConn) handleTraffic(from phony.Actor, tr *dhtTraffic) {
+	if !tr.dest.equal(pc.core.crypto.publicKey) {
+		return
+	}
 	from = nil // TODO buffer things intelligently, instead of just the actor queue
 	pc.actor.Act(from, func() {
 		pc.recv <- tr
 	})
+}
+
+func (pc *packetConn) Resolve(addr string) (net.Addr, error) {
+	panic("TODO implement Resolve")
+	// TODO prase a CIDR-like "hex/int" string into an ed key and an int for the number of known bits
+	//  If known bits == bits in key, immediately return key
+	//  Else block (with a timeout) while we send some sort of lookup packet (not yet implemented)
+	//    Return the result only if it matches the required bits of the key, else an error (or timeout)
+	// TODO make sure this whole procedure doens't allow DHT crawling...
+	return nil, nil
 }
