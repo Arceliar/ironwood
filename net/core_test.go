@@ -166,8 +166,68 @@ func TestLineNetwork(t *testing.T) {
 	}
 	close(wait)
 	// TODO test sending packets
-	time.Sleep(10 * time.Second)
-	panic(time.Now().String())
+	//time.Sleep(10 * time.Second)
+	//panic(time.Now().String())
+	for aIdx := range conns {
+		a := conns[aIdx]
+		aAddr := a.LocalAddr()
+		aA := aAddr.(*Addr)
+		aK := aA.key()
+		for bIdx := range conns {
+			if bIdx == aIdx {
+				continue
+			}
+			b := conns[bIdx]
+			bAddr := b.LocalAddr()
+			done := make(chan struct{})
+			msg := []byte("test")
+			go func() {
+				// Send from a to b
+				for {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					if n, err := a.WriteTo(msg, bAddr); n != len(msg) || err != nil {
+						panic("write problem")
+					}
+					time.Sleep(time.Second)
+				}
+			}()
+			go func() {
+				defer close(done)
+				// Recv from a at b
+				read := make([]byte, 2048)
+				for {
+					n, from, err := b.ReadFrom(read)
+					bs := read[:n]
+					if !bytes.Equal(bs, msg) || err != nil {
+						if !bytes.Equal(bs, msg) {
+							println(string(bs), string(msg))
+							//panic("unequal")
+						}
+						if err != nil {
+							//panic(err)
+						}
+						//panic("read problem")
+					}
+					fA := from.(*Addr)
+					fK := fA.key()
+					if fK.equal(aK) {
+						break
+					}
+				}
+			}()
+			timer := time.NewTimer(3 * time.Second)
+			select {
+			case <-timer.C:
+				panic("timeout")
+			case <-done:
+				timer.Stop()
+			}
+		}
+	}
 }
 
 /*************

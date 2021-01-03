@@ -646,16 +646,17 @@ func (t *dhtTraffic) MarshalBinary() (data []byte, err error) {
 }
 
 func (t *dhtTraffic) UnmarshalBinary(data []byte) error {
-	var tr dhtTraffic
-	if !wireChopBytes((*[]byte)(&tr.source), &data, publicKeySize) {
+	var tmp dhtTraffic
+	println(len(data))
+	if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
-	} else if !wireChopBytes((*[]byte)(&tr.dest), &data, publicKeySize) {
+	} else if !wireChopBytes((*[]byte)(&tmp.dest), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
 	} else if len(data) == 0 {
 		return wireUnmarshalBinaryError
 	}
-	t.payload = append([]byte(nil), data...)
-	*t = tr
+	tmp.payload = append([]byte(nil), data...)
+	*t = tmp
 	return nil
 }
 
