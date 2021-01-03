@@ -22,6 +22,8 @@ type PacketConn struct {
 	readDeadline deadline
 }
 
+// Addr implements the `net.Addr` interface for `ed25519.PublicKey` values.
+// An *Addr pointer is used as a net.Addr for PacketConn.
 type Addr ed25519.PublicKey
 
 func (key *publicKey) addr() *Addr {
@@ -32,14 +34,17 @@ func (a *Addr) key() publicKey {
 	return publicKey(*a)
 }
 
+// Network returns "ed25519.PublicKey" as a string, but is otherwise unused.
 func (a *Addr) Network() string {
 	return "ed25519.PublicKey"
 }
 
+// String returns the ed25519.PublicKey as a hexidecimal string, but is otherwise unused.
 func (a *Addr) String() string {
 	return hex.EncodeToString(*a)
 }
 
+// NewPacketConn returns a *PacketConn struct which implements the net.PacketConn interface.
 func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 	c := new(core)
 	if err := c.init(secret); err != nil {
@@ -55,6 +60,7 @@ func (pc *PacketConn) init(c *core) {
 	pc.readDeadline = newDeadline()
 }
 
+// ReadFrom fulfills the net.PacketConn interface, with a *Addr returned as the from address.
 func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	var tr *dhtTraffic
 	select {
@@ -73,6 +79,7 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	return
 }
 
+// WriteTo fulfills the net.PacketConn interface, with a *Addr expected as the destination address.
 func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	select {
 	case <-pc.closed:
@@ -94,6 +101,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	return len(p), nil
 }
 
+// Close shuts down the PacketConn.
 func (pc *PacketConn) Close() error {
 	pc.closeMutex.Lock()
 	defer pc.closeMutex.Unlock()
@@ -103,14 +111,17 @@ func (pc *PacketConn) Close() error {
 	default:
 	}
 	close(pc.closed)
+	// TODO graceful shutdown, close all handlers, etc...
 	return nil
 }
 
+// LocalAddr returns an *Addr of the ed25519.PublicKey for this PacketConn.
 func (pc *PacketConn) LocalAddr() net.Addr {
 	a := Addr(append([]byte(nil), pc.core.crypto.publicKey...))
 	return &a
 }
 
+// SetDeadline fulfills the net.PacketConn interface. Note that only read deadlines are affected.
 func (pc *PacketConn) SetDeadline(t time.Time) error {
 	if err := pc.SetReadDeadline(t); err != nil {
 		return err
@@ -120,15 +131,19 @@ func (pc *PacketConn) SetDeadline(t time.Time) error {
 	return nil
 }
 
+// SetReadDeadline fulfills the net.PacketConn interface.
 func (pc *PacketConn) SetReadDeadline(t time.Time) error {
 	pc.readDeadline.set(t)
 	return nil
 }
 
+// SetWriteDeadline fulfills the net.PacketConn interface.
 func (pc *PacketConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
+// HandleConn expects a peer's public key as its first argument, and a net.Conn with TCP-like semantics (reliable ordered delivery) as its second argument.
+// This function blocks while the net.Conn is in use, and returns (without closing the net.Conn) if any error occurs.
 func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	// Note: This should block until we're done with the Conn, then return without closing it
 	if len(key) != publicKeySize {
@@ -145,8 +160,18 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	return err
 }
 
+// ReadUndeliverable works exactly like ReadFrom, except it returns any packets that were sent to a different local address but cannot be forwarded further.
+// This happens if the LocalAddr is the immediate successor of the destination (higher by the smallest amount, modulo the keyspace size).
+// This may be useful for key discovery when a destination's full ed25519.PublicKey is not known (by zero padding the least unknown least significant bits).
 func (pc *PacketConn) ReadUndeliverable(p []byte) (n int, local, remote net.Addr, err error) {
-	tr := <-pc.recvWrongKey
+	var tr *dhtTraffic
+	select {
+	case <-pc.closed:
+		return 0, nil, nil, errors.New("closed")
+	case <-pc.readDeadline.getCancel():
+		return 0, nil, nil, errors.New("deadline exceeded")
+	case tr = <-pc.recvWrongKey:
+	}
 	copy(p, tr.payload)
 	n = len(tr.payload)
 	if len(p) < len(tr.payload) {
