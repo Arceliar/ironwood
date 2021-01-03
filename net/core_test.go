@@ -222,6 +222,25 @@ func TestLineNetwork(t *testing.T) {
 			timer := time.NewTimer(3 * time.Second)
 			select {
 			case <-timer.C:
+				func() {
+					defer func() { recover() }()
+					close(done)
+				}()
+				for _, conn := range conns {
+					// Timeout could come from split rings, if the DHT isn't converging
+					//  FIXME this could race if the network is flapping for some reason, though it shouldn't be
+					var here, prev, next, root string
+					here = conn.LocalAddr().String()
+					if dinfo := conn.core.dhtree.pred; dinfo != nil {
+						prev = dinfo.source.addr().String()
+					}
+					if dinfo := conn.core.dhtree.succ; dinfo != nil {
+						next = dinfo.dest.addr().String()
+					}
+					root = conn.core.dhtree.self.root.addr().String()
+					t.Log(prev, ":", here, ":", next, ":", root)
+				}
+				t.Log("test")
 				panic("timeout")
 			case <-done:
 				timer.Stop()

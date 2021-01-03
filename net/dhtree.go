@@ -102,6 +102,16 @@ func (t *dhtree) _fix() {
 	}
 	if t.self != oldSelf {
 		t.core.peers.sendTree(t, t.self)
+		// TODO? don't tear down every time thing change
+		//  Strictly required whenever the root changes
+		//  Ideally we probably want to tear down in at least some other case too
+		//  Otherwise we would keep an old path forever after better ones appear
+		if t.pred != nil {
+			t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
+		}
+		if t.succ != nil {
+			t._teardown(t.core.crypto.publicKey, t.succ.getTeardown())
+		}
 	}
 }
 
