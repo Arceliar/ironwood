@@ -24,8 +24,8 @@ func TestTwoNodes(t *testing.T) {
 	go b.HandleConn(pubA, cB)
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
-	tA := &a.(*packetConn).core.dhtree
-	tB := &b.(*packetConn).core.dhtree
+	tA := &a.core.dhtree
+	tB := &b.core.dhtree
 	for {
 		select {
 		case <-timer.C:
@@ -134,14 +134,14 @@ func TestTwoNodes(t *testing.T) {
 }
 
 func TestLineNetwork(t *testing.T) {
-	var conns []*packetConn
+	var conns []*PacketConn
 	for idx := 0; idx < 32; idx++ {
 		_, priv, _ := ed25519.GenerateKey(nil)
 		conn, err := NewPacketConn(priv)
 		if err != nil {
 			panic(err)
 		}
-		conns = append(conns, conn.(*packetConn))
+		conns = append(conns, conn)
 	}
 	wait := make(chan struct{})
 	for idx := range conns {

@@ -122,7 +122,7 @@ func TestMarshalDHTSetup(t *testing.T) {
 		panic(err)
 	}
 	pc, _ := NewPacketConn(sourcePriv)
-	dt := pc.(*packetConn).core.dhtree
+	dt := pc.core.dhtree
 	setup := dt.newSetup(info)
 	if !setup.check() {
 		panic("initial check failed")

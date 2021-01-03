@@ -11,13 +11,7 @@ import (
 	"github.com/Arceliar/phony"
 )
 
-type PacketConn interface {
-	net.PacketConn
-	HandleConn(ed25519.PublicKey, net.Conn) error
-	ReadUndeliverable([]byte) (int, net.Addr, net.Addr, error)
-}
-
-type packetConn struct {
+type PacketConn struct {
 	actor        phony.Inbox
 	core         *core
 	recv         chan *dhtTraffic // read buffer
@@ -42,7 +36,7 @@ func (a *Addr) String() string {
 	return hex.EncodeToString(*a)
 }
 
-func NewPacketConn(secret ed25519.PrivateKey) (PacketConn, error) {
+func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 	c := new(core)
 	if err := c.init(secret); err != nil {
 		return nil, err
@@ -50,13 +44,13 @@ func NewPacketConn(secret ed25519.PrivateKey) (PacketConn, error) {
 	return &c.pconn, nil
 }
 
-func (pc *packetConn) init(c *core) {
+func (pc *PacketConn) init(c *core) {
 	pc.core = c
 	pc.recv = make(chan *dhtTraffic, 32)
 	pc.recvWrongKey = make(chan *dhtTraffic, 32)
 }
 
-func (pc *packetConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
+func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	tr := <-pc.recv
 	copy(p, tr.payload)
 	n = len(tr.payload)
@@ -67,7 +61,7 @@ func (pc *packetConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	return
 }
 
-func (pc *packetConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if _, ok := addr.(*Addr); !ok {
 		return 0, errors.New("incorrect address type")
 	}
@@ -83,32 +77,32 @@ func (pc *packetConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	return len(p), nil
 }
 
-func (pc *packetConn) Close() error {
+func (pc *PacketConn) Close() error {
 	panic("TODO implement Close")
 	return nil
 }
 
-func (pc *packetConn) LocalAddr() net.Addr {
+func (pc *PacketConn) LocalAddr() net.Addr {
 	a := Addr(append([]byte(nil), pc.core.crypto.publicKey...))
 	return &a
 }
 
-func (pc *packetConn) SetDeadline(t time.Time) error {
+func (pc *PacketConn) SetDeadline(t time.Time) error {
 	panic("TODO implement SetDeadline")
 	return nil
 }
 
-func (pc *packetConn) SetReadDeadline(t time.Time) error {
+func (pc *PacketConn) SetReadDeadline(t time.Time) error {
 	panic("TODO implement SetReadDeadline")
 	return nil
 }
 
-func (pc *packetConn) SetWriteDeadline(t time.Time) error {
+func (pc *PacketConn) SetWriteDeadline(t time.Time) error {
 	panic("TODO implement SetWriteDeadline")
 	return nil
 }
 
-func (pc *packetConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
+func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	// Note: This should block until we're done with the Conn, then return without closing it
 	if len(key) != publicKeySize {
 		return errors.New("incorrect key length")
@@ -124,7 +118,7 @@ func (pc *packetConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	return err
 }
 
-func (pc *packetConn) ReadUndeliverable(p []byte) (n int, local, remote net.Addr, err error) {
+func (pc *PacketConn) ReadUndeliverable(p []byte) (n int, local, remote net.Addr, err error) {
 	tr := <-pc.recvWrongKey
 	copy(p, tr.payload)
 	n = len(tr.payload)
@@ -136,7 +130,7 @@ func (pc *packetConn) ReadUndeliverable(p []byte) (n int, local, remote net.Addr
 	return
 }
 
-func (pc *packetConn) handleTraffic(from phony.Actor, tr *dhtTraffic) {
+func (pc *PacketConn) handleTraffic(from phony.Actor, tr *dhtTraffic) {
 	if !tr.dest.equal(pc.core.crypto.publicKey) {
 		pc.actor.Act(from, func() {
 			select {
