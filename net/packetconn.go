@@ -19,6 +19,7 @@ type PacketConn struct {
 	recvWrongKey chan *dhtTraffic // read buffer for packets sent to a different key
 	closeMutex   sync.Mutex
 	closed       chan struct{}
+	readDeadline deadline
 }
 
 type Addr ed25519.PublicKey
@@ -51,6 +52,7 @@ func (pc *PacketConn) init(c *core) {
 	pc.core = c
 	pc.recv = make(chan *dhtTraffic, 32)
 	pc.recvWrongKey = make(chan *dhtTraffic, 32)
+	pc.readDeadline = newDeadline()
 }
 
 func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
@@ -58,6 +60,8 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	select {
 	case <-pc.closed:
 		return 0, nil, errors.New("closed")
+	case <-pc.readDeadline.getCancel():
+		return 0, nil, errors.New("deadline exceeded")
 	case tr = <-pc.recv:
 	}
 	copy(p, tr.payload)
@@ -108,17 +112,20 @@ func (pc *PacketConn) LocalAddr() net.Addr {
 }
 
 func (pc *PacketConn) SetDeadline(t time.Time) error {
-	panic("TODO implement SetDeadline")
+	if err := pc.SetReadDeadline(t); err != nil {
+		return err
+	} else if err := pc.SetWriteDeadline(t); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (pc *PacketConn) SetReadDeadline(t time.Time) error {
-	panic("TODO implement SetReadDeadline")
+	pc.readDeadline.set(t)
 	return nil
 }
 
 func (pc *PacketConn) SetWriteDeadline(t time.Time) error {
-	panic("TODO implement SetWriteDeadline")
 	return nil
 }
 
@@ -168,4 +175,49 @@ func (pc *PacketConn) handleTraffic(from phony.Actor, tr *dhtTraffic) {
 			runtime.Gosched() // Give readers a chance to drain the queue
 		})
 	}
+}
+
+type deadline struct {
+	m      sync.Mutex
+	timer  *time.Timer
+	once   *sync.Once
+	cancel chan struct{}
+}
+
+func newDeadline() deadline {
+	var d deadline
+	d.once = new(sync.Once)
+	d.cancel = make(chan struct{})
+	return d
+}
+
+func (d *deadline) set(t time.Time) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	d.once.Do(func() {
+		if d.timer != nil {
+			d.timer.Stop()
+		}
+	})
+	select {
+	case <-d.cancel:
+		d.cancel = make(chan struct{})
+	default:
+	}
+	d.once = new(sync.Once)
+	var zero time.Time
+	if t != zero {
+		once := d.once
+		cancel := d.cancel
+		d.timer = time.AfterFunc(time.Until(t), func() {
+			once.Do(func() { close(cancel) })
+		})
+	}
+}
+
+func (d *deadline) getCancel() chan struct{} {
+	d.m.Lock()
+	defer d.m.Unlock()
+	ch := d.cancel
+	return ch
 }
