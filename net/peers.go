@@ -3,7 +3,6 @@ package net
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"time"
@@ -72,7 +71,8 @@ func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, teardown *dht
 		if p, isIn := ps.peers[string(peerKey)]; isIn {
 			p.sendTeardown(ps, teardown)
 		} else {
-			fmt.Println("DEBUG sendTeardown", ps.core.crypto.publicKey.addr().String(), peerKey.addr().String(), teardown.seq, teardown.source.addr().String(), teardown.dest.addr().String())
+			return // Skip the below for now, it can happen if peers are removed
+			println("DEBUG sendTeardown", ps.core.crypto.publicKey.addr().String(), peerKey.addr().String(), teardown.seq, teardown.source.addr().String(), teardown.dest.addr().String())
 			panic("DEBUG tried to send teardown to nonexistant peer")
 		}
 	})

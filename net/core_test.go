@@ -18,8 +18,8 @@ func TestTwoNodes(t *testing.T) {
 	a, _ := NewPacketConn(privA)
 	b, _ := NewPacketConn(privB)
 	cA, cB := newDummyConn(pubA, pubB)
-	//defer cA.Close()
-	//defer cB.Close()
+	defer cA.Close()
+	defer cB.Close()
 	go a.HandleConn(pubB, cA)
 	go b.HandleConn(pubA, cB)
 	timer := time.NewTimer(time.Second)
@@ -153,6 +153,8 @@ func TestLineNetwork(t *testing.T) {
 		keyA := ed25519.PublicKey(prev.LocalAddr().(*Addr).key())
 		keyB := ed25519.PublicKey(here.LocalAddr().(*Addr).key())
 		linkA, linkB := newDummyConn(keyA, keyB)
+		defer linkA.Close()
+		defer linkB.Close()
 		go func() {
 			<-wait
 			prev.HandleConn(keyB, linkA)
@@ -165,9 +167,6 @@ func TestLineNetwork(t *testing.T) {
 		}()
 	}
 	close(wait)
-	// TODO test sending packets
-	//time.Sleep(10 * time.Second)
-	//panic(time.Now().String())
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
