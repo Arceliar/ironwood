@@ -55,6 +55,9 @@ func (pc *packetConn) init(c *core) {
 func (pc *packetConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	// TODO timeout, also sanity check dest address
 	//  maybe return an error that contains the dest address if it's not an exact match?
+	//  Or add some way to set up how many matching bits are required
+	//    Needed for e.g. cryptographically generated ipv6 addresses
+	//  Part of NewPacketConn or some function called at some point?...
 	tr := <-pc.recv
 	copy(p, tr.payload)
 	n = len(tr.payload)
@@ -116,7 +119,6 @@ func (pc *packetConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 		return err
 	}
 	err = p.handler()
-	println("DEBUG HandleConn", err.Error())
 	if e := pc.core.peers.removePeer(publicKey(key)); e != nil {
 		return e
 	}
