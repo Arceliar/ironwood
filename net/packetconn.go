@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"runtime"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -13,13 +14,14 @@ import (
 type PacketConn interface {
 	net.PacketConn
 	HandleConn(ed25519.PublicKey, net.Conn) error
-	Resolve(string) (net.Addr, error)
+	ReadUndeliverable([]byte) (int, net.Addr, net.Addr, error)
 }
 
 type packetConn struct {
-	actor phony.Inbox
-	core  *core
-	recv  chan *dhtTraffic // read buffer
+	actor        phony.Inbox
+	core         *core
+	recv         chan *dhtTraffic // read buffer
+	recvWrongKey chan *dhtTraffic // read buffer for packets sent to a different key
 }
 
 type Addr ed25519.PublicKey
@@ -50,22 +52,18 @@ func NewPacketConn(secret ed25519.PrivateKey) (PacketConn, error) {
 
 func (pc *packetConn) init(c *core) {
 	pc.core = c
-	pc.recv = make(chan *dhtTraffic, 1)
+	pc.recv = make(chan *dhtTraffic, 32)
+	pc.recvWrongKey = make(chan *dhtTraffic, 32)
 }
 
-func (pc *packetConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	// TODO timeout, also sanity check dest address
-	//  maybe return an error that contains the dest address if it's not an exact match?
-	//  Or add some way to set up how many matching bits are required
-	//    Needed for e.g. cryptographically generated ipv6 addresses
-	//  Part of NewPacketConn or some function called at some point?...
+func (pc *packetConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	tr := <-pc.recv
 	copy(p, tr.payload)
 	n = len(tr.payload)
 	if len(p) < len(tr.payload) {
 		n = len(p)
 	}
-	addr = tr.source.addr()
+	from = tr.source.addr()
 	return
 }
 
@@ -91,7 +89,7 @@ func (pc *packetConn) Close() error {
 }
 
 func (pc *packetConn) LocalAddr() net.Addr {
-	a := Addr(pc.core.crypto.publicKey)
+	a := Addr(append([]byte(nil), pc.core.crypto.publicKey...))
 	return &a
 }
 
@@ -126,22 +124,34 @@ func (pc *packetConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	return err
 }
 
-func (pc *packetConn) handleTraffic(from phony.Actor, tr *dhtTraffic) {
-	if !tr.dest.equal(pc.core.crypto.publicKey) {
-		return
+func (pc *packetConn) ReadUndeliverable(p []byte) (n int, local, remote net.Addr, err error) {
+	tr := <-pc.recvWrongKey
+	copy(p, tr.payload)
+	n = len(tr.payload)
+	if len(p) < len(tr.payload) {
+		n = len(p)
 	}
-	from = nil // TODO buffer things intelligently, instead of just the actor queue
-	pc.actor.Act(from, func() {
-		pc.recv <- tr
-	})
+	local = tr.dest.addr()
+	remote = tr.source.addr()
+	return
 }
 
-func (pc *packetConn) Resolve(addr string) (net.Addr, error) {
-	panic("TODO implement Resolve")
-	// TODO prase a CIDR-like "hex/int" string into an ed key and an int for the number of known bits
-	//  If known bits == bits in key, immediately return key
-	//  Else block (with a timeout) while we send some sort of lookup packet (not yet implemented)
-	//    Return the result only if it matches the required bits of the key, else an error (or timeout)
-	// TODO make sure this whole procedure doens't allow DHT crawling...
-	return nil, nil
+func (pc *packetConn) handleTraffic(from phony.Actor, tr *dhtTraffic) {
+	if !tr.dest.equal(pc.core.crypto.publicKey) {
+		pc.actor.Act(from, func() {
+			select {
+			case pc.recvWrongKey <- tr:
+			default:
+			}
+			runtime.Gosched() // Give readers a chance to drain the queue
+		})
+	} else {
+		pc.actor.Act(from, func() {
+			select {
+			case pc.recv <- tr:
+			default:
+			}
+			runtime.Gosched() // Give readers a chance to drain the queue
+		})
+	}
 }
