@@ -1,6 +1,7 @@
 package net
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"time"
 
@@ -21,6 +22,7 @@ type dhtree struct {
 	succ   *dhtInfo             // successor in tree, who we maintain a path to
 	seq    uint64               // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
 	timer  *time.Timer          // time.AfterFunc to send bootstrap packets
+	wait   bool                 // FIXME this is a hack to let bad news spread before changing parents
 }
 
 func (t *dhtree) init(c *core) {
@@ -29,38 +31,70 @@ func (t *dhtree) init(c *core) {
 	t.dinfos = make(map[string]*dhtInfo)
 	t.self = &treeInfo{root: t.core.crypto.publicKey}
 	t.seq = uint64(time.Now().UnixNano())
+	r := make([]byte, 8)
+	if _, err := rand.Read(r); err != nil {
+		panic(err)
+	}
+	for idx := range r {
+		t.seq |= uint64(r[idx]) << 8 * uint64(idx)
+	}
 	t.timer = time.AfterFunc(0, func() { t.Act(nil, t._doBootstrap) })
 }
 
+// update adds a treeInfo to the spanning tree
+// it then fixes the tree (selecting a new parent, if needed) and the dht (restarting the bootstrap process)
+// if the info is from the current parent, then there's a delay before the tree/dht are fixed
+//  that prevents a race where we immediately switch to a new parent, who tries to do the same with us
+//  this avoids the tons of traffic generated when nodes race to use each other as parents
 func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 	t.Act(from, func() {
 		// The tree info should have been checked before this point
 		key := info.from()
+		oldInfo := t.tinfos[string(key)]
 		t.tinfos[string(key)] = info
-		if key.equal(t.self.from()) {
-			t.self = nil
+		if t.self == oldInfo {
+			//t.self = nil
+			t.self = &treeInfo{root: t.core.crypto.publicKey}
+			t.core.peers.sendTree(t, t.self)
+			if !t.wait {
+				t.wait = true
+				time.AfterFunc(time.Second, func() {
+					t.Act(nil, func() {
+						t.wait = false
+						t._fix()
+						t._doBootstrap()
+					})
+				})
+			}
+			return
 		}
-		t._fix()
-		t._doBootstrap() // FIXME don't do this every time, only when we need to...
+		if !t.wait {
+			t._fix()
+			t._doBootstrap() // FIXME don't do this every time, only when we need to...
+		}
 	})
 }
 
+// remove removes a peer from the tree, along with any paths through that peer in the dht
 func (t *dhtree) remove(from phony.Actor, info *treeInfo) {
 	t.Act(from, func() {
 		key := info.from()
+		oldInfo := t.tinfos[string(key)]
 		delete(t.tinfos, string(key))
-		if key.equal(t.self.from()) {
+		if t.self == oldInfo {
 			t.self = nil
 			t._fix()
 		}
 		for _, dinfo := range t.dinfos {
-			if key.equal(dinfo.prev) || key.equal(dinfo.prev) {
+			if key.equal(dinfo.prev) || key.equal(dinfo.next) {
 				t._teardown(key, dinfo.getTeardown())
 			}
 		}
 	})
 }
 
+// _fix selects the best parent (and is called in response to receiving a tree update)
+// if this is not the same as our current parent, then it sends a tree update to our peers and resets our predecessor/successor in the dht
 func (t *dhtree) _fix() {
 	oldSelf := t.self
 	if t.self == nil || treeLess(t.self.root, t.core.crypto.publicKey) {
@@ -101,13 +135,18 @@ func (t *dhtree) _fix() {
 	}
 }
 
+// _treeLookup selects the best next hop (in treespace) for the destination
 func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 	if t.core.crypto.publicKey.equal(dest.dest()) {
 		return t.core.crypto.publicKey
 	}
 	best := t.self
 	bestDist := best.dist(dest)
+	bestPeer := t.core.crypto.publicKey
 	for _, info := range t.tinfos {
+		if !info.root.equal(dest.root) {
+			continue
+		}
 		tmp := *info
 		tmp.hops = tmp.hops[:len(tmp.hops)-1]
 		dist := tmp.dist(dest)
@@ -122,15 +161,18 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 		if isBetter {
 			best = info
 			bestDist = dist
+			bestPeer = best.from()
 		}
 	}
 	if !best.root.equal(dest.root) {
 		// Dead end, so stay here
 		return t.core.crypto.publicKey
 	}
-	return best.from()
+	return bestPeer
 }
 
+// _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
+// this only uses the source direction of paths through the dht
 func (t *dhtree) _dhtLookup(dest publicKey) publicKey {
 	best := t.core.crypto.publicKey
 	bestPeer := t.core.crypto.publicKey
@@ -144,9 +186,17 @@ func (t *dhtree) _dhtLookup(dest publicKey) publicKey {
 	return bestPeer
 }
 
+// _dhtBootstrapLookup selects the next hop needed to route closer to the destination in dht keyspace
+// this uses the destination direction of paths through the dht, so the node at the end of the line is the right one to repair a gap in the dht
+// note that this also considers peers (this is what bootstraps the whole process)
+// it also considers the root, to make sure that multiple split rings will converge back to one
 func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
-	best := t.self.root
-	bestPeer := t.self.from()
+	best := t.core.crypto.publicKey
+	bestPeer := t.core.crypto.publicKey
+	if best.equal(dest) || dhtOrdered(best, t.self.root, dest) {
+		best = t.self.root
+		bestPeer = t.self.from()
+	}
 	for _, info := range t.tinfos {
 		peer := info.from()
 		if best.equal(dest) || dhtOrdered(best, peer, dest) {
@@ -164,6 +214,10 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
 	return bestPeer
 }
 
+// _dhtAdd adds a dhtInfo to the dht and returns true
+// it may return false if the path associated with the dhtInfo isn't allowed for some reason
+//  e.g. we know a better successor/predecessor for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
+// as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	for _, dinfo := range t.dinfos {
 		break // FIXME this is broken for some reason
@@ -185,6 +239,11 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	return true
 }
 
+// _handleBootstrap takes a bootstrap packet and checks if we know of a better predecessor for the source node
+// if yes, then we forward to the next hop in the path towards that predecessor
+// if no, then we decide whether or not this node is better than our current successor
+// if yes, then we get rid of our current successor (if any) and start setting up a new path to the source of the bootstrap
+// if no, then we drop the bootstrap without doing anything
 func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	// FIXME we need better sanity checks before removing an existing successor
 	//  e.g. test _treeLookup first
@@ -222,12 +281,14 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	}
 }
 
+// handleBootstrap is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrap
 func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	t.Act(from, func() {
 		t._handleBootstrap(bootstrap)
 	})
 }
 
+// newSetup returns a *dhtSetup for this node, with a new sequence number and signature
 func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 	t.seq++
 	setup := new(dhtSetup)
@@ -238,6 +299,9 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 	return setup
 }
 
+// _handleSetup checks if it's safe to add a path from the setup source to the setup destination
+// if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better predecessor, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
+// otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our predecessor path (if we are, tearing down our existing predecessor if one exists)
 func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if _, isIn := t.dinfos[string(setup.source)]; isIn {
 		// Already have a path from this source
@@ -275,6 +339,25 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 		t.succ = dinfo
 	}
 	if !t.core.crypto.publicKey.equal(next) {
+		var coords []string
+		coords = append(coords, t.self.root.addr().String())
+		for _, hop := range t.self.hops {
+			coords = append(coords, hop.next.addr().String())
+		}
+		var dc []string
+		dc = append(dc, setup.dest.root.addr().String())
+		for _, hop := range setup.dest.hops {
+			dc = append(dc, hop.next.addr().String())
+		}
+		var pcc [][]string
+		for _, tinfo := range t.tinfos {
+			var pc []string
+			pc = append(pc, tinfo.root.addr().String())
+			for _, hop := range tinfo.hops {
+				pc = append(pc, hop.next.addr().String())
+			}
+			pcc = append(pcc, pc)
+		}
 		t.core.peers.sendSetup(t, next, setup)
 	} else {
 		if t.pred != nil {
@@ -284,22 +367,24 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	}
 }
 
+// handleSetup is the dhtree actor behavior that sends a message to _handleSetup
 func (t *dhtree) handleSetup(from phony.Actor, prev publicKey, setup *dhtSetup) {
 	t.Act(from, func() {
 		t._handleSetup(prev, setup)
 	})
 }
 
+// _teardown removes the path associated with the teardown from our dht and forwards it to the next hop along that path (or does nothing if the teardown doesn't match a known path)
 func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 	if dinfo, isIn := t.dinfos[string(teardown.source)]; isIn {
 		if teardown.seq != dinfo.seq {
 			return
 		} else if !teardown.source.equal(dinfo.source) {
 			panic("DEBUG this should never happen")
-			return
+			// return
 		} else if !teardown.dest.equal(dinfo.dest) {
 			panic("DEBUG if this happens then there's a design problem")
-			return
+			// return
 		}
 		var next publicKey
 		if from.equal(dinfo.prev) {
@@ -325,13 +410,17 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 	}
 }
 
+// teardown is the dhtinfo actor behavior that sends a message to _teardown
 func (t *dhtree) teardown(from phony.Actor, peerKey publicKey, teardown *dhtTeardown) {
 	t.Act(from, func() {
 		t._teardown(peerKey, teardown)
 	})
 }
 
+// _doBootstrap decides whether or not to send a bootstrap packet
+// if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
+	//return // FIXME debug tree (root offline -> too much traffic to fix)
 	if t.timer != nil && t.pred == nil {
 		t._handleBootstrap(&dhtBootstrap{info: *t.self})
 		t.timer.Stop()
@@ -339,13 +428,19 @@ func (t *dhtree) _doBootstrap() {
 	}
 }
 
-func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic) {
+// handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
+// if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
+func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte) {
 	t.Act(from, func() {
+		var tr dhtTraffic
+		if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
+			return
+		}
 		next := t._dhtLookup(tr.dest)
 		if next.equal(t.core.crypto.publicKey) {
-			t.core.pconn.handleTraffic(t, tr)
+			t.core.pconn.handleTraffic(trbs)
 		} else {
-			t.core.peers.sendDHTTraffic(t, next, tr)
+			t.core.peers.sendDHTTraffic(t, next, trbs)
 		}
 	})
 }
@@ -544,7 +639,7 @@ func (s *dhtSetup) bytesForSig() []byte {
 func (s *dhtSetup) check() bool {
 	// FIXME checkSigs broken if from the root, same issue as with bootstrap packets...
 	return true
-	return s.dest.checkLoops() && s.source.verify(s.bytesForSig(), s.sig) && s.dest.checkSigs()
+	// return s.dest.checkLoops() && s.source.verify(s.bytesForSig(), s.sig) && s.dest.checkSigs()
 }
 
 func (s *dhtSetup) getTeardown() *dhtTeardown {
@@ -628,24 +723,23 @@ type dhtTraffic struct {
 	payload []byte
 }
 
-func (t *dhtTraffic) MarshalBinary() (data []byte, err error) {
-	data = append(data, t.source...)
-	data = append(data, t.dest...)
-	data = append(data, t.payload...)
-	return
+func (t *dhtTraffic) MarshalBinaryTo(slice []byte) ([]byte, error) {
+	slice = append(slice, t.source...)
+	slice = append(slice, t.dest...)
+	slice = append(slice, t.payload...)
+	if len(slice) > 65535 {
+		return slice, wireMarshalBinaryError
+	}
+	return slice, nil
 }
 
-func (t *dhtTraffic) UnmarshalBinary(data []byte) error {
-	var tmp dhtTraffic
-	if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
-		return wireUnmarshalBinaryError
-	} else if !wireChopBytes((*[]byte)(&tmp.dest), &data, publicKeySize) {
-		return wireUnmarshalBinaryError
-	} else if len(data) == 0 {
+func (t *dhtTraffic) UnmarshalBinaryInPlace(data []byte) error {
+	if len(data) < 2*publicKeySize {
 		return wireUnmarshalBinaryError
 	}
-	tmp.payload = append([]byte(nil), data...)
-	*t = tmp
+	t.source = data[:publicKeySize]
+	t.dest = data[publicKeySize : 2*publicKeySize]
+	t.payload = data[2*publicKeySize:]
 	return nil
 }
 

@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
-	"runtime"
 	"sync"
 	"time"
 
@@ -15,11 +14,11 @@ import (
 type PacketConn struct {
 	actor        phony.Inbox
 	core         *core
-	recv         chan *dhtTraffic // read buffer
-	recvWrongKey chan *dhtTraffic // read buffer for packets sent to a different key
+	recv         chan []byte // dhtTraffic read buffer
+	recvWrongKey chan []byte // dhtTraffic read buffer for packets sent to a different key
 	closeMutex   sync.Mutex
 	closed       chan struct{}
-	readDeadline deadline
+	readDeadline *deadline
 }
 
 // Addr implements the `net.Addr` interface for `ed25519.PublicKey` values.
@@ -55,20 +54,27 @@ func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 
 func (pc *PacketConn) init(c *core) {
 	pc.core = c
-	pc.recv = make(chan *dhtTraffic, 32)
-	pc.recvWrongKey = make(chan *dhtTraffic, 32)
+	pc.recv = make(chan []byte, 1)
+	pc.recvWrongKey = make(chan []byte, 1)
 	pc.readDeadline = newDeadline()
+	pc.closed = make(chan struct{})
 }
 
 // ReadFrom fulfills the net.PacketConn interface, with a *Addr returned as the from address.
+// Note that failing to call ReadFrom may cause the connection to block and/or leak memory.
 func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
-	var tr *dhtTraffic
+	var trbs []byte
 	select {
 	case <-pc.closed:
 		return 0, nil, errors.New("closed")
 	case <-pc.readDeadline.getCancel():
 		return 0, nil, errors.New("deadline exceeded")
-	case tr = <-pc.recv:
+	case trbs = <-pc.recv:
+	}
+	defer putBytes(trbs)
+	var tr dhtTraffic
+	if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
+		panic("this should never happen")
 	}
 	copy(p, tr.payload)
 	n = len(tr.payload)
@@ -93,11 +99,17 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if len(dest) != publicKeySize {
 		return 0, errors.New("incorrect address length")
 	}
-	tr := new(dhtTraffic)
-	tr.source = append(tr.source, pc.core.crypto.publicKey...)
-	tr.dest = append(tr.dest, dest...)
-	tr.payload = append(tr.payload, p...)
-	pc.core.dhtree.handleDHTTraffic(nil, tr)
+	var tr dhtTraffic
+	tr.source = pc.core.crypto.publicKey
+	tr.dest = dest
+	tr.payload = p
+	trbs, err := tr.MarshalBinaryTo(getBytes(0))
+	if err != nil {
+		// TODO do this when there's an oversized packet maybe?
+		putBytes(trbs)
+		return 0, errors.New("failed to encode traffic")
+	}
+	pc.core.dhtree.handleDHTTraffic(nil, trbs)
 	return len(p), nil
 }
 
@@ -111,7 +123,17 @@ func (pc *PacketConn) Close() error {
 	default:
 	}
 	close(pc.closed)
-	// TODO graceful shutdown, close all handlers, etc...
+	phony.Block(&pc.core.peers, func() {
+		for _, p := range pc.core.peers.peers {
+			p.conn.Close()
+		}
+	})
+	phony.Block(&pc.core.dhtree, func() {
+		if pc.core.dhtree.timer != nil {
+			pc.core.dhtree.timer.Stop()
+			pc.core.dhtree.timer = nil
+		}
+	})
 	return nil
 }
 
@@ -144,10 +166,14 @@ func (pc *PacketConn) SetWriteDeadline(t time.Time) error {
 
 // HandleConn expects a peer's public key as its first argument, and a net.Conn with TCP-like semantics (reliable ordered delivery) as its second argument.
 // This function blocks while the net.Conn is in use, and returns (without closing the net.Conn) if any error occurs.
+// This function returns (after closing the net.Conn) if PacketConn.Close() is called.
 func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	// Note: This should block until we're done with the Conn, then return without closing it
 	if len(key) != publicKeySize {
 		return errors.New("incorrect key length")
+	}
+	if pc.core.crypto.publicKey.equal(publicKey(key)) {
+		return errors.New("attempted to connect to self")
 	}
 	p, err := pc.core.peers.addPeer(publicKey(key), conn)
 	if err != nil {
@@ -163,14 +189,20 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 // ReadUndeliverable works exactly like ReadFrom, except it returns any packets that were sent to a different local address but cannot be forwarded further.
 // This happens if the LocalAddr is the immediate successor of the destination (higher by the smallest amount, modulo the keyspace size).
 // This may be useful for key discovery when a destination's full ed25519.PublicKey is not known (by zero padding the least unknown least significant bits).
+// Note that failing to call ReadUndeliverable may cause the connection to block and/or leak memory.
 func (pc *PacketConn) ReadUndeliverable(p []byte) (n int, local, remote net.Addr, err error) {
-	var tr *dhtTraffic
+	var trbs []byte
 	select {
 	case <-pc.closed:
 		return 0, nil, nil, errors.New("closed")
 	case <-pc.readDeadline.getCancel():
 		return 0, nil, nil, errors.New("deadline exceeded")
-	case tr = <-pc.recvWrongKey:
+	case trbs = <-pc.recvWrongKey:
+	}
+	defer putBytes(trbs)
+	var tr dhtTraffic
+	if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
+		panic("this should never happen")
 	}
 	copy(p, tr.payload)
 	n = len(tr.payload)
@@ -182,24 +214,24 @@ func (pc *PacketConn) ReadUndeliverable(p []byte) (n int, local, remote net.Addr
 	return
 }
 
-func (pc *PacketConn) handleTraffic(from phony.Actor, tr *dhtTraffic) {
-	if !tr.dest.equal(pc.core.crypto.publicKey) {
-		pc.actor.Act(from, func() {
-			select {
-			case pc.recvWrongKey <- tr:
-			default:
-			}
-			runtime.Gosched() // Give readers a chance to drain the queue
-		})
-	} else {
-		pc.actor.Act(from, func() {
-			select {
-			case pc.recv <- tr:
-			default:
-			}
-			runtime.Gosched() // Give readers a chance to drain the queue
-		})
+func (pc *PacketConn) handleTraffic(trbs []byte) {
+	var tr dhtTraffic
+	if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
+		panic("this should never happen")
 	}
+	var ch chan []byte
+	if !tr.dest.equal(pc.core.crypto.publicKey) {
+		ch = pc.recvWrongKey
+	} else {
+		ch = pc.recv
+	}
+	pc.actor.Act(nil, func() {
+		select {
+		case ch <- trbs:
+		case <-pc.closed:
+			putBytes(trbs)
+		}
+	})
 }
 
 type deadline struct {
@@ -209,11 +241,11 @@ type deadline struct {
 	cancel chan struct{}
 }
 
-func newDeadline() deadline {
-	var d deadline
-	d.once = new(sync.Once)
-	d.cancel = make(chan struct{})
-	return d
+func newDeadline() *deadline {
+	return &deadline{
+		once:   new(sync.Once),
+		cancel: make(chan struct{}),
+	}
 }
 
 func (d *deadline) set(t time.Time) {

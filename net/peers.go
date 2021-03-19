@@ -24,6 +24,13 @@ func (ps *peers) init(c *core) {
 func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 	var p *peer
 	var err error
+	ps.core.pconn.closeMutex.Lock()
+	defer ps.core.pconn.closeMutex.Unlock()
+	select {
+	case <-ps.core.pconn.closed:
+		return nil, errors.New("cannot add peer to closed PacketConn")
+	default:
+	}
 	phony.Block(ps, func() {
 		if _, isIn := ps.peers[string(key)]; isIn {
 			err = errors.New("peer already exists")
@@ -72,8 +79,7 @@ func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, teardown *dht
 			p.sendTeardown(ps, teardown)
 		} else {
 			return // Skip the below for now, it can happen if peers are removed
-			println("DEBUG sendTeardown", ps.core.crypto.publicKey.addr().String(), peerKey.addr().String(), teardown.seq, teardown.source.addr().String(), teardown.dest.addr().String())
-			panic("DEBUG tried to send teardown to nonexistant peer")
+			//panic("DEBUG tried to send teardown to nonexistant peer")
 		}
 	})
 }
@@ -88,10 +94,12 @@ func (ps *peers) sendSetup(from phony.Actor, peerKey publicKey, setup *dhtSetup)
 	})
 }
 
-func (ps *peers) sendDHTTraffic(from phony.Actor, peerKey publicKey, tr *dhtTraffic) {
+func (ps *peers) sendDHTTraffic(from phony.Actor, peerKey publicKey, trbs []byte) {
 	ps.Act(from, func() {
 		if p, isIn := ps.peers[string(peerKey)]; isIn {
-			p.sendDHTTraffic(ps, tr)
+			p.sendDHTTraffic(ps, trbs)
+		} else {
+			putBytes(trbs)
 		}
 	})
 }
@@ -105,10 +113,15 @@ type peer struct {
 }
 
 func (p *peer) _write(bs []byte) {
-	out := make([]byte, 8+len(bs))
-	binary.BigEndian.PutUint64(out[:8], uint64(len(bs)))
-	copy(out[8:], bs)
-	p.conn.Write(out)
+	out := getBytes(2 + len(bs))
+	defer putBytes(out)
+	if len(bs) > int(^uint16(0)) {
+		panic("this should never happen in testing")
+		// return
+	}
+	binary.BigEndian.PutUint16(out[:2], uint16(len(bs)))
+	copy(out[2:], bs)
+	_, _ = p.conn.Write(out)
 }
 
 func (p *peer) handler() error {
@@ -136,16 +149,17 @@ func (p *peer) handler() error {
 			p.sendTree(p.peers, info)
 		})
 	})
+	var lenBuf [2]byte
+	bs := make([]byte, 65535)
 	for {
-		var lenBuf [8]byte
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
 			return err
 		}
 		if _, err := io.ReadFull(p.conn, lenBuf[:]); err != nil {
 			return err
 		}
-		l := binary.BigEndian.Uint64(lenBuf[:])
-		bs := make([]byte, int(l))
+		size := int(binary.BigEndian.Uint16(lenBuf[:]))
+		bs = bs[:size]
 		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
 			return err
 		}
@@ -153,7 +167,6 @@ func (p *peer) handler() error {
 			return err
 		}
 		if err := p.handlePacket(bs); err != nil {
-			println("DEBUG Exiting:", bs[0])
 			return err
 		}
 	}
@@ -196,9 +209,8 @@ func (p *peer) handleTree(bs []byte) error {
 	}
 	dest := info.hops[len(info.hops)-1].next
 	if !p.peers.core.crypto.publicKey.equal(dest) {
-		println("DEBUG: incorrect destination:", p.peers.core.crypto.publicKey.addr().String(), dest.addr().String())
 		panic("This shouldn't happen in testing")
-		return errors.New("incorrect destination")
+		// return errors.New("incorrect destination")
 	}
 	p.info = info
 	p.peers.core.dhtree.update(nil, info)
@@ -274,15 +286,21 @@ func (p *peer) sendTeardown(from phony.Actor, teardown *dhtTeardown) {
 
 func (p *peer) handleDHTTraffic(bs []byte) error {
 	tr := new(dhtTraffic)
-	if err := tr.UnmarshalBinary(bs); err != nil {
-		return err
+	if err := tr.UnmarshalBinaryInPlace(bs); err != nil {
+		return err // This is just to check that it unmarshals correctly
 	}
-	p.peers.core.dhtree.handleDHTTraffic(nil, tr)
+	trbs := append(getBytes(0), bs...)
+	p.peers.core.dhtree.handleDHTTraffic(nil, trbs)
 	return nil
 }
 
-func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
+func (p *peer) sendDHTTraffic(from phony.Actor, trbs []byte) {
 	p.Act(from, func() {
-		p._sendProto(wireDHTTraffic, tr)
+		out := getBytes(0)
+		out = append(out, wireDHTTraffic)
+		out = append(out, trbs...)
+		p._write(out)
+		putBytes(out)
+		putBytes(trbs)
 	})
 }

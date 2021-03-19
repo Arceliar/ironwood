@@ -22,29 +22,11 @@ func TestTwoNodes(t *testing.T) {
 	defer cB.Close()
 	go a.HandleConn(pubB, cA)
 	go b.HandleConn(pubA, cB)
+	waitForRoot([]*PacketConn{a, b}, 10*time.Second)
 	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
+	defer func() { timer.Stop() }()
 	tA := &a.core.dhtree
 	tB := &b.core.dhtree
-	for {
-		select {
-		case <-timer.C:
-			panic("timeout")
-		default:
-		}
-		var rA, rB publicKey
-		phony.Block(tA, func() {
-			rA = tA.self.root
-		})
-		phony.Block(tB, func() {
-			rB = tB.self.root
-		})
-		if bytes.Equal(rA, rB) {
-			break
-		}
-	}
-	timer.Stop()
-	timer = time.NewTimer(time.Second)
 	for {
 		select {
 		case <-timer.C:
@@ -167,6 +149,7 @@ func TestLineNetwork(t *testing.T) {
 		}()
 	}
 	close(wait)
+	waitForRoot(conns, 10*time.Second)
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
@@ -244,6 +227,152 @@ func TestLineNetwork(t *testing.T) {
 			case <-done:
 				timer.Stop()
 			}
+		}
+	}
+}
+
+func TestRandomTreeNetwork(t *testing.T) {
+	var conns []*PacketConn
+	randIdx := func() int {
+		return int(time.Now().UnixNano() % int64(len(conns)))
+	}
+	wait := make(chan struct{})
+	for idx := 0; idx < 32; idx++ {
+		_, priv, _ := ed25519.GenerateKey(nil)
+		conn, err := NewPacketConn(priv)
+		if err != nil {
+			panic(err)
+		}
+		if len(conns) > 0 {
+			pIdx := randIdx()
+			p := conns[pIdx]
+			keyA := ed25519.PublicKey(conn.LocalAddr().(*Addr).key())
+			keyB := ed25519.PublicKey(p.LocalAddr().(*Addr).key())
+			linkA, linkB := newDummyConn(keyA, keyB)
+			defer linkA.Close()
+			defer linkB.Close()
+			go func() {
+				<-wait
+				conn.HandleConn(keyB, linkA)
+			}()
+			go func() {
+				<-wait
+				p.HandleConn(keyA, linkB)
+			}()
+		}
+		conns = append(conns, conn)
+	}
+	close(wait)
+	waitForRoot(conns, 10*time.Second)
+	for aIdx := range conns {
+		a := conns[aIdx]
+		aAddr := a.LocalAddr()
+		aA := aAddr.(*Addr)
+		aK := aA.key()
+		for bIdx := range conns {
+			if bIdx == aIdx {
+				continue
+			}
+			b := conns[bIdx]
+			bAddr := b.LocalAddr()
+			done := make(chan struct{})
+			msg := []byte("test")
+			go func() {
+				// Send from a to b
+				for {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					if n, err := a.WriteTo(msg, bAddr); n != len(msg) || err != nil {
+						panic("write problem")
+					}
+					time.Sleep(time.Second)
+				}
+			}()
+			go func() {
+				defer close(done)
+				// Recv from a at b
+				read := make([]byte, 2048)
+				for {
+					n, from, err := b.ReadFrom(read)
+					bs := read[:n]
+					if !bytes.Equal(bs, msg) || err != nil {
+						if !bytes.Equal(bs, msg) {
+							println(string(bs), string(msg))
+							//panic("unequal")
+						}
+						if err != nil {
+							//panic(err)
+						}
+						//panic("read problem")
+					}
+					fA := from.(*Addr)
+					fK := fA.key()
+					if fK.equal(aK) {
+						break
+					}
+				}
+			}()
+			timer := time.NewTimer(3 * time.Second)
+			select {
+			case <-timer.C:
+				func() {
+					defer func() { recover() }()
+					close(done)
+				}()
+				for _, conn := range conns {
+					// Timeout could come from split rings, if the DHT isn't converging
+					//  FIXME this could race if the network is flapping for some reason, though it shouldn't be
+					var here, prev, next, root string
+					here = conn.LocalAddr().String()
+					if dinfo := conn.core.dhtree.pred; dinfo != nil {
+						prev = dinfo.source.addr().String()
+					}
+					if dinfo := conn.core.dhtree.succ; dinfo != nil {
+						next = dinfo.dest.addr().String()
+					}
+					root = conn.core.dhtree.self.root.addr().String()
+					t.Log(prev, ":", here, ":", next, ":", root)
+				}
+				t.Log("test")
+				panic("timeout")
+			case <-done:
+				timer.Stop()
+			}
+		}
+	}
+}
+
+// waitForRoot is a helper function that waits until all nodes are using the same root
+// that should usually mean the network has settled into a stable state, at least for static network tests
+func waitForRoot(conns []*PacketConn, timeout time.Duration) {
+	begin := time.Now()
+	for {
+		if time.Since(begin) > timeout {
+			panic("timeout")
+		}
+		var root publicKey
+		for _, conn := range conns {
+			phony.Block(&conn.core.dhtree, func() {
+				root = append(root, conn.core.dhtree.self.root...)
+			})
+			break
+		}
+		var bad bool
+		for _, conn := range conns {
+			var croot publicKey
+			phony.Block(&conn.core.dhtree, func() {
+				croot = append(croot, conn.core.dhtree.self.root...)
+			})
+			if !croot.equal(root) {
+				bad = true
+				break
+			}
+		}
+		if !bad {
+			break
 		}
 	}
 }
