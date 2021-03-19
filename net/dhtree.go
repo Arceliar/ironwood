@@ -451,6 +451,7 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte) {
 
 type treeInfo struct {
 	root publicKey
+	seq  uint64
 	hops []treeHop
 }
 
@@ -483,6 +484,9 @@ func (info *treeInfo) checkSigs() bool {
 	var bs []byte
 	key := info.root
 	bs = append(bs, info.root...)
+	seq := make([]byte, 8)
+	binary.BigEndian.PutUint64(seq, info.seq)
+	bs = append(bs, seq...)
 	for _, hop := range info.hops {
 		bs = append(bs, hop.next...)
 		if !key.verify(bs, hop.sig) {
@@ -511,6 +515,9 @@ func (info *treeInfo) add(priv privateKey, next publicKey) *treeInfo {
 	newInfo.hops = append([]treeHop(nil), info.hops...)
 	var bs []byte
 	bs = append(bs, info.root...)
+	seq := make([]byte, 8)
+	binary.BigEndian.PutUint64(seq, info.seq)
+	bs = append(bs, seq...)
 	for _, hop := range info.hops {
 		bs = append(bs, hop.next...)
 	}
@@ -543,6 +550,9 @@ func (info *treeInfo) dist(dest *treeInfo) int {
 
 func (info *treeInfo) MarshalBinary() (data []byte, err error) {
 	data = append(data, info.root...)
+  seq := make([]byte, 8)
+	binary.BigEndian.PutUint64(seq, info.seq)
+	data = append(data, seq...)
 	for _, hop := range info.hops {
 		data = append(data, hop.next...)
 		data = append(data, hop.sig...)
@@ -553,6 +563,12 @@ func (info *treeInfo) MarshalBinary() (data []byte, err error) {
 func (info *treeInfo) UnmarshalBinary(data []byte) error {
 	nfo := treeInfo{}
 	if !wireChopBytes((*[]byte)(&nfo.root), &data, publicKeySize) {
+		return wireUnmarshalBinaryError
+	}
+	if len(data) >= 8 {
+    nfo.seq = binary.BigEndian.Uint64(data[:8])
+    data = data[8:]
+	} else {
 		return wireUnmarshalBinaryError
 	}
 	for len(data) > 0 {
