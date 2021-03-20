@@ -236,7 +236,7 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 			bestPeer = best.from()
 		}
 	}
-	if !best.root.equal(dest.root) || best.seq != dest.seq {
+	if !best.root.equal(dest.root) || best.seq != dest.seq { // TODO? check self, not next/dest?
 		// Dead end, so stay here
 		return t.core.crypto.publicKey
 	}
@@ -294,7 +294,7 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
 		if bestInfo != nil && info.dest.equal(bestInfo.dest) && info.rootSeq > bestInfo.rootSeq {
 			// Favor new paths
 			best = info.dest
-			bestPeer = info.dest
+			bestPeer = info.next
 			bestInfo = info
 		}
 	}
