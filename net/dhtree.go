@@ -8,25 +8,33 @@ import (
 	"github.com/Arceliar/phony"
 )
 
+const (
+	treeTIMEOUT  = 60 * time.Second
+	treeANNOUNCE = treeTIMEOUT / 2
+	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
+)
+
 /********
  * tree *
  ********/
 
 type dhtree struct {
 	phony.Inbox
-	core   *core
-	tinfos map[string]*treeInfo // map[string(publicKey)]*treeInfo, key=peer
-	dinfos map[string]*dhtInfo  // map[string(publicKey)]*dhtInfo, key=source
-	self   *treeInfo            // self info
-	pred   *dhtInfo             // predecessor in tree, they maintain a path to us
-	succ   *dhtInfo             // successor in tree, who we maintain a path to
-	seq    uint64               // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
-	timer  *time.Timer          // time.AfterFunc to send bootstrap packets
-	wait   bool                 // FIXME this is a hack to let bad news spread before changing parents
+	core    *core
+	expired map[string]uint64    // map[string(publicKey)](treeInfo.seq) of expired infos per root pubkey (highest seq)
+	tinfos  map[string]*treeInfo // map[string(publicKey)]*treeInfo, key=peer
+	dinfos  map[string]*dhtInfo  // map[string(publicKey)]*dhtInfo, key=source
+	self    *treeInfo            // self info
+	pred    *dhtInfo             // predecessor in tree, they maintain a path to us
+	succ    *dhtInfo             // successor in tree, who we maintain a path to
+	seq     uint64               // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
+	timer   *time.Timer          // time.AfterFunc to send bootstrap packets
+	wait    bool                 // FIXME this is a hack to let bad news spread before changing parents
 }
 
 func (t *dhtree) init(c *core) {
 	t.core = c
+	t.expired = make(map[string]uint64)
 	t.tinfos = make(map[string]*treeInfo)
 	t.dinfos = make(map[string]*dhtInfo)
 	t.self = &treeInfo{root: t.core.crypto.publicKey}
@@ -52,7 +60,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 		key := info.from()
 		oldInfo := t.tinfos[string(key)]
 		t.tinfos[string(key)] = info
-		if t.self == oldInfo {
+		if t.self == oldInfo { // TODO also check root/seq stuff, no need to wait if that's updating
 			//t.self = nil
 			t.self = &treeInfo{root: t.core.crypto.publicKey}
 			t.core.peers.sendTree(t, t.self)
@@ -98,9 +106,16 @@ func (t *dhtree) remove(from phony.Actor, info *treeInfo) {
 func (t *dhtree) _fix() {
 	oldSelf := t.self
 	if t.self == nil || treeLess(t.self.root, t.core.crypto.publicKey) {
-		t.self = &treeInfo{root: t.core.crypto.publicKey}
+		// Note that seq needs to be non-decreasing for the node to function as a root
+		//  a timestamp it used to partly mitigate rollbacks from restarting
+		t.self = &treeInfo{root: t.core.crypto.publicKey, seq: uint64(time.Now().Unix())}
 	}
 	for _, info := range t.tinfos {
+		if oldSeq, isIn := t.expired[string(info.root)]; isIn {
+			if info.seq <= oldSeq {
+				continue // skip expired sequence numbers
+			}
+		}
 		switch {
 		case !info.checkLoops():
 			// This has a loop, e.g. it's from a child, so skip it
@@ -109,28 +124,65 @@ func (t *dhtree) _fix() {
 			t.self = info
 		case treeLess(info.root, t.self.root):
 			// This is a worse root, so don't do anything with it
-		case len(info.hops) < len(t.self.hops):
-			// This is a shorter path to the root
+		case info.seq > t.self.seq:
+			// This is a newer sequence number, so update parent
 			t.self = info
-		case len(info.hops) > len(t.self.hops):
-			// This is a longer path to the root, so don't do anything with it
-		case treeLess(t.self.from(), info.from()):
-			// This peer has a higher key than our current parent
-			t.self = info
+		case info.seq < t.self.seq:
+			// This is an older sequnce number, so ignore it
+			// TODO keep track of how long we've known an info, use the oldest one if seqs match
 		}
 	}
 	if t.self != oldSelf {
-		t.core.peers.sendTree(t, t.self)
-		// TODO? don't tear down every time thing change
-		//  Strictly required whenever the root changes
-		//  Ideally we probably want to tear down in at least some other case too
-		//  Otherwise we would keep an old path forever after better ones appear
-		//  Maybe in doBootstrap instead? That gets called after every tree update...
-		if t.pred != nil {
-			t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
+		if oldSelf == nil || !oldSelf.root.equal(t.self.root) || oldSelf.seq == t.self.seq {
+			// We've used an announcement from this root/seq before, so no need to start a timer
+		} else {
+			// Start a timer to make t.self.seq expire at some point
+			self := t.self
+			time.AfterFunc(treeTIMEOUT, func() {
+				if oldSeq, isIn := t.expired[string(t.self.root)]; !isIn || oldSeq < self.seq {
+					t.expired[string(t.self.root)] = self.seq
+					if t.self == self {
+						t.self = nil
+						t._fix()
+						t._doBootstrap()
+					}
+				}
+			})
 		}
-		if t.succ != nil {
-			t._teardown(t.core.crypto.publicKey, t.succ.getTeardown())
+		t.core.peers.sendTree(t, t.self)
+		if oldSelf == nil || !oldSelf.root.equal(t.self.root) || oldSelf.seq != t.self.seq {
+			//  Strictly required whenever the root changes
+			//  Ideally we probably want to tear down in at least some other case too
+			//  Otherwise we would keep an old path forever after better ones appear
+			//  For now, also tear down any time the root seq updates
+			//  TODO don't tear down, keep multiple paths and let the old seq paths expire...
+			if t.pred != nil {
+				t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
+			}
+			if t.succ != nil {
+				t._teardown(t.core.crypto.publicKey, t.succ.getTeardown())
+			}
+		}
+		if t.self.root.equal(t.core.crypto.publicKey) {
+			// We're the root, so schedule a timestamp update to happen later
+			self := t.self
+			time.AfterFunc(treeANNOUNCE, func() {
+				// TODO? save this timer and cancel it if needed?
+				t.Act(nil, func() {
+					if t.self == self {
+						t.self = nil
+						t._fix()
+						t._doBootstrap()
+					}
+				})
+			})
+		}
+		// Clean up t.expired
+		for skey := range t.expired {
+			key := publicKey(skey)
+			if key.equal(t.self.root) || treeLess(key, t.self.root) {
+				delete(t.expired, skey)
+			}
 		}
 	}
 }
@@ -550,7 +602,7 @@ func (info *treeInfo) dist(dest *treeInfo) int {
 
 func (info *treeInfo) MarshalBinary() (data []byte, err error) {
 	data = append(data, info.root...)
-  seq := make([]byte, 8)
+	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, info.seq)
 	data = append(data, seq...)
 	for _, hop := range info.hops {
@@ -566,8 +618,8 @@ func (info *treeInfo) UnmarshalBinary(data []byte) error {
 		return wireUnmarshalBinaryError
 	}
 	if len(data) >= 8 {
-    nfo.seq = binary.BigEndian.Uint64(data[:8])
-    data = data[8:]
+		nfo.seq = binary.BigEndian.Uint64(data[:8])
+		data = data[8:]
 	} else {
 		return wireUnmarshalBinaryError
 	}
