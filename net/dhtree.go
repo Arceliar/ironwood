@@ -387,7 +387,18 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 	if !t._dhtAdd(dinfo) {
 		t.core.peers.sendTeardown(t, prev, setup.getTeardown())
 	}
-	t.dinfos[dinfo.getKey()] = dinfo
+	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
+		t.Act(nil, func() {
+			// Clean up path if it has timed out
+			// TODO save this timer, cancel if removing the path prior to this
+			if info, isIn := t.dinfos[dinfo.getKey()]; isIn {
+				if !info.prev.equal(t.core.crypto.publicKey) {
+					t.core.peers.sendTeardown(t, info.prev, info.getTeardown())
+				}
+				t._teardown(info.prev, info.getTeardown())
+			}
+		})
+	})
 	if prev.equal(t.core.crypto.publicKey) {
 		// sanity checks, this should only happen when setting up our successor
 		if !setup.source.equal(prev) {
@@ -455,6 +466,7 @@ func (t *dhtree) _teardown(from publicKey, teardown *dhtTeardown) {
 		} else {
 			panic("DEBUG teardown of path from wrong node")
 		}
+		dinfo.timer.Stop()
 		delete(t.dinfos, teardown.getKey())
 		if !next.equal(t.core.crypto.publicKey) {
 			t.core.peers.sendTeardown(t, next, teardown)
@@ -660,6 +672,7 @@ type dhtInfo struct {
 	dest    publicKey
 	root    publicKey
 	rootSeq uint64
+	timer   *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
 }
 
 func (info *dhtInfo) getTeardown() *dhtTeardown {
