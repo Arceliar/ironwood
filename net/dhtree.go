@@ -291,8 +291,8 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
 			bestPeer = info.next
 			bestInfo = info
 		}
-		if bestInfo != nil && info.dest.equal(bestInfo.dest) && info.rootSeq < bestInfo.rootSeq {
-			// Favor old paths
+		if bestInfo != nil && info.dest.equal(bestInfo.dest) && info.rootSeq > bestInfo.rootSeq {
+			// Favor new paths
 			best = info.dest
 			bestPeer = info.dest
 			bestInfo = info
