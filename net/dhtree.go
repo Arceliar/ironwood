@@ -60,10 +60,15 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 		key := info.from()
 		oldInfo := t.tinfos[string(key)]
 		t.tinfos[string(key)] = info
-		if t.self == oldInfo { // TODO also check root/seq stuff, no need to wait if that's updating
-			// FIXME this is wrong now that roots send seq updates
-			//  We should only wait if the root and seq number are both still the same?
-			//t.self = nil
+		doWait := true
+		if t.self != oldInfo {
+			doWait = false
+		} else {
+			if info.root.equal(oldInfo.root) && info.seq != oldInfo.seq {
+				doWait = false
+			}
+		}
+		if doWait {
 			t.self = &treeInfo{root: t.core.crypto.publicKey}
 			t.core.peers.sendTree(t, t.self)
 			if !t.wait {
@@ -252,13 +257,18 @@ func (t *dhtree) _dhtLookup(dest publicKey) publicKey {
 	bestPeer := t.core.crypto.publicKey
 	var bestInfo *dhtInfo
 	for _, info := range t.dinfos {
+		doUpdate := false
 		if info.source.equal(dest) || dhtOrdered(dest, info.source, best) {
-			best = info.source
-			bestPeer = info.prev
-			bestInfo = info
+			doUpdate = true
 		}
-		if bestInfo != nil && info.source.equal(bestInfo.source) && info.rootSeq > bestInfo.rootSeq {
-			// Favor new paths
+		if bestInfo != nil && info.source.equal(bestInfo.source) {
+			if treeLess(bestInfo.root, info.root) {
+				doUpdate = true
+			} else if info.root.equal(bestInfo.root) && info.rootSeq > bestInfo.rootSeq {
+				doUpdate = true
+			}
+		}
+		if doUpdate {
 			best = info.source
 			bestPeer = info.prev
 			bestInfo = info
@@ -288,12 +298,21 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
 	}
 	var bestInfo *dhtInfo
 	for _, info := range t.dinfos {
+		doUpdate := false
 		if best.equal(dest) || dhtOrdered(best, info.dest, dest) {
+			doUpdate = true
 			best = info.dest
 			bestPeer = info.next
 			bestInfo = info
 		}
-		if bestInfo != nil && info.dest.equal(bestInfo.dest) && info.rootSeq > bestInfo.rootSeq {
+		if bestInfo != nil && info.dest.equal(bestInfo.dest) {
+			if treeLess(bestInfo.root, info.root) {
+				doUpdate = true
+			} else if info.root.equal(bestInfo.root) && info.rootSeq > bestInfo.rootSeq {
+				doUpdate = true
+			}
+		}
+		if doUpdate {
 			// Favor new paths
 			best = info.dest
 			bestPeer = info.next
