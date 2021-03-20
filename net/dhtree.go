@@ -134,7 +134,7 @@ func (t *dhtree) _fix() {
 			t.self = info
 		case info.time.After(t.self.time):
 			// This info has been around for less time (e.g. the path is less stable)
-			//  Note that everything after this is extremely unlikely to be reached...
+			// Note that everything after this is extremely unlikely to be reached...
 		case len(info.hops) < len(t.self.hops):
 			// This is a shorter path to the root
 			t.self = info
