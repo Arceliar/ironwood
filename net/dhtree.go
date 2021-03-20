@@ -130,6 +130,18 @@ func (t *dhtree) _fix() {
 		case info.seq < t.self.seq:
 			// This is an older sequnce number, so ignore it
 		case info.time.Before(t.self.time):
+			// This info has been around for longer (e.g. the path is more stable)
+			t.self = info
+		case info.time.After(t.self.time):
+			// This info has been around for less time (e.g. the path is less stable)
+			//  Note that everything after this is extremely unlikely to be reached...
+		case len(info.hops) < len(t.self.hops):
+			// This is a shorter path to the root
+			t.self = info
+		case len(info.hops) > len(t.self.hops):
+			// This is a longer path to the root, so don't do anything
+		case treeLess(t.self.from(), info.from()):
+			// This peer has a higher key than our current parent
 			t.self = info
 		}
 	}
@@ -159,10 +171,16 @@ func (t *dhtree) _fix() {
 			//  For now, also tear down any time the root seq updates
 			// TODO don't tear down, keep multiple paths and let the old seq paths expire...
 			if t.pred != nil {
-				t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
+				// Changed: Keep the old predecessor until we hear about a new one
+				//  We'll start sending bootstraps due to the mismatch in root/seq
+				//t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
 			}
 			if t.succ != nil {
-				t._teardown(t.core.crypto.publicKey, t.succ.getTeardown())
+				// Changed: Don't tear down the successor immediately, just set to nil
+				//  That way we'll respond to bootstraps
+				//  The destination side can tear down the old path when they get a new predecessor
+				//t._teardown(t.core.crypto.publicKey, t.succ.getTeardown())
+				t.succ = nil
 			}
 		}
 		if t.self.root.equal(t.core.crypto.publicKey) {
@@ -326,6 +344,12 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	case t.core.crypto.publicKey.equal(bootstrap.info.dest()):
 		// This is our own bootstrap, but we failed to find a next hop
 		return
+	case !bootstrap.info.root.equal(t.self.root):
+		// We have a different root, so tree lookups would fail
+		return
+	case bootstrap.info.seq != t.self.seq:
+		// This bootstrap is too old, so path setup would fail
+		return
 	case t.succ == nil:
 	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest):
 	default:
@@ -449,14 +473,28 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 		t.core.peers.sendSetup(t, next, setup)
 	} else {
 		if t.pred != nil {
-			best := dinfo
-			worst := t.pred
-			if dhtOrdered(best.source, worst.source, t.core.crypto.publicKey) {
-				best, worst = worst, best
+			// TODO get this right!
+			//  We need to replace the old predecessor in most cases
+			//  The exceptions are when:
+			//    1. The dinfo's root/seq don't match our current root/seq
+			//    2. The dinfo matches, but so does t.pred, and t.pred is better
+			//  What happens when the dinfo matches, t.pred does not, but t.pred is still better?...
+			//  Just doing something for now (replace pred) but not sure that's right...
+			doUpdate := true
+			if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
+				doUpdate = false
+			} else if !t.pred.root.equal(t.self.root) || t.pred.rootSeq != t.self.seq {
+				// The old pred is old enough to be replaced
+			} else if dhtOrdered(dinfo.source, t.pred.source, t.core.crypto.publicKey) {
+				// Both dinfo and t.pred match our root/seq, but dinfo is actually worse as a predecessor
+				doUpdate = false
 			}
-			// TODO edge case, check root and rootSeq to make sure best matches t.self
-			t.pred = best
-			t._teardown(t.core.crypto.publicKey, worst.getTeardown())
+			if doUpdate {
+				t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
+				t.pred = dinfo
+			} else {
+				t._teardown(t.core.crypto.publicKey, dinfo.getTeardown())
+			}
 		} else {
 			t.pred = dinfo
 		}
