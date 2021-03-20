@@ -198,7 +198,7 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 	bestDist := best.dist(dest)
 	bestPeer := t.core.crypto.publicKey
 	for _, info := range t.tinfos {
-		if !info.root.equal(dest.root) {
+		if !info.root.equal(dest.root) || info.seq != dest.seq {
 			continue
 		}
 		tmp := *info
@@ -218,7 +218,7 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 			bestPeer = best.from()
 		}
 	}
-	if !best.root.equal(dest.root) {
+	if !best.root.equal(dest.root) || best.seq != dest.seq {
 		// Dead end, so stay here
 		return t.core.crypto.publicKey
 	}
@@ -230,10 +230,18 @@ func (t *dhtree) _treeLookup(dest *treeInfo) publicKey {
 func (t *dhtree) _dhtLookup(dest publicKey) publicKey {
 	best := t.core.crypto.publicKey
 	bestPeer := t.core.crypto.publicKey
+	var bestInfo *dhtInfo
 	for _, info := range t.dinfos {
 		if info.source.equal(dest) || dhtOrdered(dest, info.source, best) {
 			best = info.source
 			bestPeer = info.prev
+			bestInfo = info
+		}
+		if bestInfo != nil && info.source.equal(bestInfo.source) && info.rootSeq > bestInfo.rootSeq {
+			// Favor new paths
+			best = info.source
+			bestPeer = info.prev
+			bestInfo = info
 		}
 	}
 	// TODO use self/peer info, and share code with the below...
@@ -258,10 +266,18 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) publicKey {
 			bestPeer = peer
 		}
 	}
+	var bestInfo *dhtInfo
 	for _, info := range t.dinfos {
 		if best.equal(dest) || dhtOrdered(best, info.dest, dest) {
 			best = info.dest
 			bestPeer = info.next
+			bestInfo = info
+		}
+		if bestInfo != nil && info.dest.equal(bestInfo.dest) && info.rootSeq < bestInfo.rootSeq {
+			// Favor old paths
+			best = info.dest
+			bestPeer = info.dest
+			bestInfo = info
 		}
 	}
 	// FIXME use all hops in self info, and share code with the above...
@@ -410,7 +426,7 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 		}
 		t.succ = dinfo
 	}
-	if !t.core.crypto.publicKey.equal(next) {
+	if !next.equal(t.core.crypto.publicKey) {
 		var coords []string
 		coords = append(coords, t.self.root.addr().String())
 		for _, hop := range t.self.hops {
@@ -433,9 +449,17 @@ func (t *dhtree) _handleSetup(prev publicKey, setup *dhtSetup) {
 		t.core.peers.sendSetup(t, next, setup)
 	} else {
 		if t.pred != nil {
-			t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
+			best := dinfo
+			worst := t.pred
+			if dhtOrdered(best.source, worst.source, t.core.crypto.publicKey) {
+				best, worst = worst, best
+			}
+			// TODO edge case, check root and rootSeq to make sure best matches t.self
+			t.pred = best
+			t._teardown(t.core.crypto.publicKey, worst.getTeardown())
+		} else {
+			t.pred = dinfo
 		}
-		t.pred = dinfo
 	}
 }
 
@@ -494,7 +518,10 @@ func (t *dhtree) teardown(from phony.Actor, peerKey publicKey, teardown *dhtTear
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
 	//return // FIXME debug tree (root offline -> too much traffic to fix)
-	if t.timer != nil && t.pred == nil {
+	if t.timer != nil {
+		if t.pred != nil && t.pred.root.equal(t.self.root) && t.pred.rootSeq == t.self.seq {
+			return
+		}
 		t._handleBootstrap(&dhtBootstrap{info: *t.self})
 		t.timer.Stop()
 		t.timer = time.AfterFunc(time.Second, func() { t.Act(nil, t._doBootstrap) })
