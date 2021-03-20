@@ -61,6 +61,8 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 		oldInfo := t.tinfos[string(key)]
 		t.tinfos[string(key)] = info
 		if t.self == oldInfo { // TODO also check root/seq stuff, no need to wait if that's updating
+			// FIXME this is wrong now that roots send seq updates
+			//  We should only wait if the root and seq number are both still the same?
 			//t.self = nil
 			t.self = &treeInfo{root: t.core.crypto.publicKey}
 			t.core.peers.sendTree(t, t.self)
@@ -352,18 +354,23 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 		return
 	case t.succ == nil:
 	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest):
+		// This bootstrap is from a better successor than our current one
+	case !t.succ.root.equal(t.self.root) || t.succ.rootSeq != t.self.seq:
+		// The curent successor needs replacing (old tree info)
 	default:
 		// We already have a better (FIXME? or equal) successor
 		return
 	}
-	if t.succ != nil {
-		sinfo := t.dinfos[t.succ.getKey()]
-		if sinfo == nil {
-			panic("no dhtInfo for successor, this should never happen")
-		}
-		t._teardown(t.core.crypto.publicKey, sinfo.getTeardown())
-		if t.succ != nil {
-			panic("this should never happen")
+	t.succ = nil
+	for _, dinfo := range t.dinfos {
+		// Former successors need to be notified that we're no longer a predecessor
+		// The only way to signal that is by tearing down the path
+		// We may have multiple former successor paths
+		//  From t.succ = nil when the tree changes, but kept around to bootstrap
+		// So loop over paths and close any going to a *different* node than the current successor
+		// The current successor can close the old path from the predecessor side after setup
+		if dinfo.source.equal(t.core.crypto.publicKey) && !dinfo.dest.equal(source) {
+			t._teardown(t.core.crypto.publicKey, dinfo.getTeardown())
 		}
 	}
 	setup := t.newSetup(&bootstrap.info)
