@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	treeTIMEOUT  = 60 * time.Second
+	treeTIMEOUT  = 600 * time.Second // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
 )
@@ -37,7 +37,7 @@ func (t *dhtree) init(c *core) {
 	t.expired = make(map[string]uint64)
 	t.tinfos = make(map[string]*treeInfo)
 	t.dinfos = make(map[dhtInfoKey]*dhtInfo) // TODO clean these up after some timeout
-	t.self = &treeInfo{root: t.core.crypto.publicKey}
+	t._fix()                                 // Initialize t.self and start announce and timeout timers
 	t.seq = uint64(time.Now().UnixNano())
 	r := make([]byte, 8)
 	if _, err := rand.Read(r); err != nil {
@@ -69,6 +69,9 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 			}
 		}
 		if doWait {
+			// FIXME? This next line is bad!
+			//  We set t.self without calling _fix(), so it doesn't start a timer for announce or timeout
+			//  The hack to fix it is to set t.self = nil after the wait timer fires below
 			t.self = &treeInfo{root: t.core.crypto.publicKey}
 			t.core.peers.sendTree(t, t.self)
 			if !t.wait {
@@ -76,6 +79,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 				time.AfterFunc(time.Second, func() {
 					t.Act(nil, func() {
 						t.wait = false
+						t.self = nil // So fix can reset things / start a proper timer
 						t._fix()
 						t._doBootstrap()
 					})
@@ -84,6 +88,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo) {
 			return
 		}
 		if !t.wait {
+			// TODO? something special if we're in the unsafe t.self state with no timer?
 			t._fix()
 			t._doBootstrap() // FIXME don't do this every time, only when we need to...
 		}
@@ -153,43 +158,33 @@ func (t *dhtree) _fix() {
 		}
 	}
 	if t.self != oldSelf {
-		if oldSelf == nil || !oldSelf.root.equal(t.self.root) || oldSelf.seq == t.self.seq {
+		if oldSelf != nil && oldSelf.root.equal(t.self.root) && oldSelf.seq == t.self.seq {
 			// We've used an announcement from this root/seq before, so no need to start a timer
 		} else {
 			// Start a timer to make t.self.seq expire at some point
 			self := t.self
 			time.AfterFunc(treeTIMEOUT, func() {
-				if oldSeq, isIn := t.expired[string(t.self.root)]; !isIn || oldSeq < self.seq {
-					t.expired[string(t.self.root)] = self.seq
-					if t.self == self {
-						t.self = nil
-						t._fix()
-						t._doBootstrap()
+				t.Act(nil, func() {
+					if oldSeq, isIn := t.expired[string(self.root)]; !isIn || oldSeq < self.seq {
+						t.expired[string(self.root)] = self.seq
+						if t.self.root.equal(self.root) && t.self.seq <= self.seq {
+							t.self = nil
+							t._fix()
+							t._doBootstrap()
+						}
 					}
-				}
+				})
 			})
 		}
 		t.core.peers.sendTree(t, t.self)
-		if oldSelf == nil || !oldSelf.root.equal(t.self.root) || oldSelf.seq != t.self.seq {
-			// TODO? merge this cleanly with the closely related conditions on the above if statement
-			// Strictly required whenever the root changes
-			//  Ideally we probably want to tear down in at least some other case too
-			//  Otherwise we would keep an old path forever after better ones appear
-			//  For now, also tear down any time the root seq updates
-			// TODO don't tear down, keep multiple paths and let the old seq paths expire...
-			if t.pred != nil {
-				// Changed: Keep the old predecessor until we hear about a new one
-				//  We'll start sending bootstraps due to the mismatch in root/seq
-				//t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
-			}
-			if t.succ != nil {
-				// Changed: Don't tear down the successor immediately, just set to nil
-				//  That way we'll respond to bootstraps
-				//  The destination side can tear down the old path when they get a new predecessor
-				//t._teardown(t.core.crypto.publicKey, t.succ.getTeardown())
-				t.succ = nil
-			}
+		/* TODO? Tear down the old successor if the root is different?
+		if t.succ != nil && oldSelf != nil && !oldSelf.root.equal(t.self.root) {
+			// The root changed, so we need to notify our successor
+			// Otherwise we may not be their best predecessor anymore
+			// All we can really do is tear down
+			t._teardown(t.core.crypto.publicKey, t.succ.getTeardown())
 		}
+		//*/
 		if t.self.root.equal(t.core.crypto.publicKey) {
 			// We're the root, so schedule a timestamp update to happen later
 			self := t.self
