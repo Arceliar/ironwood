@@ -358,6 +358,18 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	return true
 }
 
+// _newBootstrap returns a *dhtBootstrap for this node, using t.self, with a signature
+func (t *dhtree) _newBootstrap() *dhtBootstrap {
+	dbs := new(dhtBootstrap)
+	dbs.info = *t.self
+	sigBytes, err := dbs.info.MarshalBinary()
+	if err != nil {
+		panic("This should never happen")
+	}
+	dbs.sig = t.core.crypto.privateKey.sign(sigBytes)
+	return dbs
+}
+
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better predecessor for the source node
 // if yes, then we forward to the next hop in the path towards that predecessor
 // if no, then we decide whether or not this node is better than our current successor
@@ -402,7 +414,7 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 			t._teardown(nil, dinfo.getTeardown())
 		}
 	}
-	setup := t.newSetup(&bootstrap.info)
+	setup := t._newSetup(bootstrap)
 	t._handleSetup(nil, setup)
 	if t.succ == nil {
 		// This can happen if the treeLookup in handleSetup fails
@@ -418,8 +430,8 @@ func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	})
 }
 
-// newSetup returns a *dhtSetup for this node, with a new sequence number and signature
-func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
+// _newSetup returns a *dhtSetup for this node, with a new sequence number and signature
+func (t *dhtree) _newSetup(dest *dhtBootstrap) *dhtSetup {
 	t.seq++
 	setup := new(dhtSetup)
 	setup.seq = t.seq
@@ -433,8 +445,8 @@ func (t *dhtree) newSetup(dest *treeInfo) *dhtSetup {
 // if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better predecessor, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
 // otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our predecessor path (if we are, tearing down our existing predecessor if one exists)
 func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
-	next := t._treeLookup(&setup.dest)
-	dest := setup.dest.dest()
+	next := t._treeLookup(&setup.dest.info)
+	dest := setup.dest.info.dest()
 	if next == nil && !dest.equal(t.core.crypto.publicKey) {
 		// FIXME? this has problems if prev is self (from changes to tree state?)
 		if prev != nil {
@@ -448,8 +460,8 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	dinfo.prev = prev
 	dinfo.next = next
 	dinfo.dest = dest
-	dinfo.root = setup.dest.root
-	dinfo.rootSeq = setup.dest.seq
+	dinfo.root = setup.dest.info.root
+	dinfo.rootSeq = setup.dest.info.seq
 	if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
 		// Wrong root or mismatched seq
 		if prev != nil {
@@ -583,7 +595,7 @@ func (t *dhtree) _doBootstrap() {
 		if t.pred != nil && t.pred.root.equal(t.self.root) && t.pred.rootSeq == t.self.seq {
 			return
 		}
-		t._handleBootstrap(t.newBootstrap())
+		t._handleBootstrap(t._newBootstrap())
 		t.timer.Stop()
 		t.timer = time.AfterFunc(time.Second, func() { t.Act(nil, t._doBootstrap) })
 	}
@@ -786,17 +798,6 @@ type dhtBootstrap struct {
 	info treeInfo
 }
 
-func (t *dhtree) newBootstrap() *dhtBootstrap {
-	dbs := new(dhtBootstrap)
-	dbs.info = *t.self
-	sigBytes, err := dbs.info.MarshalBinary()
-	if err != nil {
-		panic("This should never happen")
-	}
-	dbs.sig = t.core.crypto.privateKey.sign(sigBytes)
-	return dbs
-}
-
 func (dbs *dhtBootstrap) check() bool {
 	if len(dbs.info.hops) > 0 {
 		if !dbs.info.checkLoops() || !dbs.info.checkSigs() {
@@ -841,28 +842,37 @@ type dhtSetup struct {
 	sig    signature
 	source publicKey
 	seq    uint64
-	dest   treeInfo // FIXME? needs a sig from the last hop? Be a bootstrap if that gets a sig?
+	dest   dhtBootstrap
 }
 
 func (s *dhtSetup) bytesForSig() []byte {
 	bs := make([]byte, 8)
 	binary.BigEndian.PutUint64(bs, s.seq)
 	bs = append(bs, s.source...)
-	bs = append(bs, s.dest.root...)
-	for _, hop := range s.dest.hops {
-		bs = append(bs, hop.next...)
+	m, err := s.dest.MarshalBinary()
+	if err != nil {
+		panic("this should never happen")
 	}
+	bs = append(bs, m...)
 	return bs
 }
 
 func (s *dhtSetup) check() bool {
-	// FIXME checkSigs broken if from the root, same issue as with bootstrap packets...
-	return true
-	// return s.dest.checkLoops() && s.source.verify(s.bytesForSig(), s.sig) && s.dest.checkSigs()
+	if !s.dest.check() {
+		return false
+	}
+	bfs := s.bytesForSig()
+	return s.source.verify(bfs, s.sig)
 }
 
 func (s *dhtSetup) getTeardown() *dhtTeardown {
-	return &dhtTeardown{seq: s.seq, source: s.source, dest: s.dest.dest(), root: s.dest.root, rootSeq: s.dest.seq}
+	return &dhtTeardown{
+		seq:     s.seq,
+		source:  s.source,
+		dest:    s.dest.info.dest(),
+		root:    s.dest.info.root,
+		rootSeq: s.dest.info.seq,
+	}
 }
 
 func (s *dhtSetup) MarshalBinary() (data []byte, err error) {
