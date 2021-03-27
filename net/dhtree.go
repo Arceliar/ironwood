@@ -583,7 +583,7 @@ func (t *dhtree) _doBootstrap() {
 		if t.pred != nil && t.pred.root.equal(t.self.root) && t.pred.rootSeq == t.self.seq {
 			return
 		}
-		t._handleBootstrap(&dhtBootstrap{info: *t.self})
+		t._handleBootstrap(t.newBootstrap())
 		t.timer.Stop()
 		t.timer = time.AfterFunc(time.Second, func() { t.Act(nil, t._doBootstrap) })
 	}
@@ -782,22 +782,51 @@ func (info *dhtInfo) getKey() dhtInfoKey {
  ****************/
 
 type dhtBootstrap struct {
+	sig  signature
 	info treeInfo
 }
 
+func (t *dhtree) newBootstrap() *dhtBootstrap {
+	dbs := new(dhtBootstrap)
+	dbs.info = *t.self
+	sigBytes, err := dbs.info.MarshalBinary()
+	if err != nil {
+		panic("This should never happen")
+	}
+	dbs.sig = t.core.crypto.privateKey.sign(sigBytes)
+	return dbs
+}
+
 func (dbs *dhtBootstrap) check() bool {
-	//FIXME checkSigs is broken if from the root, bootstrap probably needs its own format...
-	//return dbs.info.checkLoops() && dbs.info.checkSigs()
-	return true
+	if len(dbs.info.hops) > 0 {
+		if !dbs.info.checkLoops() || !dbs.info.checkSigs() {
+			return false
+		}
+	}
+	sigBytes, err := dbs.info.MarshalBinary()
+	if err != nil {
+		return false
+	}
+	dest := dbs.info.dest()
+	return dest.verify(sigBytes, dbs.sig)
 }
 
 func (dbs *dhtBootstrap) MarshalBinary() (data []byte, err error) {
-	return dbs.info.MarshalBinary()
+	var bs []byte
+	if bs, err = dbs.info.MarshalBinary(); err == nil {
+		data = append(data, dbs.sig...)
+		data = append(data, bs...)
+	}
+	return
 }
 
 func (dbs *dhtBootstrap) UnmarshalBinary(data []byte) error {
 	var tmp dhtBootstrap
-	if err := tmp.info.UnmarshalBinary(data); err != nil {
+	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
+		panic("THIS SHOULD NEVER HAPPEN")
+		return wireUnmarshalBinaryError
+	} else if err := tmp.info.UnmarshalBinary(data); err != nil {
+		panic("THIS SHOULD NEVER HAPPEN")
 		return err
 	}
 	*dbs = tmp
@@ -808,13 +837,11 @@ func (dbs *dhtBootstrap) UnmarshalBinary(data []byte) error {
  * dhtSetup *
  ************/
 
-// FIXME setup probably needs a path ID or something, to prevent races between setups and teardowns...
-
 type dhtSetup struct {
 	sig    signature
 	source publicKey
 	seq    uint64
-	dest   treeInfo
+	dest   treeInfo // FIXME? needs a sig from the last hop? Be a bootstrap if that gets a sig?
 }
 
 func (s *dhtSetup) bytesForSig() []byte {

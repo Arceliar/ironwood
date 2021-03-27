@@ -80,6 +80,12 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 	}
 	bootstrap := new(dhtBootstrap)
 	bootstrap.info = *info
+	sigBytes, err := bootstrap.info.MarshalBinary()
+	if err != nil {
+		panic("This should never happen")
+	}
+	sigKey := privateKey(priv)
+	bootstrap.sig = sigKey.sign(sigBytes)
 	if !bootstrap.check() {
 		panic("failed to check bootstrap")
 	}
