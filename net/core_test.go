@@ -40,17 +40,17 @@ func TestTwoNodes(t *testing.T) {
 		phony.Block(tB, func() {
 			sB = tB.self
 		})
-		var lA, lB publicKey
+		var lA, lB *peer
 		phony.Block(tA, func() {
 			lA = tA._treeLookup(sB)
 		})
 		phony.Block(tB, func() {
 			lB = tB._treeLookup(sA)
 		})
-		if !bytes.Equal(lA, tB.core.crypto.publicKey) {
+		if lA == nil || !bytes.Equal(lA.key, tB.core.crypto.publicKey) {
 			continue
 		}
-		if !bytes.Equal(lB, tA.core.crypto.publicKey) {
+		if lB == nil || !bytes.Equal(lB.key, tA.core.crypto.publicKey) {
 			continue
 		}
 		break

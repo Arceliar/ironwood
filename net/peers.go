@@ -10,15 +10,17 @@ import (
 	"github.com/Arceliar/phony"
 )
 
+type peerPort uint64
+
 type peers struct {
 	phony.Inbox // Used to create/remove peers
 	core        *core
-	peers       map[string]*peer
+	peers       map[peerPort]*peer
 }
 
 func (ps *peers) init(c *core) {
 	ps.core = c
-	ps.peers = make(map[string]*peer)
+	ps.peers = make(map[peerPort]*peer)
 }
 
 func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
@@ -32,26 +34,31 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 	default:
 	}
 	phony.Block(ps, func() {
-		if _, isIn := ps.peers[string(key)]; isIn {
-			err = errors.New("peer already exists")
-		} else {
-			p = new(peer)
-			p.peers = ps
-			p.conn = conn
-			p.key = key
-			ps.peers[string(key)] = p
+		var port peerPort
+		for idx := 0; ; idx++ {
+			if _, isIn := ps.peers[peerPort(idx)]; isIn {
+				continue
+			}
+			port = peerPort(idx)
+			break
 		}
+		p = new(peer)
+		p.peers = ps
+		p.conn = conn
+		p.key = key
+		p.port = port
+		ps.peers[port] = p
 	})
 	return p, err
 }
 
-func (ps *peers) removePeer(from publicKey) error {
+func (ps *peers) removePeer(port peerPort) error {
 	var err error
 	phony.Block(ps, func() {
-		if _, isIn := ps.peers[string(from)]; !isIn {
+		if _, isIn := ps.peers[port]; !isIn {
 			err = errors.New("peer not found")
 		} else {
-			delete(ps.peers, string(from))
+			delete(ps.peers, port)
 		}
 	})
 	return err
@@ -65,17 +72,17 @@ func (ps *peers) sendTree(from phony.Actor, info *treeInfo) {
 	})
 }
 
-func (ps *peers) sendBootstrap(from phony.Actor, peerKey publicKey, bootstrap *dhtBootstrap) {
+func (ps *peers) sendBootstrap(from phony.Actor, port peerPort, bootstrap *dhtBootstrap) {
 	ps.Act(from, func() {
-		if p, isIn := ps.peers[string(peerKey)]; isIn {
+		if p, isIn := ps.peers[port]; isIn {
 			p.sendBootstrap(ps, bootstrap)
 		}
 	})
 }
 
-func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, teardown *dhtTeardown) {
+func (ps *peers) sendTeardown(from phony.Actor, port peerPort, teardown *dhtTeardown) {
 	ps.Act(from, func() {
-		if p, isIn := ps.peers[string(peerKey)]; isIn {
+		if p, isIn := ps.peers[port]; isIn {
 			p.sendTeardown(ps, teardown)
 		} else {
 			return // Skip the below for now, it can happen if peers are removed
@@ -84,19 +91,20 @@ func (ps *peers) sendTeardown(from phony.Actor, peerKey publicKey, teardown *dht
 	})
 }
 
-func (ps *peers) sendSetup(from phony.Actor, peerKey publicKey, setup *dhtSetup) {
+func (ps *peers) sendSetup(from phony.Actor, port peerPort, setup *dhtSetup) {
 	ps.Act(from, func() {
-		if p, isIn := ps.peers[string(peerKey)]; isIn {
+		if p, isIn := ps.peers[port]; isIn {
 			p.sendSetup(ps, setup)
 		} else {
-			ps.core.dhtree.teardown(ps, peerKey, setup.getTeardown())
+			panic("FIXME publicKey / teardown logic")
+			ps.core.dhtree.teardown(ps, nil, setup.getTeardown()) // FIXME middle arg = peer for peer.port
 		}
 	})
 }
 
-func (ps *peers) sendDHTTraffic(from phony.Actor, peerKey publicKey, trbs []byte) {
+func (ps *peers) sendDHTTraffic(from phony.Actor, port peerPort, trbs []byte) {
 	ps.Act(from, func() {
-		if p, isIn := ps.peers[string(peerKey)]; isIn {
+		if p, isIn := ps.peers[port]; isIn {
 			p.sendDHTTraffic(ps, trbs)
 		} else {
 			putBytes(trbs)
@@ -110,6 +118,7 @@ type peer struct {
 	conn        net.Conn
 	key         publicKey
 	info        *treeInfo
+	port        peerPort
 }
 
 func (p *peer) _write(bs []byte) {
@@ -127,7 +136,7 @@ func (p *peer) _write(bs []byte) {
 func (p *peer) handler() error {
 	defer func() {
 		if p.info != nil {
-			p.peers.core.dhtree.remove(nil, p.info)
+			p.peers.core.dhtree.remove(nil, p)
 		}
 	}()
 	done := make(chan struct{})
@@ -213,7 +222,7 @@ func (p *peer) handleTree(bs []byte) error {
 		// return errors.New("incorrect destination")
 	}
 	p.info = info
-	p.peers.core.dhtree.update(nil, info)
+	p.peers.core.dhtree.update(nil, info, p)
 	return nil
 }
 
@@ -259,7 +268,7 @@ func (p *peer) handleSetup(bs []byte) error {
 		panic("DEBUG bad setup")
 		return errors.New("invalid setup")
 	}
-	p.peers.core.dhtree.handleSetup(nil, p.key, setup)
+	p.peers.core.dhtree.handleSetup(nil, p, setup)
 	return nil
 }
 
@@ -274,7 +283,7 @@ func (p *peer) handleTeardown(bs []byte) error {
 	if err := teardown.UnmarshalBinary(bs); err != nil {
 		return err
 	}
-	p.peers.core.dhtree.teardown(nil, p.key, teardown)
+	p.peers.core.dhtree.teardown(nil, p, teardown)
 	return nil
 }
 

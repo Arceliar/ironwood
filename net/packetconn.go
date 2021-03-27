@@ -180,7 +180,7 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 		return err
 	}
 	err = p.handler()
-	if e := pc.core.peers.removePeer(publicKey(key)); e != nil {
+	if e := pc.core.peers.removePeer(p.port); e != nil {
 		return e
 	}
 	return err
