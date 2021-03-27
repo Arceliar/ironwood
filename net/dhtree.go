@@ -49,6 +49,12 @@ func (t *dhtree) init(c *core) {
 	t.timer = time.AfterFunc(0, func() { t.Act(nil, t._doBootstrap) })
 }
 
+func (t *dhtree) _sendTree() {
+	for p := range t.tinfos {
+		p.sendTree(t, t.self)
+	}
+}
+
 // update adds a treeInfo to the spanning tree
 // it then fixes the tree (selecting a new parent, if needed) and the dht (restarting the bootstrap process)
 // if the info is from the current parent, then there's a delay before the tree/dht are fixed
@@ -72,7 +78,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			//  We set t.self without calling _fix(), so it doesn't start a timer for announce or timeout
 			//  The hack to fix it is to set t.self = nil after the wait timer fires below
 			t.self = &treeInfo{root: t.core.crypto.publicKey}
-			t.core.peers.sendTree(t, t.self)
+			t._sendTree() //t.core.peers.sendTree(t, t.self)
 			if !t.wait {
 				t.wait = true
 				time.AfterFunc(time.Second, func() {
@@ -90,6 +96,11 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			// TODO? something special if we're in the unsafe t.self state with no timer?
 			t._fix()
 			t._doBootstrap() // FIXME don't do this every time, only when we need to...
+		}
+		if oldInfo == nil {
+			// The peer may have missed an update due to a race between creating the peer and now
+			// Easiest way to fix the problem is to just send it another update right now
+			p.sendTree(t, t.self)
 		}
 	})
 }
@@ -174,7 +185,7 @@ func (t *dhtree) _fix() {
 				})
 			})
 		}
-		t.core.peers.sendTree(t, t.self)
+		t._sendTree() //t.core.peers.sendTree(t, t.self)
 		/* TODO? Tear down the old successor if the root is different?
 		if t.succ != nil && oldSelf != nil && !oldSelf.root.equal(t.self.root) {
 			// The root changed, so we need to notify our successor
@@ -359,7 +370,7 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	next := t._dhtBootstrapLookup(source)
 	switch {
 	case next != nil:
-		t.core.peers.sendBootstrap(t, next.port, bootstrap)
+		next.sendBootstrap(t, bootstrap)
 		return
 	case t.core.crypto.publicKey.equal(bootstrap.info.dest()):
 		// This is our own bootstrap, but we failed to find a next hop
@@ -427,7 +438,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	if next == nil && !dest.equal(t.core.crypto.publicKey) {
 		// FIXME? this has problems if prev is self (from changes to tree state?)
 		if prev != nil {
-			t.core.peers.sendTeardown(t, prev.port, setup.getTeardown())
+			prev.sendTeardown(t, setup.getTeardown())
 		}
 		return
 	}
@@ -442,20 +453,20 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
 		// Wrong root or mismatched seq
 		if prev != nil {
-			t.core.peers.sendTeardown(t, prev.port, setup.getTeardown())
+			prev.sendTeardown(t, setup.getTeardown())
 		}
 		return
 	}
 	if _, isIn := t.dinfos[dinfo.getKey()]; isIn {
 		// Already have a path from this source
 		if prev != nil {
-			t.core.peers.sendTeardown(t, prev.port, setup.getTeardown())
+			prev.sendTeardown(t, setup.getTeardown())
 		}
 		return
 	}
 	if !t._dhtAdd(dinfo) {
 		if prev != nil {
-			t.core.peers.sendTeardown(t, prev.port, setup.getTeardown())
+			prev.sendTeardown(t, setup.getTeardown())
 		}
 	}
 	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
@@ -464,7 +475,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 			// TODO save this timer, cancel if removing the path prior to this
 			if info, isIn := t.dinfos[dinfo.getKey()]; isIn {
 				if info.prev != nil {
-					t.core.peers.sendTeardown(t, info.prev.port, info.getTeardown())
+					info.prev.sendTeardown(t, info.getTeardown())
 				}
 				t._teardown(info.prev, info.getTeardown())
 			}
@@ -482,7 +493,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 		t.succ = dinfo
 	}
 	if next != nil {
-		t.core.peers.sendSetup(t, next.port, setup)
+		next.sendSetup(t, setup)
 	} else {
 		if t.pred != nil {
 			// TODO get this right!
@@ -543,7 +554,7 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 		dinfo.timer.Stop()
 		delete(t.dinfos, teardown.getKey())
 		if next != nil {
-			t.core.peers.sendTeardown(t, next.port, teardown)
+			next.sendTeardown(t, teardown)
 		}
 		if t.pred == dinfo {
 			t.pred = nil
@@ -590,7 +601,7 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte) {
 		if next == nil {
 			t.core.pconn.handleTraffic(trbs)
 		} else {
-			t.core.peers.sendDHTTraffic(t, next.port, trbs)
+			next.sendDHTTraffic(t, trbs)
 		}
 	})
 }

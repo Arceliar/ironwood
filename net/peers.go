@@ -64,54 +64,6 @@ func (ps *peers) removePeer(port peerPort) error {
 	return err
 }
 
-func (ps *peers) sendTree(from phony.Actor, info *treeInfo) {
-	ps.Act(from, func() {
-		for _, p := range ps.peers {
-			p.sendTree(ps, info)
-		}
-	})
-}
-
-func (ps *peers) sendBootstrap(from phony.Actor, port peerPort, bootstrap *dhtBootstrap) {
-	ps.Act(from, func() {
-		if p, isIn := ps.peers[port]; isIn {
-			p.sendBootstrap(ps, bootstrap)
-		}
-	})
-}
-
-func (ps *peers) sendTeardown(from phony.Actor, port peerPort, teardown *dhtTeardown) {
-	ps.Act(from, func() {
-		if p, isIn := ps.peers[port]; isIn {
-			p.sendTeardown(ps, teardown)
-		} else {
-			return // Skip the below for now, it can happen if peers are removed
-			//panic("DEBUG tried to send teardown to nonexistant peer")
-		}
-	})
-}
-
-func (ps *peers) sendSetup(from phony.Actor, port peerPort, setup *dhtSetup) {
-	ps.Act(from, func() {
-		if p, isIn := ps.peers[port]; isIn {
-			p.sendSetup(ps, setup)
-		} else {
-			panic("FIXME publicKey / teardown logic")
-			ps.core.dhtree.teardown(ps, nil, setup.getTeardown()) // FIXME middle arg = peer for peer.port
-		}
-	})
-}
-
-func (ps *peers) sendDHTTraffic(from phony.Actor, port peerPort, trbs []byte) {
-	ps.Act(from, func() {
-		if p, isIn := ps.peers[port]; isIn {
-			p.sendDHTTraffic(ps, trbs)
-		} else {
-			putBytes(trbs)
-		}
-	})
-}
-
 type peer struct {
 	phony.Inbox // Only used to process or send some protocol traffic
 	peers       *peers
