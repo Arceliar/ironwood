@@ -12,6 +12,9 @@ const (
 	wireProtoDHTBootstrap
 	wireProtoDHTSetup
 	wireProtoDHTTeardown
+	wireProtoPathNotify
+	wireProtoPathLookup
+	wireProtoPathResponse
 	wireDHTTraffic
 )
 

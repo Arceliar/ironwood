@@ -51,14 +51,14 @@ func (pf *pathfinder) getLookup(n *pathNotify) *pathLookup {
 	return nil
 }
 
-func (pf *pathfinder) getLookupResponse(l *pathLookup) *pathLookupResponse {
+func (pf *pathfinder) getResponse(l *pathLookup) *pathResponse {
 	// Check if lookup comes from us
 	dest := l.notify.info.dest()
 	if !dest.equal(pf.dhtree.core.crypto.publicKey) || !l.notify.check() {
 		// TODO? skip l.notify.check()? only check the last hop?
 		return nil
 	}
-	r := new(pathLookupResponse)
+	r := new(pathResponse)
 	r.from = pf.dhtree.core.crypto.publicKey
 	r.path = l.rpath
 	return r
@@ -216,22 +216,22 @@ func (l *pathLookup) UnmarshalBinary(data []byte) error {
  * pathLookupResponse *
  **********************/
 
-type pathLookupResponse struct {
+type pathResponse struct {
 	// TODO? a sig or something? Since we can't sign the rpath, which is the part we care about...
 	from  publicKey
 	path  []peerPort
 	rpath []peerPort
 }
 
-func (r *pathLookupResponse) MarshalBinary() (data []byte, err error) {
+func (r *pathResponse) MarshalBinary() (data []byte, err error) {
 	data = append(data, r.from...)
 	data = wireEncodePath(data, r.path)
 	data = wireEncodePath(data, r.rpath)
 	return
 }
 
-func (r *pathLookupResponse) UnmarshalBinary(data []byte) error {
-	var tmp pathLookupResponse
+func (r *pathResponse) UnmarshalBinary(data []byte) error {
+	var tmp pathResponse
 	if !wireChopBytes((*[]byte)(&tmp.from), &data, publicKeySize) {
 		panic("DEBUG")
 		return wireUnmarshalBinaryError
