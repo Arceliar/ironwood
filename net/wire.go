@@ -2,6 +2,7 @@ package net
 
 import (
 	"encoding"
+	"encoding/binary"
 	"errors"
 )
 
@@ -51,4 +52,18 @@ func wireDecode(data []byte) (obj binaryUnmarshaler, err error) {
 	}
 	err = obj.UnmarshalBinary(data[1:])
 	return
+}
+
+func wireEncodePort(dest []byte, port peerPort) []byte {
+	var b [10]byte
+	l := binary.PutUvarint(b[:], uint64(port))
+	return append(dest, b[:l]...)
+}
+
+func wireDecodePort(source []byte) (peerPort, int) {
+	p, l := binary.Uvarint(source)
+	if l < 0 {
+		l = -l
+	}
+	return peerPort(p), l
 }

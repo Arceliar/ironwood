@@ -824,10 +824,8 @@ func (dbs *dhtBootstrap) MarshalBinary() (data []byte, err error) {
 func (dbs *dhtBootstrap) UnmarshalBinary(data []byte) error {
 	var tmp dhtBootstrap
 	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
-		panic("THIS SHOULD NEVER HAPPEN")
 		return wireUnmarshalBinaryError
 	} else if err := tmp.info.UnmarshalBinary(data); err != nil {
-		panic("THIS SHOULD NEVER HAPPEN")
 		return err
 	}
 	*dbs = tmp

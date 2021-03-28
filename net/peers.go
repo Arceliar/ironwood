@@ -35,7 +35,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 	}
 	phony.Block(ps, func() {
 		var port peerPort
-		for idx := 0; ; idx++ {
+		for idx := 1; ; idx++ { // skip 0
 			if _, isIn := ps.peers[peerPort(idx)]; isIn {
 				continue
 			}
