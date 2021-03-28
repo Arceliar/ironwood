@@ -143,6 +143,11 @@ func (pf *pathfinder) handleResponse(from phony.Actor, r *pathResponse) {
 	})
 }
 
+func (pf *pathfinder) _doNotify(dest publicKey) {
+	n := pf._newNotify(dest)
+	pf.handleNotify(nil, n) // TODO pf._handleNotify
+}
+
 /* TODO actually bother to run this
 The basic logic is:
   0. Add a placeholder to pathfinder.paths for nodes we care about (make sure nil path is handled)
