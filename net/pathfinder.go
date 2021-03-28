@@ -40,7 +40,7 @@ func (pf *pathfinder) newNotify(dest publicKey) *pathNotify {
 
 func (pf *pathfinder) getLookup(n *pathNotify) *pathLookup {
 	if info, isIn := pf.paths[string(n.info.dest())]; isIn {
-		if time.Since(info.ltime) < pathfinderTHROTTLE {
+		if time.Since(info.ltime) < pathfinderTHROTTLE || !n.check() {
 			return nil
 		}
 		l := new(pathLookup)
@@ -78,6 +78,7 @@ func (pf *pathfinder) getPath(dest publicKey) []peerPort {
 	info.timer = time.AfterFunc(pathfinderTIMEOUT, func() {
 		pf.dhtree.Act(nil, func() {
 			if pf.paths[string(dest)] == info {
+				info.timer.Stop()
 				delete(pf.paths, string(dest))
 			}
 		})
@@ -134,6 +135,39 @@ func (pn *pathNotify) check() bool {
 	return dest.verify(bs, pn.sig)
 }
 
+func (pn *pathNotify) MarshalBinary() (data []byte, err error) {
+	if pn.info == nil {
+		panic("DEBUG")
+		return nil, wireMarshalBinaryError
+	}
+	var bs []byte
+	if bs, err = pn.info.MarshalBinary(); err != nil {
+		panic("DEBUG")
+		return
+	}
+	data = append(data, pn.sig...)
+	data = append(data, pn.dest...)
+	data = append(data, bs...)
+	return
+}
+
+func (pn *pathNotify) UnmarshalBinary(data []byte) error {
+	var tmp pathNotify
+	tmp.info = new(treeInfo)
+	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	} else if !wireChopBytes((*[]byte)(&tmp.dest), &data, publicKeySize) {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	} else if err := tmp.info.UnmarshalBinary(data); err != nil {
+		panic("DEBUG")
+		return err
+	}
+	*pn = tmp
+	return nil
+}
+
 /**************
  * pathLookup *
  **************/
@@ -141,6 +175,38 @@ func (pn *pathNotify) check() bool {
 type pathLookup struct {
 	notify pathNotify
 	rpath  []peerPort
+}
+
+func (l *pathLookup) MarshalBinary() (data []byte, err error) {
+	var bs []byte
+	if bs, err = l.notify.MarshalBinary(); err != nil {
+		return
+	}
+	data = wireEncodeUint(data, uint64(len(bs)))
+	data = append(data, bs...)
+	data = wireEncodePath(data, l.rpath)
+	return
+}
+
+func (l *pathLookup) UnmarshalBinary(data []byte) error {
+	var tmp pathLookup
+	u, begin := wireDecodeUint(data)
+	end := int(u) + begin
+	if end > len(data) {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	} else if err := tmp.UnmarshalBinary(data[begin:end]); err != nil {
+		panic("DEBUG")
+		return err
+	} else if data = data[end:]; !wireChopPath(&l.rpath, &data) {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	} else if len(data) > 0 {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	}
+	*l = tmp
+	return nil
 }
 
 // TODO logic to forward this towards pathLookup.notify.info via the tree
@@ -157,7 +223,33 @@ type pathLookupResponse struct {
 	rpath []peerPort
 }
 
-// TODO a counter or something to skip hops of path? Otherwise we'll need to truncate along the way...
+func (r *pathLookupResponse) MarshalBinary() (data []byte, err error) {
+	data = append(data, r.from...)
+	data = wireEncodePath(data, r.path)
+	data = wireEncodePath(data, r.rpath)
+	return
+}
+
+func (r *pathLookupResponse) UnmarshalBinary(data []byte) error {
+	var tmp pathLookupResponse
+	if !wireChopBytes((*[]byte)(&tmp.from), &data, publicKeySize) {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	} else if !wireChopPath(&r.path, &data) {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	} else if !wireChopPath(&r.rpath, &data) {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	} else if len(data) > 0 {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	}
+	*r = tmp
+	return nil
+}
+
+// TODO? a counter or something to skip hops of path? Otherwise we'll need to truncate along the way...
 
 /***************
  * pathTraffic *
