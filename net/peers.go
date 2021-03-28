@@ -150,6 +150,12 @@ func (p *peer) handlePacket(bs []byte) error {
 		return p.handleSetup(bs[1:])
 	case wireProtoDHTTeardown:
 		return p.handleTeardown(bs[1:])
+	case wireProtoPathNotify:
+		return p.handlePathNotify(bs[1:])
+	case wireProtoPathLookup:
+		return p.handlePathLookup(bs[1:])
+	case wireProtoPathResponse:
+		return p.handlePathResponse(bs[1:])
 	case wireDHTTraffic:
 		return p.handleDHTTraffic(bs[1:])
 	default:
@@ -242,6 +248,53 @@ func (p *peer) handleTeardown(bs []byte) error {
 func (p *peer) sendTeardown(from phony.Actor, teardown *dhtTeardown) {
 	p.Act(from, func() {
 		p._sendProto(wireProtoDHTTeardown, teardown)
+	})
+}
+
+func (p *peer) handlePathNotify(bs []byte) error {
+	notify := new(pathNotify)
+	if err := notify.UnmarshalBinary(bs); err != nil {
+		return err
+	}
+	p.peers.core.dhtree.pathfinder.handleNotify(p, notify)
+	return nil
+}
+
+func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
+	p.Act(from, func() {
+		p._sendProto(wireProtoPathNotify, notify)
+	})
+}
+
+func (p *peer) handlePathLookup(bs []byte) error {
+	lookup := new(pathLookup)
+	if err := lookup.UnmarshalBinary(bs); err != nil {
+		return err
+	}
+	lookup.rpath = append(lookup.rpath, p.port)
+	p.peers.core.dhtree.pathfinder.handleLookup(p, lookup)
+	return nil
+}
+
+func (p *peer) sendPathLookup(from phony.Actor, lookup *pathLookup) {
+	p.Act(from, func() {
+		p._sendProto(wireProtoPathNotify, lookup)
+	})
+}
+
+func (p *peer) handlePathResponse(bs []byte) error {
+	response := new(pathResponse)
+	if err := response.UnmarshalBinary(bs); err != nil {
+		return err
+	}
+	response.rpath = append(response.rpath, p.port)
+	p.peers.core.dhtree.pathfinder.handleResponse(p, response)
+	return nil
+}
+
+func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
+	p.Act(from, func() {
+		p._sendProto(wireProtoPathNotify, response)
 	})
 }
 

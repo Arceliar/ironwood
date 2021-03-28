@@ -2,6 +2,8 @@ package net
 
 import (
 	"time"
+
+	"github.com/Arceliar/phony"
 )
 
 const (
@@ -20,7 +22,7 @@ func (pf *pathfinder) init(t *dhtree) {
 	pf.paths = make(map[string]*pathInfo)
 }
 
-func (pf *pathfinder) newNotify(dest publicKey) *pathNotify {
+func (pf *pathfinder) _newNotify(dest publicKey) *pathNotify {
 	n := new(pathNotify)
 	n.info = pf.dhtree.self
 	n.dest = dest
@@ -38,7 +40,7 @@ func (pf *pathfinder) newNotify(dest publicKey) *pathNotify {
 	return n
 }
 
-func (pf *pathfinder) getLookup(n *pathNotify) *pathLookup {
+func (pf *pathfinder) _getLookup(n *pathNotify) *pathLookup {
 	if info, isIn := pf.paths[string(n.info.dest())]; isIn {
 		if time.Since(info.ltime) < pathfinderTHROTTLE || !n.check() {
 			return nil
@@ -51,7 +53,7 @@ func (pf *pathfinder) getLookup(n *pathNotify) *pathLookup {
 	return nil
 }
 
-func (pf *pathfinder) getResponse(l *pathLookup) *pathResponse {
+func (pf *pathfinder) _getResponse(l *pathLookup) *pathResponse {
 	// Check if lookup comes from us
 	dest := l.notify.info.dest()
 	if !dest.equal(pf.dhtree.core.crypto.publicKey) || !l.notify.check() {
@@ -60,11 +62,15 @@ func (pf *pathfinder) getResponse(l *pathLookup) *pathResponse {
 	}
 	r := new(pathResponse)
 	r.from = pf.dhtree.core.crypto.publicKey
-	r.path = l.rpath
+	r.path = make([]peerPort, 0, len(l.rpath)+1)
+	for idx := len(l.rpath) - 1; idx >= 0; idx-- {
+		r.path = append(r.path, l.rpath[idx])
+	}
+	r.path = append(r.path, 0)
 	return r
 }
 
-func (pf *pathfinder) getPath(dest publicKey) []peerPort {
+func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 	var info *pathInfo
 	if nfo, isIn := pf.paths[string(dest)]; isIn {
 		info = nfo
@@ -84,6 +90,57 @@ func (pf *pathfinder) getPath(dest publicKey) []peerPort {
 		})
 	})
 	return info.path
+}
+
+func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
+	pf.dhtree.Act(from, func() {
+		if next := pf.dhtree._dhtLookup(n.dest); next != nil {
+			next.sendPathNotify(pf.dhtree, n)
+		} else if l := pf._getLookup(n); l != nil {
+			pf.handleLookup(nil, l) // TODO pf._handleLookup
+		}
+	})
+}
+
+func (pf *pathfinder) handleLookup(from phony.Actor, l *pathLookup) {
+	pf.dhtree.Act(from, func() {
+		// TODO? check the treeInfo at some point
+		if next := pf.dhtree._treeLookup(l.notify.info); next != nil {
+			next.sendPathLookup(pf.dhtree, l)
+		} else if r := pf._getResponse(l); r != nil {
+			pf.handleResponse(nil, r) // TODO pf._handleResponse
+		}
+	})
+}
+
+func (pf *pathfinder) handleResponse(from phony.Actor, r *pathResponse) {
+	pf.dhtree.Act(from, func() {
+		// Look up next hop based on port
+		// TODO map of port->peer to make this fast
+		var next *peer
+		var nextPort peerPort
+		if len(r.path) > 0 {
+			// Get the next hop and remove it from the path that we'll forward
+			nextPort = r.path[0]
+			r.path = r.path[1:]
+		}
+		for p := range pf.dhtree.tinfos {
+			if p.port == nextPort {
+				next = p
+				break
+			}
+		}
+		if next != nil {
+			next.sendPathResponse(pf.dhtree, r)
+		} else if info, isIn := pf.paths[string(r.from)]; isIn {
+			// Reverse r.rpath and save it to info.path
+			info.path = info.path[:0]
+			for idx := len(r.rpath) - 1; idx >= 0; idx-- {
+				info.path = append(info.path, r.rpath[idx])
+			}
+			info.path = append(info.path, 0)
+		}
+	})
 }
 
 /* TODO actually bother to run this

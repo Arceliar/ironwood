@@ -20,16 +20,17 @@ const (
 
 type dhtree struct {
 	phony.Inbox
-	core    *core
-	expired map[string]uint64       // map[string(publicKey)](treeInfo.seq) of expired infos per root pubkey (highest seq)
-	tinfos  map[*peer]*treeInfo     // map[string(publicKey)]*treeInfo, key=peer
-	dinfos  map[dhtInfoKey]*dhtInfo //
-	self    *treeInfo               // self info
-	pred    *dhtInfo                // predecessor in tree, they maintain a path to us
-	succ    *dhtInfo                // successor in tree, who we maintain a path to
-	seq     uint64                  // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
-	timer   *time.Timer             // time.AfterFunc to send bootstrap packets
-	wait    bool                    // FIXME this is a hack to let bad news spread before changing parents
+	core       *core
+	pathfinder pathfinder
+	expired    map[string]uint64       // map[string(publicKey)](treeInfo.seq) of expired infos per root pubkey (highest seq)
+	tinfos     map[*peer]*treeInfo     // map[string(publicKey)]*treeInfo, key=peer
+	dinfos     map[dhtInfoKey]*dhtInfo //
+	self       *treeInfo               // self info
+	pred       *dhtInfo                // predecessor in tree, they maintain a path to us
+	succ       *dhtInfo                // successor in tree, who we maintain a path to
+	seq        uint64                  // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
+	timer      *time.Timer             // time.AfterFunc to send bootstrap packets
+	wait       bool                    // FIXME this is a hack to let bad news spread before changing parents
 }
 
 func (t *dhtree) init(c *core) {
@@ -47,6 +48,7 @@ func (t *dhtree) init(c *core) {
 		t.seq |= uint64(r[idx]) << 8 * uint64(idx)
 	}
 	t.timer = time.AfterFunc(0, func() { t.Act(nil, t._doBootstrap) })
+	t.pathfinder.init(t)
 }
 
 func (t *dhtree) _sendTree() {
