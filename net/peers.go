@@ -278,7 +278,7 @@ func (p *peer) handlePathLookup(bs []byte) error {
 
 func (p *peer) sendPathLookup(from phony.Actor, lookup *pathLookup) {
 	p.Act(from, func() {
-		p._sendProto(wireProtoPathNotify, lookup)
+		p._sendProto(wireProtoPathLookup, lookup)
 	})
 }
 
@@ -294,7 +294,7 @@ func (p *peer) handlePathResponse(bs []byte) error {
 
 func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
 	p.Act(from, func() {
-		p._sendProto(wireProtoPathNotify, response)
+		p._sendProto(wireProtoPathResponse, response)
 	})
 }
 

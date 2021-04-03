@@ -35,9 +35,7 @@ func (pf *pathfinder) _getNotify(dest publicKey) *pathNotify {
 		bs = append(bs, dest...)
 		bs = append(bs, ibytes...)
 		n.sig = pf.dhtree.core.crypto.privateKey.sign(bs)
-		if info, isIn := pf.paths[string(dest)]; isIn {
-			info.ntime = time.Now()
-		}
+		info.ntime = time.Now()
 		return n
 	}
 	return nil
@@ -83,6 +81,7 @@ func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 		info = new(pathInfo)
 		info.ltime = time.Now().Add(-pathfinderTHROTTLE)
 		info.ntime = time.Now().Add(-pathfinderTHROTTLE)
+		pf.paths[string(dest)] = info
 	}
 	info.timer = time.AfterFunc(pathfinderTIMEOUT, func() {
 		pf.dhtree.Act(nil, func() {
@@ -261,7 +260,7 @@ func (l *pathLookup) UnmarshalBinary(data []byte) error {
 	if end > len(data) {
 		panic("DEBUG")
 		return wireUnmarshalBinaryError
-	} else if err := tmp.UnmarshalBinary(data[begin:end]); err != nil {
+	} else if err := tmp.notify.UnmarshalBinary(data[begin:end]); err != nil {
 		panic("DEBUG")
 		return err
 	} else if data = data[end:]; !wireChopPath(&l.rpath, &data) {
