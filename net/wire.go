@@ -16,6 +16,7 @@ const (
 	wireProtoPathLookup
 	wireProtoPathResponse
 	wireDHTTraffic
+	wirePathTraffic
 )
 
 type binaryMarshaler encoding.BinaryMarshaler

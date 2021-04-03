@@ -3,6 +3,7 @@ package net
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"time"
@@ -158,6 +159,8 @@ func (p *peer) handlePacket(bs []byte) error {
 		return p.handlePathResponse(bs[1:])
 	case wireDHTTraffic:
 		return p.handleDHTTraffic(bs[1:])
+	case wirePathTraffic:
+		return p.handlePathTraffic(bs[1:])
 	default:
 		return errors.New("unrecognized packet type")
 	}
@@ -256,7 +259,7 @@ func (p *peer) handlePathNotify(bs []byte) error {
 	if err := notify.UnmarshalBinary(bs); err != nil {
 		return err
 	}
-	p.peers.core.dhtree.pathfinder.handleNotify(p, notify)
+	p.peers.core.dhtree.pathfinder.handleNotify(nil, notify)
 	return nil
 }
 
@@ -272,7 +275,7 @@ func (p *peer) handlePathLookup(bs []byte) error {
 		return err
 	}
 	lookup.rpath = append(lookup.rpath, p.port)
-	p.peers.core.dhtree.pathfinder.handleLookup(p, lookup)
+	p.peers.core.dhtree.pathfinder.handleLookup(nil, lookup)
 	return nil
 }
 
@@ -288,7 +291,7 @@ func (p *peer) handlePathResponse(bs []byte) error {
 		return err
 	}
 	response.rpath = append(response.rpath, p.port)
-	p.peers.core.dhtree.pathfinder.handleResponse(p, response)
+	p.peers.core.dhtree.pathfinder.handleResponse(nil, response)
 	return nil
 }
 
@@ -312,6 +315,56 @@ func (p *peer) sendDHTTraffic(from phony.Actor, trbs []byte) {
 	p.Act(from, func() {
 		out := getBytes(0)
 		out = append(out, wireDHTTraffic)
+		out = append(out, trbs...)
+		p._write(out)
+		putBytes(out)
+		putBytes(trbs)
+	})
+}
+
+func (p *peer) handlePathTraffic(bs []byte) error {
+	tr := new(pathTraffic)
+	if err := tr.UnmarshalBinaryInPlace(bs); err != nil {
+		return err
+	}
+	// TODO? skip all of the above and just trust it?...
+	// TODO? don't send to p.peers, have a (read-only) copy of the map locally? via atomics?
+	trbs := append(getBytes(0), bs...)
+	p.peers.handlePathTraffic(nil, trbs)
+	return nil
+}
+
+func (ps *peers) handlePathTraffic(from phony.Actor, trbs []byte) {
+	ps.Act(from, func() {
+		nextPort, trbs := pathPopFirstHop(trbs)
+		if next, isIn := ps.peers[nextPort]; isIn {
+			next.sendPathTraffic(nil, trbs)
+			fmt.Println("DEBUG sendPathTraffic success")
+		} else {
+			// Fall back to dhtTraffic
+			if nextPort != 0 {
+				tr := new(pathTraffic)
+				if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
+					panic("DEBUG")
+					return
+				}
+				var err error
+				if trbs, err = tr.dt.MarshalBinaryTo(trbs[:0]); err != nil {
+					panic("DEBUG")
+					return
+				}
+			}
+			// TODO never trigger a notify if nextPort == 0 (we're the destination)
+			fmt.Println("DEBUG sendPathTraffic fail:", nextPort)
+			ps.core.dhtree.handleDHTTraffic(nil, trbs)
+		}
+	})
+}
+
+func (p *peer) sendPathTraffic(from phony.Actor, trbs []byte) {
+	p.Act(from, func() {
+		out := getBytes(0)
+		out = append(out, wirePathTraffic)
 		out = append(out, trbs...)
 		p._write(out)
 		putBytes(out)
