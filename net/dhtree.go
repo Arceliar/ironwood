@@ -613,10 +613,10 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte, doNotify bool) 
 		}
 		next := t._dhtLookup(tr.dest)
 		if next == nil {
-			if doNotify && tr.dest.equal(t.core.crypto.publicKey) {
+			if tr.dest.equal(t.core.crypto.publicKey) {
 				var dest publicKey
 				dest = append(dest, tr.source...)
-				t.pathfinder._doNotify(dest)
+				t.pathfinder._doNotify(dest, !doNotify)
 			}
 			t.core.pconn.handleTraffic(trbs)
 		} else {

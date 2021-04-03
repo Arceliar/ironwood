@@ -22,8 +22,12 @@ func (pf *pathfinder) init(t *dhtree) {
 	pf.paths = make(map[string]*pathInfo)
 }
 
-func (pf *pathfinder) _getNotify(dest publicKey) *pathNotify {
-	if info, isIn := pf.paths[string(dest)]; isIn && time.Since(info.ntime) > pathfinderTHROTTLE {
+func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
+	throttle := pathfinderTHROTTLE
+	if keepAlive {
+		throttle = pathfinderTIMEOUT
+	}
+	if info, isIn := pf.paths[string(dest)]; isIn && time.Since(info.ntime) > throttle {
 		n := new(pathNotify)
 		n.info = pf.dhtree.self
 		n.dest = dest
@@ -145,8 +149,8 @@ func (pf *pathfinder) handleResponse(from phony.Actor, r *pathResponse) {
 	})
 }
 
-func (pf *pathfinder) _doNotify(dest publicKey) {
-	if n := pf._getNotify(dest); n != nil {
+func (pf *pathfinder) _doNotify(dest publicKey, keepAlive bool) {
+	if n := pf._getNotify(dest, keepAlive); n != nil {
 		pf.handleNotify(nil, n) // TODO pf._handleNotify
 	}
 }
