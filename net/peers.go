@@ -306,7 +306,7 @@ func (p *peer) handleDHTTraffic(bs []byte) error {
 		return err // This is just to check that it unmarshals correctly
 	}
 	trbs := append(getBytes(0), bs...)
-	p.peers.core.dhtree.handleDHTTraffic(nil, trbs)
+	p.peers.core.dhtree.handleDHTTraffic(nil, trbs, true)
 	return nil
 }
 
@@ -352,8 +352,7 @@ func (ps *peers) handlePathTraffic(from phony.Actor, trbs []byte) {
 					return
 				}
 			}
-			// TODO never trigger a notify if nextPort == 0 (we're the destination)
-			ps.core.dhtree.handleDHTTraffic(nil, trbs)
+			ps.core.dhtree.handleDHTTraffic(nil, trbs, false)
 		}
 	})
 }

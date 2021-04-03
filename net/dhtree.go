@@ -605,7 +605,7 @@ func (t *dhtree) _doBootstrap() {
 
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
-func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte) {
+func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte, doNotify bool) {
 	t.Act(from, func() {
 		var tr dhtTraffic
 		if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
@@ -613,7 +613,7 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte) {
 		}
 		next := t._dhtLookup(tr.dest)
 		if next == nil {
-			if tr.dest.equal(t.core.crypto.publicKey) {
+			if doNotify && tr.dest.equal(t.core.crypto.publicKey) {
 				var dest publicKey
 				dest = append(dest, tr.source...)
 				t.pathfinder._doNotify(dest)
@@ -644,7 +644,7 @@ func (t *dhtree) sendTraffic(from phony.Actor, trbs []byte) {
 			t.core.peers.handlePathTraffic(t, ptbs)
 			putBytes(trbs)
 		} else {
-			t.handleDHTTraffic(nil, trbs)
+			t.handleDHTTraffic(nil, trbs, false)
 		}
 	})
 }
