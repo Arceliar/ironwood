@@ -67,6 +67,7 @@ func wireEncodeUint(dest []byte, u uint64) []byte {
 func wireDecodeUint(source []byte) (uint64, int) {
 	u, l := binary.Uvarint(source)
 	if l < 0 {
+		panic("DEBUG")
 		l = -l
 	}
 	return u, l
@@ -85,6 +86,7 @@ func wireDecodePath(source []byte) (path []peerPort, length int) {
 	bs := source
 	for len(bs) > 0 {
 		u, l := wireDecodeUint(bs)
+		bs = bs[l:]
 		path = append(path, peerPort(u))
 		length += l
 		if u == 0 {

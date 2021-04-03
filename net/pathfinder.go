@@ -263,7 +263,7 @@ func (l *pathLookup) UnmarshalBinary(data []byte) error {
 	} else if err := tmp.notify.UnmarshalBinary(data[begin:end]); err != nil {
 		panic("DEBUG")
 		return err
-	} else if data = data[end:]; !wireChopPath(&l.rpath, &data) {
+	} else if data = data[end:]; !wireChopPath(&tmp.rpath, &data) {
 		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if len(data) > 0 {
@@ -300,10 +300,10 @@ func (r *pathResponse) UnmarshalBinary(data []byte) error {
 	if !wireChopBytes((*[]byte)(&tmp.from), &data, publicKeySize) {
 		panic("DEBUG")
 		return wireUnmarshalBinaryError
-	} else if !wireChopPath(&r.path, &data) {
+	} else if !wireChopPath(&tmp.path, &data) {
 		panic("DEBUG")
 		return wireUnmarshalBinaryError
-	} else if !wireChopPath(&r.rpath, &data) {
+	} else if !wireChopPath(&tmp.rpath, &data) {
 		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if len(data) > 0 {
@@ -336,14 +336,15 @@ func (t *pathTraffic) MarshalBinaryTo(slice []byte) ([]byte, error) {
 }
 
 func (t *pathTraffic) UnmarshalBinaryInPlace(data []byte) error {
-	if !wireChopPath(&t.path, &data) {
+	var tmp pathTraffic
+	if !wireChopPath(&tmp.path, &data) {
+		panic("DEBUG")
 		return wireUnmarshalBinaryError
-	} else if len(data) < 2*publicKeySize {
-		return wireUnmarshalBinaryError
+	} else if err := tmp.dt.UnmarshalBinaryInPlace(data); err != nil {
+		panic("DEBUG")
+		return err
 	}
-	t.dt.source = data[:publicKeySize]
-	t.dt.dest = data[publicKeySize : 2*publicKeySize]
-	t.dt.payload = data[2*publicKeySize:]
+	*t = tmp
 	return nil
 }
 

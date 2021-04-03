@@ -3,7 +3,6 @@ package net
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"time"
@@ -339,7 +338,6 @@ func (ps *peers) handlePathTraffic(from phony.Actor, trbs []byte) {
 		nextPort, trbs := pathPopFirstHop(trbs)
 		if next, isIn := ps.peers[nextPort]; isIn {
 			next.sendPathTraffic(nil, trbs)
-			fmt.Println("DEBUG sendPathTraffic success")
 		} else {
 			// Fall back to dhtTraffic
 			if nextPort != 0 {
@@ -355,7 +353,6 @@ func (ps *peers) handlePathTraffic(from phony.Actor, trbs []byte) {
 				}
 			}
 			// TODO never trigger a notify if nextPort == 0 (we're the destination)
-			fmt.Println("DEBUG sendPathTraffic fail:", nextPort)
 			ps.core.dhtree.handleDHTTraffic(nil, trbs)
 		}
 	})

@@ -3,7 +3,6 @@ package net
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"fmt"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -628,24 +627,22 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte) {
 
 func (t *dhtree) sendTraffic(from phony.Actor, trbs []byte) {
 	t.Act(from, func() {
-		var tr dhtTraffic
-		if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
+		var dt dhtTraffic
+		if err := dt.UnmarshalBinaryInPlace(trbs); err != nil {
 			return
 		}
-		if path := t.pathfinder._getPath(tr.dest); path != nil {
-			var tr pathTraffic
-			tr.path = path
-			if err := tr.dt.UnmarshalBinaryInPlace(trbs); err != nil {
-				panic("This should never happen")
-				return
-			}
+		if path := t.pathfinder._getPath(dt.dest); path != nil {
+			var pt pathTraffic
+			pt.path = path
+			pt.dt = dt
+			var ptbs []byte
 			var err error
-			if trbs, err = tr.MarshalBinaryTo(trbs[:0]); err != nil {
+			if ptbs, err = pt.MarshalBinaryTo(getBytes(0)); err != nil {
 				panic("This should never happen")
 				return
 			}
-			t.core.peers.handlePathTraffic(t, trbs)
-			fmt.Println("DEBUG sent to handlePathTraffic")
+			t.core.peers.handlePathTraffic(t, ptbs)
+			putBytes(trbs)
 		} else {
 			t.handleDHTTraffic(nil, trbs)
 		}
