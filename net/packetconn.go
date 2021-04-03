@@ -81,7 +81,9 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	if len(p) < len(tr.payload) {
 		n = len(p)
 	}
-	from = tr.source.addr()
+	fromSlice := publicKey(append([]byte(nil), tr.source...))
+	from = fromSlice.addr()
+
 	return
 }
 
@@ -109,7 +111,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 		putBytes(trbs)
 		return 0, errors.New("failed to encode traffic")
 	}
-	pc.core.dhtree.handleDHTTraffic(nil, trbs)
+	pc.core.dhtree.sendTraffic(nil, trbs)
 	return len(p), nil
 }
 
@@ -209,8 +211,10 @@ func (pc *PacketConn) ReadUndeliverable(p []byte) (n int, local, remote net.Addr
 	if len(p) < len(tr.payload) {
 		n = len(p)
 	}
-	local = tr.dest.addr()
-	remote = tr.source.addr()
+	localSlice := publicKey(append([]byte(nil), tr.dest...))
+	remoteSlice := publicKey(append([]byte(nil), tr.source...))
+	local = localSlice.addr()
+	remote = remoteSlice.addr()
 	return
 }
 

@@ -625,6 +625,18 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte) {
 	})
 }
 
+func (t *dhtree) sendTraffic(from phony.Actor, trbs []byte) {
+	t.Act(from, func() {
+		var tr dhtTraffic
+		if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
+			return
+		}
+		path := t.pathfinder._getPath(tr.dest)
+		_ = path // TODO use the path
+		t.handleDHTTraffic(from, trbs)
+	})
+}
+
 /************
  * treeInfo *
  ************/

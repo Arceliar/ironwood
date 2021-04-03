@@ -22,22 +22,25 @@ func (pf *pathfinder) init(t *dhtree) {
 	pf.paths = make(map[string]*pathInfo)
 }
 
-func (pf *pathfinder) _newNotify(dest publicKey) *pathNotify {
-	n := new(pathNotify)
-	n.info = pf.dhtree.self
-	n.dest = dest
-	ibytes, err := n.info.MarshalBinary()
-	if err != nil {
-		panic("this should never happen")
+func (pf *pathfinder) _getNotify(dest publicKey) *pathNotify {
+	if info, isIn := pf.paths[string(dest)]; isIn && time.Since(info.ntime) > pathfinderTHROTTLE {
+		n := new(pathNotify)
+		n.info = pf.dhtree.self
+		n.dest = dest
+		ibytes, err := n.info.MarshalBinary()
+		if err != nil {
+			panic("this should never happen")
+		}
+		var bs []byte
+		bs = append(bs, dest...)
+		bs = append(bs, ibytes...)
+		n.sig = pf.dhtree.core.crypto.privateKey.sign(bs)
+		if info, isIn := pf.paths[string(dest)]; isIn {
+			info.ntime = time.Now()
+		}
+		return n
 	}
-	var bs []byte
-	bs = append(bs, dest...)
-	bs = append(bs, ibytes...)
-	n.sig = pf.dhtree.core.crypto.privateKey.sign(bs)
-	if info, isIn := pf.paths[string(dest)]; isIn {
-		info.ntime = time.Now()
-	}
-	return n
+	return nil
 }
 
 func (pf *pathfinder) _getLookup(n *pathNotify) *pathLookup {
@@ -144,8 +147,9 @@ func (pf *pathfinder) handleResponse(from phony.Actor, r *pathResponse) {
 }
 
 func (pf *pathfinder) _doNotify(dest publicKey) {
-	n := pf._newNotify(dest)
-	pf.handleNotify(nil, n) // TODO pf._handleNotify
+	if n := pf._getNotify(dest); n != nil {
+		pf.handleNotify(nil, n) // TODO pf._handleNotify
+	}
 }
 
 /* TODO actually bother to run this
@@ -323,4 +327,29 @@ func (r *pathResponse) UnmarshalBinary(data []byte) error {
 type pathTraffic struct {
 	path []peerPort
 	dt   dhtTraffic
+}
+
+func (t *pathTraffic) MarshalBinaryTo(slice []byte) ([]byte, error) {
+	slice = wireEncodePath(slice, t.path)
+	var err error
+	slice, err = t.dt.MarshalBinaryTo(slice)
+	return slice, err
+}
+
+func (t *pathTraffic) UnmarshalBinaryInPlace(data []byte) error {
+	if !wireChopPath(&t.path, &data) {
+		return wireUnmarshalBinaryError
+	} else if len(data) < 2*publicKeySize {
+		return wireUnmarshalBinaryError
+	}
+	t.dt.source = data[:publicKeySize]
+	t.dt.dest = data[publicKeySize : 2*publicKeySize]
+	t.dt.payload = data[2*publicKeySize:]
+	return nil
+}
+
+func pathPopFirstHop(data []byte) (peerPort, []byte) {
+	u, l := wireDecodeUint(data)
+	copy(data, data[l:]) // Shift data forward, because we pool []byte
+	return peerPort(u), data[:len(data)-l]
 }
