@@ -257,6 +257,9 @@ func (l *pathLookup) UnmarshalBinary(data []byte) error {
 	} else if len(data) > 0 {
 		panic("DEBUG")
 		return wireUnmarshalBinaryError
+	} else if len(tmp.rpath) > 0 && tmp.rpath[len(tmp.rpath)-1] == 0 {
+		panic("DEBUG") // there should never already be a 0 here
+		return wireUnmarshalBinaryError
 	}
 	*l = tmp
 	return nil
@@ -296,6 +299,9 @@ func (r *pathResponse) UnmarshalBinary(data []byte) error {
 		return wireUnmarshalBinaryError
 	} else if len(data) > 0 {
 		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	} else if len(tmp.rpath) > 0 && tmp.rpath[len(tmp.rpath)-1] == 0 {
+		panic("DEBUG") // there should never already be a 0 here
 		return wireUnmarshalBinaryError
 	}
 	*r = tmp
