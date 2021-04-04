@@ -290,8 +290,23 @@ func (p *peer) handlePathResponse(bs []byte) error {
 		return err
 	}
 	response.rpath = append(response.rpath, p.port)
-	p.peers.core.dhtree.pathfinder.handleResponse(nil, response)
+	p.peers.handlePathResponse(nil, response)
 	return nil
+}
+
+func (ps *peers) handlePathResponse(from phony.Actor, response *pathResponse) {
+	ps.Act(from, func() {
+		var nextPort peerPort
+		if len(response.path) > 0 {
+			nextPort = response.path[0]
+			response.path = response.path[1:]
+		}
+		if next, isIn := ps.peers[nextPort]; isIn {
+			next.sendPathResponse(ps, response)
+		} else {
+			ps.core.dhtree.pathfinder.handleResponse(ps, response)
+		}
+	})
 }
 
 func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {

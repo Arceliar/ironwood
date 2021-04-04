@@ -114,31 +114,15 @@ func (pf *pathfinder) handleLookup(from phony.Actor, l *pathLookup) {
 		if next := pf.dhtree._treeLookup(l.notify.info); next != nil {
 			next.sendPathLookup(pf.dhtree, l)
 		} else if r := pf._getResponse(l); r != nil {
-			pf.handleResponse(nil, r) // TODO pf._handleResponse
+			pf.dhtree.core.peers.handlePathResponse(pf.dhtree, r)
 		}
 	})
 }
 
 func (pf *pathfinder) handleResponse(from phony.Actor, r *pathResponse) {
 	pf.dhtree.Act(from, func() {
-		// Look up next hop based on port
-		// TODO map of port->peer to make this fast
-		var next *peer
-		var nextPort peerPort
-		if len(r.path) > 0 {
-			// Get the next hop and remove it from the path that we'll forward
-			nextPort = r.path[0]
-			r.path = r.path[1:]
-		}
-		for p := range pf.dhtree.tinfos {
-			if p.port == nextPort {
-				next = p
-				break
-			}
-		}
-		if next != nil {
-			next.sendPathResponse(pf.dhtree, r)
-		} else if info, isIn := pf.paths[string(r.from)]; isIn {
+		// Note: this only handles the case where there's no valid next hop in the path
+		if info, isIn := pf.paths[string(r.from)]; isIn {
 			// Reverse r.rpath and save it to info.path
 			info.path = info.path[:0]
 			for idx := len(r.rpath) - 1; idx >= 0; idx-- {
