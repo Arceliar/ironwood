@@ -198,7 +198,7 @@ func (p *peer) _sendProto(pType byte, data binaryMarshaler) {
 
 func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
 	p.Act(from, func() {
-		info = info.add(p.peers.core.crypto.privateKey, p.key)
+		info = info.add(p.peers.core.crypto.privateKey, p)
 		p._sendProto(wireProtoTree, info)
 	})
 }

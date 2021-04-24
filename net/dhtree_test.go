@@ -18,7 +18,7 @@ func TestMarshalTreeInfo(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		info = info.add(privateKey(priv), publicKey(newPub))
+		info = info.add(privateKey(priv), &peer{key: publicKey(newPub)})
 		if !info.checkSigs() {
 			panic("checkSigs failed")
 		} else if !info.checkLoops() {
@@ -70,7 +70,7 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		info = info.add(privateKey(priv), publicKey(newPub))
+		info = info.add(privateKey(priv), &peer{key: publicKey(newPub)})
 		if !info.checkSigs() {
 			panic("checkSigs failed")
 		} else if !info.checkLoops() {
@@ -115,7 +115,7 @@ func TestMarshalDHTSetup(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		info = info.add(privateKey(priv), publicKey(newPub))
+		info = info.add(privateKey(priv), &peer{key: publicKey(newPub)})
 		if !info.checkSigs() {
 			panic("checkSigs failed")
 		} else if !info.checkLoops() {

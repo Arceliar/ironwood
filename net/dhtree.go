@@ -222,6 +222,7 @@ func (t *dhtree) _fix() {
 
 // _treeLookup selects the best next hop (in treespace) for the destination
 func (t *dhtree) _treeLookup(dest *treeInfo) *peer {
+	// TODO rewrite this to use a treeLabel instead of a treeInfo
 	if t.core.crypto.publicKey.equal(dest.dest()) {
 		return nil
 	}
@@ -693,6 +694,28 @@ func (t *dhtree) sendTraffic(from phony.Actor, trbs []byte) {
 	})
 }
 
+func (t *dhtree) _getLabel() *treeLabel {
+	// TODO do this once when t.self changes and save it somewhere
+	//  (to avoid repeated signing every time we call this)
+	// Fill easy fields of label
+	label := new(treeLabel)
+	label.key = append(label.key, t.core.crypto.publicKey...)
+	label.root = append(label.root, t.self.root...)
+	label.rootSeq = t.self.seq
+	for _, hop := range t.self.hops {
+		label.path = append(label.path, hop.port)
+	}
+	// Now prepare sig
+	var bs []byte
+	bs = append(bs, label.root...)
+	seq := make([]byte, 8)
+	binary.BigEndian.PutUint64(seq, label.rootSeq)
+	bs = append(bs, seq...)
+	bs = wireEncodePath(bs, label.path)
+	label.sig = t.core.crypto.privateKey.sign(bs)
+	return label
+}
+
 /************
  * treeInfo *
  ************/
@@ -706,6 +729,7 @@ type treeInfo struct {
 
 type treeHop struct {
 	next publicKey
+	port peerPort
 	sig  signature
 }
 
@@ -738,6 +762,7 @@ func (info *treeInfo) checkSigs() bool {
 	bs = append(bs, seq...)
 	for _, hop := range info.hops {
 		bs = append(bs, hop.next...)
+		bs = wireEncodeUint(bs, uint64(hop.port))
 		if !key.verify(bs, hop.sig) {
 			return false
 		}
@@ -759,9 +784,7 @@ func (info *treeInfo) checkLoops() bool {
 	return !keys[string(key)]
 }
 
-func (info *treeInfo) add(priv privateKey, next publicKey) *treeInfo {
-	newInfo := *info
-	newInfo.hops = append([]treeHop(nil), info.hops...)
+func (info *treeInfo) add(priv privateKey, next *peer) *treeInfo {
 	var bs []byte
 	bs = append(bs, info.root...)
 	seq := make([]byte, 8)
@@ -769,12 +792,16 @@ func (info *treeInfo) add(priv privateKey, next publicKey) *treeInfo {
 	bs = append(bs, seq...)
 	for _, hop := range info.hops {
 		bs = append(bs, hop.next...)
+		bs = wireEncodeUint(bs, uint64(hop.port))
 	}
-	bs = append(bs, next...)
+	bs = append(bs, next.key...)
+	bs = wireEncodeUint(bs, uint64(next.port))
 	sig := priv.sign(bs)
+	hop := treeHop{next: next.key, port: next.port, sig: sig}
+	newInfo := *info
 	newInfo.hops = nil
 	newInfo.hops = append(newInfo.hops, info.hops...)
-	newInfo.hops = append(newInfo.hops, treeHop{next: next, sig: sig})
+	newInfo.hops = append(newInfo.hops, hop)
 	return &newInfo
 }
 
@@ -804,6 +831,7 @@ func (info *treeInfo) MarshalBinary() (data []byte, err error) {
 	data = append(data, seq...)
 	for _, hop := range info.hops {
 		data = append(data, hop.next...)
+		data = wireEncodeUint(data, uint64(hop.port))
 		data = append(data, hop.sig...)
 	}
 	return
@@ -825,6 +853,8 @@ func (info *treeInfo) UnmarshalBinary(data []byte) error {
 		switch {
 		case !wireChopBytes((*[]byte)(&hop.next), &data, publicKeySize):
 			return wireUnmarshalBinaryError
+		case !wireChopUint((*uint64)(&hop.port), &data):
+			return wireUnmarshalBinaryError
 		case !wireChopBytes((*[]byte)(&hop.sig), &data, signatureSize):
 			return wireUnmarshalBinaryError
 		}
@@ -832,6 +862,70 @@ func (info *treeInfo) UnmarshalBinary(data []byte) error {
 	}
 	nfo.time = time.Now()
 	*info = nfo
+	return nil
+}
+
+/*************
+ * treeLabel *
+ *************/
+
+// TODO treeLabel, a relatively compact version of the content of treeInfo
+//  Should contain sig, key, root, rootSeq, and one-peerPort-per-hop
+//  The idea is to use this in place of treeInfo for basically everything except tree updates
+// TODO add a port to treeHop so we have that info available...
+
+type treeLabel struct {
+	sig     signature
+	key     publicKey
+	root    publicKey
+	rootSeq uint64
+	path    []peerPort
+}
+
+func (l *treeLabel) check() bool {
+	var bs []byte
+	bs = append(bs, l.root...)
+	seq := make([]byte, 8)
+	binary.BigEndian.PutUint64(seq, l.rootSeq)
+	bs = append(bs, seq...)
+	bs = wireEncodePath(bs, l.path)
+	if !l.key.verify(bs, l.sig) {
+		panic("DEBUG")
+	}
+	return true //l.key.verify(bs, l.sig)
+}
+
+func (l *treeLabel) MarshalBinary() (data []byte, err error) {
+	data = append(data, l.sig...)
+	data = append(data, l.key...)
+	seq := make([]byte, 8)
+	binary.BigEndian.PutUint64(seq, l.rootSeq)
+	data = append(data, seq...)
+	data = wireEncodePath(data, l.path)
+	return data, nil
+}
+
+func (l *treeLabel) UnmarshalBinary(data []byte) error {
+	var tmp treeLabel
+	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
+		panic("DEBUG")
+		return wireUnmarshalBinaryError
+	} else if !wireChopBytes((*[]byte)(&tmp.key), &data, publicKeySize) {
+		return wireUnmarshalBinaryError
+	} else if !wireChopBytes((*[]byte)(&tmp.root), &data, publicKeySize) {
+		return wireUnmarshalBinaryError
+	} else if len(data) > 8 {
+		tmp.rootSeq = binary.BigEndian.Uint64(data[:8])
+		data = data[8:]
+	} else {
+		return wireUnmarshalBinaryError
+	}
+	if !wireChopPath(&tmp.path, &data) {
+		return wireUnmarshalBinaryError
+	} else if len(data) != 0 {
+		return wireUnmarshalBinaryError
+	}
+	*l = tmp
 	return nil
 }
 

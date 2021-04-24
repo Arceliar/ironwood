@@ -74,6 +74,13 @@ func wireDecodeUint(source []byte) (uint64, int) {
 	return u, l
 }
 
+func wireChopUint(out *uint64, data *[]byte) bool {
+	port, length := wireDecodeUint(*data)
+	*out = port
+	*data = (*data)[length:]
+	return true
+}
+
 func wireEncodePath(dest []byte, path []peerPort) []byte {
 	var buf [10]byte
 	for _, p := range path {
