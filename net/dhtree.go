@@ -441,7 +441,6 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 	}
 	if !ack.response.check() {
 		// Final thing to check, if the signatures are bad then ignore it
-		panic("DEBUG")
 		return
 	}
 	t.succ = nil
@@ -879,15 +878,13 @@ func (l *treeLabel) check() bool {
 	binary.BigEndian.PutUint64(seq, l.seq)
 	bs = append(bs, seq...)
 	bs = wireEncodePath(bs, l.path)
-	if !l.key.verify(bs, l.sig) {
-		panic("DEBUG")
-	}
-	return true //l.key.verify(bs, l.sig)
+	return l.key.verify(bs, l.sig)
 }
 
 func (l *treeLabel) MarshalBinary() (data []byte, err error) {
 	data = append(data, l.sig...)
 	data = append(data, l.key...)
+	data = append(data, l.root...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, l.seq)
 	data = append(data, seq...)
@@ -898,17 +895,16 @@ func (l *treeLabel) MarshalBinary() (data []byte, err error) {
 func (l *treeLabel) UnmarshalBinary(data []byte) error {
 	var tmp treeLabel
 	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if !wireChopBytes((*[]byte)(&tmp.key), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
 	} else if !wireChopBytes((*[]byte)(&tmp.root), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
-	} else if len(data) > 8 {
+	} else if len(data) < 8 {
+		return wireUnmarshalBinaryError
+	} else {
 		tmp.seq = binary.BigEndian.Uint64(data[:8])
 		data = data[8:]
-	} else {
-		return wireUnmarshalBinaryError
 	}
 	if !wireChopPath(&tmp.path, &data) {
 		return wireUnmarshalBinaryError

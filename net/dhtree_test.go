@@ -70,7 +70,7 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		info = info.add(privateKey(priv), &peer{key: publicKey(newPub)})
+		info = info.add(privateKey(priv), &peer{key: publicKey(newPub), port: 1})
 		if !info.checkSigs() {
 			panic("checkSigs failed")
 		} else if !info.checkLoops() {
