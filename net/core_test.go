@@ -57,26 +57,6 @@ func TestTwoNodes(t *testing.T) {
 	}
 	timer.Stop()
 	timer = time.NewTimer(3 * time.Second)
-	for {
-		select {
-		case <-timer.C:
-			panic("timeout")
-		default:
-		}
-		var sA, sB bool
-		phony.Block(tA, func() {
-			sA = tA.succ != nil && !bytes.Equal(tA.succ.dest, tA.core.crypto.publicKey)
-		})
-		phony.Block(tB, func() {
-			sB = tB.succ != nil && !bytes.Equal(tB.succ.dest, tB.core.crypto.publicKey)
-		})
-		if !sA || !sB {
-			continue
-		}
-		break
-	}
-	timer.Stop()
-	timer = time.NewTimer(3 * time.Second)
 	addrA := a.LocalAddr()
 	addrB := b.LocalAddr()
 	done := make(chan struct{})

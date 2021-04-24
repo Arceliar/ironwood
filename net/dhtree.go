@@ -26,8 +26,8 @@ type dhtree struct {
 	tinfos     map[*peer]*treeInfo     // map[string(publicKey)]*treeInfo, key=peer
 	dinfos     map[dhtInfoKey]*dhtInfo //
 	self       *treeInfo               // self info
-	pred       *dhtInfo                // predecessor in tree, they maintain a path to us
-	succ       *dhtInfo                // successor in tree, who we maintain a path to
+	pred       *dhtInfo                // predecessor in dht, they maintain a path to us
+	succ       *dhtInfo                // successor in dht, who we maintain a path to
 	seq        uint64                  // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
 	timer      *time.Timer             // time.AfterFunc to send bootstrap packets
 	wait       bool                    // FIXME this is a hack to let bad news spread before changing parents
@@ -259,8 +259,21 @@ func (t *dhtree) _treeLookup(dest *treeInfo) *peer {
 // _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
 // this only uses the source direction of paths through the dht
 func (t *dhtree) _dhtLookup(dest publicKey) *peer {
+	if treeLess(t.self.root, dest) {
+		return nil // higher than even the root
+	}
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
+	if treeLess(best, dest) {
+		for p, info := range t.tinfos {
+			// TODO store parent so we don't need to iterate here
+			if info == t.self {
+				best = t.self.root
+				bestPeer = p
+				break
+			}
+		}
+	}
 	var bestInfo *dhtInfo
 	for _, info := range t.dinfos {
 		doUpdate := false
@@ -289,21 +302,24 @@ func (t *dhtree) _dhtLookup(dest publicKey) *peer {
 // note that this also considers peers (this is what bootstraps the whole process)
 // it also considers the root, to make sure that multiple split rings will converge back to one
 func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
+	if treeLess(t.self.root, dest) {
+		return nil // higher than even the root
+	}
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
-	var parent *peer
-	for p, info := range t.tinfos {
-		// TODO store parent so we don't need to iterate here
-		if info == t.self {
-			parent = p
+	if best.equal(dest) || treeLess(best, dest) {
+		for p, info := range t.tinfos {
+			// TODO store parent so we don't need to iterate here
+			if info == t.self {
+				best = t.self.root
+				bestPeer = p
+				break
+			}
 		}
 	}
-	if best.equal(dest) || dhtOrdered(best, t.self.root, dest) {
-		best = t.self.root
-		bestPeer = parent
-	}
 	for p := range t.tinfos {
-		if best.equal(dest) || dhtOrdered(best, p.key, dest) {
+		break // TODO? use peers too
+		if /*best.equal(dest) ||*/ dhtOrdered(dest, p.key, best) {
 			best = p.key
 			bestPeer = p
 		}
@@ -311,13 +327,10 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
 	var bestInfo *dhtInfo
 	for _, info := range t.dinfos {
 		doUpdate := false
-		if best.equal(dest) || dhtOrdered(best, info.dest, dest) {
+		if /*best.equal(dest) ||*/ dhtOrdered(dest, info.source, best) {
 			doUpdate = true
-			best = info.dest
-			bestPeer = info.next
-			bestInfo = info
 		}
-		if bestInfo != nil && info.dest.equal(bestInfo.dest) {
+		if bestInfo != nil && info.source.equal(bestInfo.source) {
 			if treeLess(bestInfo.root, info.root) {
 				doUpdate = true
 			} else if info.root.equal(bestInfo.root) && info.rootSeq > bestInfo.rootSeq {
@@ -325,9 +338,8 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
 			}
 		}
 		if doUpdate {
-			// Favor new paths
-			best = info.dest
-			bestPeer = info.next
+			best = info.source
+			bestPeer = info.prev
 			bestInfo = info
 		}
 	}
@@ -372,28 +384,55 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 	return dbs
 }
 
-// _handleBootstrap takes a bootstrap packet and checks if we know of a better predecessor for the source node
-// if yes, then we forward to the next hop in the path towards that predecessor
-// if no, then we decide whether or not this node is better than our current successor
-// if yes, then we get rid of our current successor (if any) and start setting up a new path to the source of the bootstrap
-// if no, then we drop the bootstrap without doing anything
+// _handleBootstrap takes a bootstrap packet and checks if we know of a better successor for the source node
+// if yes, then we forward to the next hop in the path towards that successor
+// if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
-	// FIXME we need better sanity checks before removing an existing successor
-	//  e.g. test _treeLookup first
 	source := bootstrap.info.dest()
-	next := t._dhtBootstrapLookup(source)
-	switch {
-	case next != nil:
+	if next := t._dhtBootstrapLookup(source); next != nil {
 		next.sendBootstrap(t, bootstrap)
 		return
-	case t.core.crypto.publicKey.equal(bootstrap.info.dest()):
-		// This is our own bootstrap, but we failed to find a next hop
+	} else if source.equal(t.core.crypto.publicKey) {
 		return
-	case !bootstrap.info.root.equal(t.self.root):
+	} else if !bootstrap.check() {
+		return
+	}
+	ack := new(dhtBootstrapAck)
+	ack.bootstrap = *bootstrap
+	ack.response = *t._newBootstrap()
+	t._handleBootstrapAck(ack)
+}
+
+// handleBootstrap is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrap
+func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
+	t.Act(from, func() {
+		t._handleBootstrap(bootstrap)
+	})
+}
+
+// _handleBootstrapAck takes an ack packet and checks if we know a next hop on the tree
+// if yes, then we forward to the next hop
+// if no, then we decide whether or not this node is better than our current successor
+// if yes, then we get rid of our current successor (if any) and start setting up a new path to the response node in the ack
+// if no, then we drop the bootstrap acknowledgement without doing anything
+func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
+	source := ack.response.info.dest()
+	next := t._treeLookup(&ack.bootstrap.info)
+	switch {
+	case next != nil:
+		next.sendBootstrapAck(t, ack)
+		return
+	case false && !t.core.crypto.publicKey.equal(ack.bootstrap.info.dest()):
+		// This isn't an ack of our own bootstrap
+		return
+	case t.core.crypto.publicKey.equal(source):
+		// This is our own ack, but we failed to find a next hop
+		return
+	case !ack.response.info.root.equal(t.self.root):
 		// We have a different root, so tree lookups would fail
 		return
-	case bootstrap.info.seq != t.self.seq:
-		// This bootstrap is too old, so path setup would fail
+	case ack.response.info.seq != t.self.seq:
+		// This response is too old, so path setup would fail
 		return
 	case t.succ == nil:
 	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest):
@@ -402,6 +441,11 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 		// The curent successor needs replacing (old tree info)
 	default:
 		// We already have a better (FIXME? or equal) successor
+		return
+	}
+	if !ack.response.check() {
+		// Final thing to check, if the signatures are bad then ignore it
+		panic("DEBUG")
 		return
 	}
 	t.succ = nil
@@ -416,7 +460,7 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 			t._teardown(nil, dinfo.getTeardown())
 		}
 	}
-	setup := t._newSetup(bootstrap)
+	setup := t._newSetup(&ack.response)
 	t._handleSetup(nil, setup)
 	if t.succ == nil {
 		// This can happen if the treeLookup in handleSetup fails
@@ -425,10 +469,10 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	}
 }
 
-// handleBootstrap is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrap
-func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
+// handleBootstrapAck is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrapAck
+func (t *dhtree) handleBootstrapAck(from phony.Actor, ack *dhtBootstrapAck) {
 	t.Act(from, func() {
-		t._handleBootstrap(bootstrap)
+		t._handleBootstrapAck(ack)
 	})
 }
 
@@ -572,10 +616,10 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 		}
 		if t.pred == dinfo {
 			t.pred = nil
-			t._doBootstrap()
 		}
 		if t.succ == dinfo {
 			t.succ = nil
+			t._doBootstrap()
 		}
 	} else {
 		//panic("DEBUG teardown of nonexistant path")
@@ -594,7 +638,7 @@ func (t *dhtree) teardown(from phony.Actor, p *peer, teardown *dhtTeardown) {
 func (t *dhtree) _doBootstrap() {
 	//return // FIXME debug tree (root offline -> too much traffic to fix)
 	if t.timer != nil {
-		if t.pred != nil && t.pred.root.equal(t.self.root) && t.pred.rootSeq == t.self.seq {
+		if t.succ != nil && t.succ.root.equal(t.self.root) && t.succ.rootSeq == t.self.seq {
 			return
 		}
 		t._handleBootstrap(t._newBootstrap())
@@ -824,6 +868,8 @@ func (info *dhtInfo) getKey() dhtInfoKey {
  * dhtBootstrap *
  ****************/
 
+// TODO? a compact representation of treeInfo (e.g. list of port in path from root, no signatures per hop)
+
 type dhtBootstrap struct {
 	sig  signature
 	info treeInfo
@@ -863,9 +909,52 @@ func (dbs *dhtBootstrap) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+/*******************
+ * dhtBootstrapAck *
+ *******************/
+
+type dhtBootstrapAck struct {
+	bootstrap dhtBootstrap
+	response  dhtBootstrap
+}
+
+func (ack *dhtBootstrapAck) check() bool {
+	return ack.bootstrap.check() && ack.response.check()
+}
+
+func (ack *dhtBootstrapAck) MarshalBinary() (data []byte, err error) {
+	var bootBytes, resBytes []byte
+	if bootBytes, err = ack.bootstrap.MarshalBinary(); err != nil {
+		return
+	} else if resBytes, err = ack.response.MarshalBinary(); err != nil {
+		return
+	}
+	data = wireEncodeUint(data, uint64(len(bootBytes)))
+	data = append(data, bootBytes...)
+	data = append(data, resBytes...)
+	return
+}
+
+func (ack *dhtBootstrapAck) UnmarshalBinary(data []byte) error {
+	bootLen, begin := wireDecodeUint(data)
+	end := begin + int(bootLen)
+	var tmp dhtBootstrapAck
+	if end > len(data) {
+		return wireUnmarshalBinaryError
+	} else if err := tmp.bootstrap.UnmarshalBinary(data[begin:end]); err != nil {
+		return err
+	} else if err := tmp.response.UnmarshalBinary(data[end:]); err != nil {
+		return err
+	}
+	*ack = tmp
+	return nil
+}
+
 /************
  * dhtSetup *
  ************/
+
+// TODO? source root/rootSeq? is dest already good enough?
 
 type dhtSetup struct {
 	sig    signature
@@ -1031,16 +1120,5 @@ func treeLess(key1, key2 publicKey) bool {
 }
 
 func dhtOrdered(first, second, third publicKey) bool {
-	less12 := treeLess(first, second)
-	less23 := treeLess(second, third)
-	less31 := treeLess(third, first)
-	switch {
-	case less12 && less23:
-		return true
-	case less23 && less31:
-		return true
-	case less31 && less12:
-		return true
-	}
-	return false
+	return treeLess(first, second) && treeLess(second, third)
 }

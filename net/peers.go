@@ -146,6 +146,8 @@ func (p *peer) handlePacket(bs []byte) error {
 		return p.handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
 		return p.handleBootstrap(bs[1:])
+	case wireProtoDHTBootstrapAck:
+		return p.handleBootstrapAck(bs[1:])
 	case wireProtoDHTSetup:
 		return p.handleSetup(bs[1:])
 	case wireProtoDHTTeardown:
@@ -206,9 +208,9 @@ func (p *peer) handleBootstrap(bs []byte) error {
 	if err := bootstrap.UnmarshalBinary(bs); err != nil {
 		return err
 	}
-	if !bootstrap.check() {
-		return errors.New("invalid bootstrap")
-	}
+	//if !bootstrap.check() {
+	//	return errors.New("invalid bootstrap")
+	//}
 	p.peers.core.dhtree.handleBootstrap(nil, bootstrap)
 	return nil
 }
@@ -219,15 +221,33 @@ func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	})
 }
 
+func (p *peer) handleBootstrapAck(bs []byte) error {
+	ack := new(dhtBootstrapAck)
+	if err := ack.UnmarshalBinary(bs); err != nil {
+		return err
+	}
+	//if !ack.check() {
+	//	return errors.New("invalid bootstrap ack")
+	//}
+	p.peers.core.dhtree.handleBootstrapAck(nil, ack)
+	return nil
+}
+
+func (p *peer) sendBootstrapAck(from phony.Actor, ack *dhtBootstrapAck) {
+	p.Act(from, func() {
+		p._sendProto(wireProtoDHTBootstrapAck, ack)
+	})
+}
+
 func (p *peer) handleSetup(bs []byte) error {
 	setup := new(dhtSetup)
 	if err := setup.UnmarshalBinary(bs); err != nil {
 		return err
 	}
-	if !setup.check() {
-		panic("DEBUG bad setup")
-		return errors.New("invalid setup")
-	}
+	//if !setup.check() {
+	//	panic("DEBUG bad setup")
+	//	return errors.New("invalid setup")
+	//} // TODO?
 	p.peers.core.dhtree.handleSetup(nil, p, setup)
 	return nil
 }
