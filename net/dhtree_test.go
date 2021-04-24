@@ -78,14 +78,11 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 		}
 		pub, priv = newPub, newPriv
 	}
+	c := new(core)
+	c.init(priv)
+	c.dhtree.self = info
 	bootstrap := new(dhtBootstrap)
-	bootstrap.info = *info
-	sigBytes, err := bootstrap.info.MarshalBinary()
-	if err != nil {
-		panic("This should never happen")
-	}
-	sigKey := privateKey(priv)
-	bootstrap.sig = sigKey.sign(sigBytes)
+	bootstrap.label = *c.dhtree._getLabel()
 	if !bootstrap.check() {
 		panic("failed to check bootstrap")
 	}

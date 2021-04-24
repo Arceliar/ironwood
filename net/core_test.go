@@ -33,12 +33,12 @@ func TestTwoNodes(t *testing.T) {
 			panic("timeout")
 		default:
 		}
-		var sA, sB *treeInfo
+		var sA, sB *treeLabel
 		phony.Block(tA, func() {
-			sA = tA.self
+			sA = tA._getLabel()
 		})
 		phony.Block(tB, func() {
-			sB = tB.self
+			sB = tB._getLabel()
 		})
 		var lA, lB *peer
 		phony.Block(tA, func() {

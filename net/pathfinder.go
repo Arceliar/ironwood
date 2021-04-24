@@ -29,9 +29,9 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 	}
 	if info, isIn := pf.paths[string(dest)]; isIn && time.Since(info.ntime) > throttle {
 		n := new(pathNotify)
-		n.info = pf.dhtree.self
+		n.label = pf.dhtree._getLabel()
 		n.dest = dest
-		ibytes, err := n.info.MarshalBinary()
+		ibytes, err := n.label.MarshalBinary()
 		if err != nil {
 			panic("this should never happen")
 		}
@@ -46,7 +46,7 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 }
 
 func (pf *pathfinder) _getLookup(n *pathNotify) *pathLookup {
-	if info, isIn := pf.paths[string(n.info.dest())]; isIn {
+	if info, isIn := pf.paths[string(n.label.key)]; isIn {
 		if time.Since(info.ltime) < pathfinderTHROTTLE || !n.check() {
 			return nil
 		}
@@ -60,7 +60,7 @@ func (pf *pathfinder) _getLookup(n *pathNotify) *pathLookup {
 
 func (pf *pathfinder) _getResponse(l *pathLookup) *pathResponse {
 	// Check if lookup comes from us
-	dest := l.notify.info.dest()
+	dest := l.notify.label.key
 	if !dest.equal(pf.dhtree.core.crypto.publicKey) || !l.notify.check() {
 		// TODO? skip l.notify.check()? only check the last hop?
 		return nil
@@ -110,8 +110,8 @@ func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 
 func (pf *pathfinder) handleLookup(from phony.Actor, l *pathLookup) {
 	pf.dhtree.Act(from, func() {
-		// TODO? check the treeInfo at some point
-		if next := pf.dhtree._treeLookup(l.notify.info); next != nil {
+		// TODO? check the treeLabel at some point
+		if next := pf.dhtree._treeLookup(l.notify.label); next != nil {
 			next.sendPathLookup(pf.dhtree, l)
 		} else if r := pf._getResponse(l); r != nil {
 			pf.dhtree.core.peers.handlePathResponse(pf.dhtree, r)
@@ -166,35 +166,33 @@ type pathInfo struct {
  **************/
 
 type pathNotify struct {
-	sig  signature
-	dest publicKey // Who to send the notify to
-	info *treeInfo
+	sig   signature // TODO? remove this? is it really useful for anything?...
+	dest  publicKey // Who to send the notify to
+	label *treeLabel
 }
 
 func (pn *pathNotify) check() bool {
-	if len(pn.info.hops) > 0 {
-		if !pn.info.checkLoops() || !pn.info.checkSigs() {
-			return false
-		}
+	if !pn.label.check() {
+		return false
 	}
-	ibytes, err := pn.info.MarshalBinary()
+	ibytes, err := pn.label.MarshalBinary()
 	if err != nil {
 		return false
 	}
 	var bs []byte
 	bs = append(bs, pn.dest...)
 	bs = append(bs, ibytes...)
-	dest := pn.info.dest()
+	dest := pn.label.key
 	return dest.verify(bs, pn.sig)
 }
 
 func (pn *pathNotify) MarshalBinary() (data []byte, err error) {
-	if pn.info == nil {
+	if pn.label == nil {
 		panic("DEBUG")
 		return nil, wireMarshalBinaryError
 	}
 	var bs []byte
-	if bs, err = pn.info.MarshalBinary(); err != nil {
+	if bs, err = pn.label.MarshalBinary(); err != nil {
 		panic("DEBUG")
 		return
 	}
@@ -206,14 +204,14 @@ func (pn *pathNotify) MarshalBinary() (data []byte, err error) {
 
 func (pn *pathNotify) UnmarshalBinary(data []byte) error {
 	var tmp pathNotify
-	tmp.info = new(treeInfo)
+	tmp.label = new(treeLabel)
 	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
 		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if !wireChopBytes((*[]byte)(&tmp.dest), &data, publicKeySize) {
 		panic("DEBUG")
 		return wireUnmarshalBinaryError
-	} else if err := tmp.info.UnmarshalBinary(data); err != nil {
+	} else if err := tmp.label.UnmarshalBinary(data); err != nil {
 		panic("DEBUG")
 		return err
 	}

@@ -221,9 +221,9 @@ func (t *dhtree) _fix() {
 }
 
 // _treeLookup selects the best next hop (in treespace) for the destination
-func (t *dhtree) _treeLookup(dest *treeInfo) *peer {
+func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 	// TODO rewrite this to use a treeLabel instead of a treeInfo
-	if t.core.crypto.publicKey.equal(dest.dest()) {
+	if t.core.crypto.publicKey.equal(dest.key) {
 		return nil
 	}
 	best := t.self
@@ -376,12 +376,7 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 // _newBootstrap returns a *dhtBootstrap for this node, using t.self, with a signature
 func (t *dhtree) _newBootstrap() *dhtBootstrap {
 	dbs := new(dhtBootstrap)
-	dbs.info = *t.self
-	sigBytes, err := dbs.info.MarshalBinary()
-	if err != nil {
-		panic("This should never happen")
-	}
-	dbs.sig = t.core.crypto.privateKey.sign(sigBytes)
+	dbs.label = *t._getLabel()
 	return dbs
 }
 
@@ -389,7 +384,7 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 // if yes, then we forward to the next hop in the path towards that successor
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
-	source := bootstrap.info.dest()
+	source := bootstrap.label.key
 	if next := t._dhtBootstrapLookup(source); next != nil {
 		next.sendBootstrap(t, bootstrap)
 		return
@@ -417,22 +412,22 @@ func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 // if yes, then we get rid of our current successor (if any) and start setting up a new path to the response node in the ack
 // if no, then we drop the bootstrap acknowledgement without doing anything
 func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
-	source := ack.response.info.dest()
-	next := t._treeLookup(&ack.bootstrap.info)
+	source := ack.response.label.key
+	next := t._treeLookup(&ack.bootstrap.label)
 	switch {
 	case next != nil:
 		next.sendBootstrapAck(t, ack)
 		return
-	case false && !t.core.crypto.publicKey.equal(ack.bootstrap.info.dest()):
+	case false && !t.core.crypto.publicKey.equal(ack.bootstrap.label.key):
 		// This isn't an ack of our own bootstrap
 		return
 	case t.core.crypto.publicKey.equal(source):
 		// This is our own ack, but we failed to find a next hop
 		return
-	case !ack.response.info.root.equal(t.self.root):
+	case !ack.response.label.root.equal(t.self.root):
 		// We have a different root, so tree lookups would fail
 		return
-	case ack.response.info.seq != t.self.seq:
+	case ack.response.label.seq != t.self.seq:
 		// This response is too old, so path setup would fail
 		return
 	case t.succ == nil:
@@ -492,8 +487,8 @@ func (t *dhtree) _newSetup(dest *dhtBootstrap) *dhtSetup {
 // if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better predecessor, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
 // otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our predecessor path (if we are, tearing down our existing predecessor if one exists)
 func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
-	next := t._treeLookup(&setup.dest.info)
-	dest := setup.dest.info.dest()
+	next := t._treeLookup(&setup.dest.label)
+	dest := setup.dest.label.key
 	if next == nil && !dest.equal(t.core.crypto.publicKey) {
 		// FIXME? this has problems if prev is self (from changes to tree state?)
 		if prev != nil {
@@ -507,8 +502,8 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	dinfo.prev = prev
 	dinfo.next = next
 	dinfo.dest = dest
-	dinfo.root = setup.dest.info.root
-	dinfo.rootSeq = setup.dest.info.seq
+	dinfo.root = setup.dest.label.root
+	dinfo.rootSeq = setup.dest.label.seq
 	if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
 		// Wrong root or mismatched seq
 		if prev != nil {
@@ -701,7 +696,7 @@ func (t *dhtree) _getLabel() *treeLabel {
 	label := new(treeLabel)
 	label.key = append(label.key, t.core.crypto.publicKey...)
 	label.root = append(label.root, t.self.root...)
-	label.rootSeq = t.self.seq
+	label.seq = t.self.seq
 	for _, hop := range t.self.hops {
 		label.path = append(label.path, hop.port)
 	}
@@ -709,7 +704,7 @@ func (t *dhtree) _getLabel() *treeLabel {
 	var bs []byte
 	bs = append(bs, label.root...)
 	seq := make([]byte, 8)
-	binary.BigEndian.PutUint64(seq, label.rootSeq)
+	binary.BigEndian.PutUint64(seq, label.seq)
 	bs = append(bs, seq...)
 	bs = wireEncodePath(bs, label.path)
 	label.sig = t.core.crypto.privateKey.sign(bs)
@@ -805,23 +800,23 @@ func (info *treeInfo) add(priv privateKey, next *peer) *treeInfo {
 	return &newInfo
 }
 
-func (info *treeInfo) dist(dest *treeInfo) int {
+func (info *treeInfo) dist(dest *treeLabel) int {
 	if !info.root.equal(dest.root) {
+		// TODO? also check the root sequence number?
 		return int(^(uint(0)) >> 1) // max int, but you should really check this first
 	}
-	a := info.hops
-	b := dest.hops
-	if len(b) < len(a) {
-		a, b = b, a
+	a, b := len(info.hops), len(dest.path)
+	if b < a {
+		a, b = b, a // make 'a' be the smaller value
 	}
 	lcaIdx := -1 // last common ancestor
-	for idx := range a {
-		if !a[idx].next.equal(b[idx].next) {
+	for idx := 0; idx < a; idx++ {
+		if info.hops[idx].port != dest.path[idx] {
 			break
 		}
 		lcaIdx = idx
 	}
-	return len(a) + len(b) - 2*lcaIdx
+	return a + b - 2*lcaIdx
 }
 
 func (info *treeInfo) MarshalBinary() (data []byte, err error) {
@@ -869,24 +864,19 @@ func (info *treeInfo) UnmarshalBinary(data []byte) error {
  * treeLabel *
  *************/
 
-// TODO treeLabel, a relatively compact version of the content of treeInfo
-//  Should contain sig, key, root, rootSeq, and one-peerPort-per-hop
-//  The idea is to use this in place of treeInfo for basically everything except tree updates
-// TODO add a port to treeHop so we have that info available...
-
 type treeLabel struct {
-	sig     signature
-	key     publicKey
-	root    publicKey
-	rootSeq uint64
-	path    []peerPort
+	sig  signature
+	key  publicKey
+	root publicKey
+	seq  uint64
+	path []peerPort
 }
 
 func (l *treeLabel) check() bool {
 	var bs []byte
 	bs = append(bs, l.root...)
 	seq := make([]byte, 8)
-	binary.BigEndian.PutUint64(seq, l.rootSeq)
+	binary.BigEndian.PutUint64(seq, l.seq)
 	bs = append(bs, seq...)
 	bs = wireEncodePath(bs, l.path)
 	if !l.key.verify(bs, l.sig) {
@@ -899,7 +889,7 @@ func (l *treeLabel) MarshalBinary() (data []byte, err error) {
 	data = append(data, l.sig...)
 	data = append(data, l.key...)
 	seq := make([]byte, 8)
-	binary.BigEndian.PutUint64(seq, l.rootSeq)
+	binary.BigEndian.PutUint64(seq, l.seq)
 	data = append(data, seq...)
 	data = wireEncodePath(data, l.path)
 	return data, nil
@@ -915,7 +905,7 @@ func (l *treeLabel) UnmarshalBinary(data []byte) error {
 	} else if !wireChopBytes((*[]byte)(&tmp.root), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
 	} else if len(data) > 8 {
-		tmp.rootSeq = binary.BigEndian.Uint64(data[:8])
+		tmp.seq = binary.BigEndian.Uint64(data[:8])
 		data = data[8:]
 	} else {
 		return wireUnmarshalBinaryError
@@ -962,41 +952,21 @@ func (info *dhtInfo) getKey() dhtInfoKey {
  * dhtBootstrap *
  ****************/
 
-// TODO? a compact representation of treeInfo (e.g. list of port in path from root, no signatures per hop)
-
 type dhtBootstrap struct {
-	sig  signature
-	info treeInfo
+	label treeLabel
 }
 
 func (dbs *dhtBootstrap) check() bool {
-	if len(dbs.info.hops) > 0 {
-		if !dbs.info.checkLoops() || !dbs.info.checkSigs() {
-			return false
-		}
-	}
-	sigBytes, err := dbs.info.MarshalBinary()
-	if err != nil {
-		return false
-	}
-	dest := dbs.info.dest()
-	return dest.verify(sigBytes, dbs.sig)
+	return dbs.label.check()
 }
 
 func (dbs *dhtBootstrap) MarshalBinary() (data []byte, err error) {
-	var bs []byte
-	if bs, err = dbs.info.MarshalBinary(); err == nil {
-		data = append(data, dbs.sig...)
-		data = append(data, bs...)
-	}
-	return
+	return dbs.label.MarshalBinary()
 }
 
 func (dbs *dhtBootstrap) UnmarshalBinary(data []byte) error {
 	var tmp dhtBootstrap
-	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
-		return wireUnmarshalBinaryError
-	} else if err := tmp.info.UnmarshalBinary(data); err != nil {
+	if err := tmp.label.UnmarshalBinary(data); err != nil {
 		return err
 	}
 	*dbs = tmp
@@ -1081,9 +1051,9 @@ func (s *dhtSetup) getTeardown() *dhtTeardown {
 	return &dhtTeardown{
 		seq:     s.seq,
 		source:  s.source,
-		dest:    s.dest.info.dest(),
-		root:    s.dest.info.root,
-		rootSeq: s.dest.info.seq,
+		dest:    s.dest.label.key,
+		root:    s.dest.label.root,
+		rootSeq: s.dest.label.seq,
 	}
 }
 
