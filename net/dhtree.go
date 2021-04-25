@@ -260,19 +260,43 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 // _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
 // this only uses the source direction of paths through the dht
 func (t *dhtree) _dhtLookup(dest publicKey) *peer {
-	if treeLess(t.self.root, dest) {
-		return nil // higher than even the root
-	}
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
-	if treeLess(best, dest) {
+	if treeLess(best, dest) && !treeLess(t.self.root, dest) {
 		for p, info := range t.tinfos {
 			// TODO store parent so we don't need to iterate here
 			if info == t.self {
 				best = t.self.root
 				bestPeer = p
+				for _, hop := range t.self.hops {
+					if dhtOrdered(dest, hop.next, best) {
+						best = hop.next
+						bestPeer = p
+					}
+				}
 				break
 			}
+		}
+	}
+	for p, info := range t.tinfos {
+		if (!dest.equal(best) && dest.equal(info.root)) || dhtOrdered(dest, info.root, best) {
+			best = info.root
+			bestPeer = p
+		}
+		for _, hop := range info.hops {
+			if (!dest.equal(best) && dest.equal(hop.next)) || dhtOrdered(dest, hop.next, best) {
+				best = hop.next
+				bestPeer = p
+			} else if bestPeer != nil && best.equal(hop.next) && info.time.Before(t.tinfos[bestPeer].time) {
+				best = hop.next
+				bestPeer = p
+			}
+		}
+	}
+	for p := range t.tinfos {
+		if best.equal(p.key) || dhtOrdered(dest, p.key, best) {
+			best = p.key
+			bestPeer = p
 		}
 	}
 	var bestInfo *dhtInfo
@@ -294,7 +318,7 @@ func (t *dhtree) _dhtLookup(dest publicKey) *peer {
 			bestInfo = info
 		}
 	}
-	// TODO use self/peer info, and share code with the below...
+	// TODO? share code with the below...
 	return bestPeer
 }
 
@@ -303,24 +327,41 @@ func (t *dhtree) _dhtLookup(dest publicKey) *peer {
 // note that this also considers peers (this is what bootstraps the whole process)
 // it also considers the root, to make sure that multiple split rings will converge back to one
 func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
-	if treeLess(t.self.root, dest) {
-		return nil // higher than even the root
-	}
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
-	if best.equal(dest) || treeLess(best, dest) {
+	if !treeLess(dest, best) && treeLess(dest, t.self.root) {
 		for p, info := range t.tinfos {
 			// TODO store parent so we don't need to iterate here
 			if info == t.self {
 				best = t.self.root
 				bestPeer = p
+				for _, hop := range t.self.hops {
+					if dhtOrdered(dest, hop.next, best) {
+						best = hop.next
+						bestPeer = p
+					}
+				}
 				break
 			}
 		}
 	}
+	for p, info := range t.tinfos {
+		if dhtOrdered(dest, info.root, best) {
+			best = info.root
+			bestPeer = p
+		}
+		for _, hop := range info.hops {
+			if dhtOrdered(dest, hop.next, best) {
+				best = hop.next
+				bestPeer = p
+			} else if bestPeer != nil && best.equal(hop.next) && info.time.Before(t.tinfos[bestPeer].time) {
+				best = hop.next
+				bestPeer = p
+			}
+		}
+	}
 	for p := range t.tinfos {
-		break // TODO? use peers too
-		if /*best.equal(dest) ||*/ dhtOrdered(dest, p.key, best) {
+		if best.equal(p.key) || dhtOrdered(dest, p.key, best) {
 			best = p.key
 			bestPeer = p
 		}
@@ -344,7 +385,7 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
 			bestInfo = info
 		}
 	}
-	// FIXME use all hops in self info, and share code with the above...
+	// TODO? share code with the above...
 	return bestPeer
 }
 
