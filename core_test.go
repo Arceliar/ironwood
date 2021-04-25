@@ -197,7 +197,8 @@ func TestLineNetwork(t *testing.T) {
 						prev = dinfo.source.addr().String()
 					}
 					if dinfo := conn.core.dhtree.succ; dinfo != nil {
-						next = dinfo.dest.addr().String()
+						k := conn.core.dhtree.dkeys[dinfo]
+						next = k.addr().String()
 					}
 					root = conn.core.dhtree.self.root.addr().String()
 					t.Log(prev, ":", here, ":", next, ":", root)
@@ -311,7 +312,8 @@ func TestRandomTreeNetwork(t *testing.T) {
 						prev = dinfo.source.addr().String()
 					}
 					if dinfo := conn.core.dhtree.succ; dinfo != nil {
-						next = dinfo.dest.addr().String()
+						k := conn.core.dhtree.dkeys[dinfo]
+						next = k.addr().String()
 					}
 					root = conn.core.dhtree.self.root.addr().String()
 					t.Log(prev, ":", here, ":", next, ":", root)

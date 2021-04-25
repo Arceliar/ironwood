@@ -28,6 +28,7 @@ type dhtree struct {
 	self       *treeInfo               // self info
 	pred       *dhtInfo                // predecessor in dht, they maintain a path to us
 	succ       *dhtInfo                // successor in dht, who we maintain a path to
+	dkeys      map[*dhtInfo]publicKey  // map of *dhtInfo->destKey for current and past successors
 	seq        uint64                  // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
 	timer      *time.Timer             // time.AfterFunc to send bootstrap packets
 	wait       bool                    // FIXME this is a hack to let bad news spread before changing parents
@@ -38,7 +39,8 @@ func (t *dhtree) init(c *core) {
 	t.expired = make(map[string]uint64)
 	t.tinfos = make(map[*peer]*treeInfo)
 	t.dinfos = make(map[dhtInfoKey]*dhtInfo) // TODO clean these up after some timeout
-	t._fix()                                 // Initialize t.self and start announce and timeout timers
+	t.dkeys = make(map[*dhtInfo]publicKey)
+	t._fix() // Initialize t.self and start announce and timeout timers
 	t.seq = uint64(time.Now().UnixNano())
 	r := make([]byte, 8)
 	if _, err := rand.Read(r); err != nil {
@@ -394,14 +396,13 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
 //  e.g. we know a better successor/predecessor for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
+	/* TODO? something along these lines...
 	for _, dinfo := range t.dinfos {
-		break // FIXME this is broken for some reason
 		if dhtOrdered(info.source, dinfo.source, info.dest) {
 			return false // There's a better successor for this source
 		}
 	}
 	for _, dinfo := range t.dinfos {
-		break // TODO this or something like it
 		if dinfo == t.pred || dinfo == t.succ {
 			continue // Special cases, handled elsewhere
 		}
@@ -410,6 +411,7 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 			t._teardown(dinfo.next, dinfo.getTeardown())
 		}
 	}
+	*/
 	t.dinfos[info.getKey()] = info
 	return true
 }
@@ -472,7 +474,7 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 		// This response is too old, so path setup would fail
 		return
 	case t.succ == nil:
-	case dhtOrdered(t.core.crypto.publicKey, source, t.succ.dest):
+	case dhtOrdered(t.core.crypto.publicKey, source, t.dkeys[t.succ]):
 		// This bootstrap is from a better successor than our current one
 	case !t.succ.root.equal(t.self.root) || t.succ.rootSeq != t.self.seq:
 		// The curent successor needs replacing (old tree info)
@@ -492,7 +494,7 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 		//  From t.succ = nil when the tree changes, but kept around to bootstrap
 		// So loop over paths and close any going to a *different* node than the current successor
 		// The current successor can close the old path from the predecessor side after setup
-		if dinfo.source.equal(t.core.crypto.publicKey) && !dinfo.dest.equal(source) {
+		if dinfo.source.equal(t.core.crypto.publicKey) && !source.equal(t.dkeys[dinfo]) {
 			t._teardown(nil, dinfo.getTeardown())
 		}
 	}
@@ -541,7 +543,6 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	dinfo.source = setup.source
 	dinfo.prev = prev
 	dinfo.next = next
-	dinfo.dest = dest
 	dinfo.root = setup.dest.label.root
 	dinfo.rootSeq = setup.dest.label.seq
 	if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
@@ -585,6 +586,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 			panic("already have a successor")
 		}
 		t.succ = dinfo
+		t.dkeys[dinfo] = dest
 	}
 	if next != nil {
 		next.sendSetup(t, setup)
@@ -633,9 +635,6 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 		} else if !teardown.source.equal(dinfo.source) {
 			panic("DEBUG this should never happen")
 			// return
-		} else if !teardown.dest.equal(dinfo.dest) {
-			panic("DEBUG if this happens then there's a design problem")
-			// return
 		}
 		var next *peer
 		if from == dinfo.prev {
@@ -646,6 +645,7 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 			panic("DEBUG teardown of path from wrong node")
 		}
 		dinfo.timer.Stop()
+		delete(t.dkeys, dinfo)
 		delete(t.dinfos, teardown.getKey())
 		if next != nil {
 			next.sendTeardown(t, teardown)
@@ -965,14 +965,13 @@ type dhtInfo struct {
 	source  publicKey
 	prev    *peer
 	next    *peer
-	dest    publicKey
 	root    publicKey
 	rootSeq uint64
 	timer   *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
 }
 
 func (info *dhtInfo) getTeardown() *dhtTeardown {
-	return &dhtTeardown{seq: info.seq, source: info.source, dest: info.dest, root: info.root, rootSeq: info.rootSeq}
+	return &dhtTeardown{seq: info.seq, source: info.source, root: info.root, rootSeq: info.rootSeq}
 }
 
 type dhtInfoKey struct {
@@ -1055,8 +1054,6 @@ func (ack *dhtBootstrapAck) UnmarshalBinary(data []byte) error {
  * dhtSetup *
  ************/
 
-// TODO? source root/rootSeq? is dest already good enough?
-
 type dhtSetup struct {
 	sig    signature
 	source publicKey
@@ -1088,7 +1085,6 @@ func (s *dhtSetup) getTeardown() *dhtTeardown {
 	return &dhtTeardown{
 		seq:     s.seq,
 		source:  s.source,
-		dest:    s.dest.label.key,
 		root:    s.dest.label.root,
 		rootSeq: s.dest.label.seq,
 	}
@@ -1133,7 +1129,6 @@ func (s *dhtSetup) UnmarshalBinary(data []byte) error {
 type dhtTeardown struct {
 	seq     uint64
 	source  publicKey
-	dest    publicKey
 	root    publicKey
 	rootSeq uint64
 }
@@ -1146,7 +1141,6 @@ func (t *dhtTeardown) MarshalBinary() (data []byte, err error) {
 	data = make([]byte, 8)
 	binary.BigEndian.PutUint64(data, t.seq)
 	data = append(data, t.source...)
-	data = append(data, t.dest...)
 	data = append(data, t.root...)
 	rseq := make([]byte, 8)
 	binary.BigEndian.PutUint64(rseq, t.rootSeq)
@@ -1161,8 +1155,6 @@ func (t *dhtTeardown) UnmarshalBinary(data []byte) error {
 	}
 	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
 	if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
-		return wireUnmarshalBinaryError
-	} else if !wireChopBytes((*[]byte)(&tmp.dest), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
 	} else if !wireChopBytes((*[]byte)(&tmp.root), &data, publicKeySize) {
 		return wireUnmarshalBinaryError
