@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	peerKEEPALIVE = time.Second * 2
-	peerTIMEOUT   = time.Second * 4
+	peerKEEPALIVE = time.Second
+	peerTIMEOUT   = time.Second * 5 / 2
 )
 
 type peerPort uint64
@@ -86,8 +86,7 @@ func (p *peer) _write(bs []byte) {
 	out := getBytes(2 + len(bs))
 	defer putBytes(out)
 	if len(bs) > int(^uint16(0)) {
-		panic("this should never happen in testing")
-		// return
+		return
 	}
 	binary.BigEndian.PutUint16(out[:2], uint16(len(bs)))
 	copy(out[2:], bs)
@@ -186,8 +185,7 @@ func (p *peer) handleTree(bs []byte) error {
 	}
 	dest := info.hops[len(info.hops)-1].next
 	if !p.peers.core.crypto.publicKey.equal(dest) {
-		panic("This shouldn't happen in testing")
-		// return errors.New("incorrect destination")
+		return errors.New("incorrect destination")
 	}
 	p.info = info
 	p.peers.core.dhtree.update(nil, info, p)
@@ -214,9 +212,6 @@ func (p *peer) handleBootstrap(bs []byte) error {
 	if err := bootstrap.UnmarshalBinary(bs); err != nil {
 		return err
 	}
-	//if !bootstrap.check() {
-	//	return errors.New("invalid bootstrap")
-	//}
 	p.peers.core.dhtree.handleBootstrap(nil, bootstrap)
 	return nil
 }
@@ -232,9 +227,6 @@ func (p *peer) handleBootstrapAck(bs []byte) error {
 	if err := ack.UnmarshalBinary(bs); err != nil {
 		return err
 	}
-	//if !ack.check() {
-	//	return errors.New("invalid bootstrap ack")
-	//}
 	p.peers.core.dhtree.handleBootstrapAck(nil, ack)
 	return nil
 }
@@ -250,10 +242,9 @@ func (p *peer) handleSetup(bs []byte) error {
 	if err := setup.UnmarshalBinary(bs); err != nil {
 		return err
 	}
-	//if !setup.check() {
-	//	panic("DEBUG bad setup")
-	//	return errors.New("invalid setup")
-	//} // TODO?
+	if !setup.check() {
+		return errors.New("invalid setup")
+	}
 	p.peers.core.dhtree.handleSetup(nil, p, setup)
 	return nil
 }
@@ -384,12 +375,10 @@ func (ps *peers) handlePathTraffic(from phony.Actor, trbs []byte) {
 			if nextPort != 0 {
 				tr := new(pathTraffic)
 				if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
-					panic("DEBUG")
 					return
 				}
 				var err error
 				if trbs, err = tr.dt.MarshalBinaryTo(trbs[:0]); err != nil {
-					panic("DEBUG")
 					return
 				}
 			}
