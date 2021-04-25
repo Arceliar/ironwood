@@ -10,6 +10,11 @@ import (
 	"github.com/Arceliar/phony"
 )
 
+const (
+	peerKEEPALIVE = time.Second * 2
+	peerTIMEOUT   = time.Second * 4
+)
+
 type peerPort uint64
 
 type peers struct {
@@ -47,6 +52,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		p.conn = conn
 		p.key = key
 		p.port = port
+		p.timer = time.AfterFunc(0, func() {})
 		ps.peers[port] = p
 	})
 	return p, err
@@ -71,9 +77,12 @@ type peer struct {
 	key         publicKey
 	info        *treeInfo
 	port        peerPort
+	keepAlive   func()
+	timer       *time.Timer
 }
 
 func (p *peer) _write(bs []byte) {
+	p.timer.Stop()
 	out := getBytes(2 + len(bs))
 	defer putBytes(out)
 	if len(bs) > int(^uint16(0)) {
@@ -83,6 +92,7 @@ func (p *peer) _write(bs []byte) {
 	binary.BigEndian.PutUint16(out[:2], uint16(len(bs)))
 	copy(out[2:], bs)
 	_, _ = p.conn.Write(out)
+	p.timer = time.AfterFunc(peerKEEPALIVE, p.keepAlive)
 }
 
 func (p *peer) handler() error {
@@ -93,27 +103,26 @@ func (p *peer) handler() error {
 	}()
 	done := make(chan struct{})
 	defer close(done)
-	var keepAlive func()
-	keepAlive = func() {
+	p.keepAlive = func() {
 		select {
 		case <-done:
 			return
 		default:
 		}
-		p._write([]byte{wireDummy})
-		time.AfterFunc(time.Second, keepAlive)
+		p.Act(nil, func() {
+			p._write([]byte{wireDummy})
+		})
 	}
-	go keepAlive()
 	p.peers.core.dhtree.Act(nil, func() {
 		info := p.peers.core.dhtree.self
 		p.peers.Act(&p.peers.core.dhtree, func() {
 			p.sendTree(p.peers, info)
 		})
 	})
-	var lenBuf [2]byte
+	var lenBuf [2]byte // packet length is a uint16
 	bs := make([]byte, 65535)
 	for {
-		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
+		if err := p.conn.SetReadDeadline(time.Now().Add(peerTIMEOUT)); err != nil {
 			return err
 		}
 		if _, err := io.ReadFull(p.conn, lenBuf[:]); err != nil {
@@ -121,9 +130,6 @@ func (p *peer) handler() error {
 		}
 		size := int(binary.BigEndian.Uint16(lenBuf[:]))
 		bs = bs[:size]
-		if err := p.conn.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
-			return err
-		}
 		if _, err := io.ReadFull(p.conn, bs); err != nil {
 			return err
 		}

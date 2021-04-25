@@ -167,10 +167,11 @@ func (pc *PacketConn) SetWriteDeadline(t time.Time) error {
 }
 
 // HandleConn expects a peer's public key as its first argument, and a net.Conn with TCP-like semantics (reliable ordered delivery) as its second argument.
-// This function blocks while the net.Conn is in use, and returns (without closing the net.Conn) if any error occurs.
-// This function returns (after closing the net.Conn) if PacketConn.Close() is called.
+// This function blocks while the net.Conn is in use, and returns an error if any occurs.
+// This function returns (almost) immediately if PacketConn.Close() is called.
+// In all cases, the net.Conn is closed before returning.
 func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
-	// Note: This should block until we're done with the Conn, then return without closing it
+	defer conn.Close()
 	if len(key) != publicKeySize {
 		return errors.New("incorrect key length")
 	}

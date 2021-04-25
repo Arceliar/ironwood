@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	treeTIMEOUT  = 600 * time.Second // TODO figure out what makes sense
+	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
 )
