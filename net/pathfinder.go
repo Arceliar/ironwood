@@ -188,12 +188,10 @@ func (pn *pathNotify) check() bool {
 
 func (pn *pathNotify) MarshalBinary() (data []byte, err error) {
 	if pn.label == nil {
-		panic("DEBUG")
 		return nil, wireMarshalBinaryError
 	}
 	var bs []byte
 	if bs, err = pn.label.MarshalBinary(); err != nil {
-		panic("DEBUG")
 		return
 	}
 	data = append(data, pn.sig...)
@@ -206,13 +204,10 @@ func (pn *pathNotify) UnmarshalBinary(data []byte) error {
 	var tmp pathNotify
 	tmp.label = new(treeLabel)
 	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if !wireChopBytes((*[]byte)(&tmp.dest), &data, publicKeySize) {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if err := tmp.label.UnmarshalBinary(data); err != nil {
-		panic("DEBUG")
 		return err
 	}
 	*pn = tmp
@@ -244,19 +239,15 @@ func (l *pathLookup) UnmarshalBinary(data []byte) error {
 	u, begin := wireDecodeUint(data)
 	end := int(u) + begin
 	if end > len(data) {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if err := tmp.notify.UnmarshalBinary(data[begin:end]); err != nil {
-		panic("DEBUG")
 		return err
 	} else if data = data[end:]; !wireChopPath(&tmp.rpath, &data) {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if len(data) > 0 {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if len(tmp.rpath) > 0 && tmp.rpath[len(tmp.rpath)-1] == 0 {
-		panic("DEBUG") // there should never already be a 0 here
+		// there should never already be a 0 here
 		return wireUnmarshalBinaryError
 	}
 	*l = tmp
@@ -287,33 +278,24 @@ func (r *pathResponse) MarshalBinary() (data []byte, err error) {
 func (r *pathResponse) UnmarshalBinary(data []byte) error {
 	var tmp pathResponse
 	if !wireChopBytes((*[]byte)(&tmp.from), &data, publicKeySize) {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if !wireChopPath(&tmp.path, &data) {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if !wireChopPath(&tmp.rpath, &data) {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if len(data) > 0 {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if len(tmp.rpath) > 0 && tmp.rpath[len(tmp.rpath)-1] == 0 {
-		panic("DEBUG") // there should never already be a 0 here
+		// there should never already be a 0 here
 		return wireUnmarshalBinaryError
 	}
 	*r = tmp
 	return nil
 }
 
-// TODO? a counter or something to skip hops of path? Otherwise we'll need to truncate along the way...
-
 /***************
  * pathTraffic *
  ***************/
-
-// TODO source routed packet format
-//  Should contain a full dhtTraffic packet to fall back to if source routing fails
 
 type pathTraffic struct {
 	path []peerPort
@@ -330,10 +312,8 @@ func (t *pathTraffic) MarshalBinaryTo(slice []byte) ([]byte, error) {
 func (t *pathTraffic) UnmarshalBinaryInPlace(data []byte) error {
 	var tmp pathTraffic
 	if !wireChopPath(&tmp.path, &data) {
-		panic("DEBUG")
 		return wireUnmarshalBinaryError
 	} else if err := tmp.dt.UnmarshalBinaryInPlace(data); err != nil {
-		panic("DEBUG")
 		return err
 	}
 	*t = tmp
