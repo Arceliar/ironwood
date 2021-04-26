@@ -15,7 +15,7 @@ type PacketConn struct {
 	actor        phony.Inbox
 	core         *core
 	recv         chan []byte // dhtTraffic read buffer
-	recvWrongKey chan []byte // dhtTraffic read buffer for packets sent to a different key
+	recvCheck    func(ed25519.PublicKey) bool
 	closeMutex   sync.Mutex
 	closed       chan struct{}
 	readDeadline *deadline
@@ -55,7 +55,6 @@ func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 func (pc *PacketConn) init(c *core) {
 	pc.core = c
 	pc.recv = make(chan []byte, 1)
-	pc.recvWrongKey = make(chan []byte, 1)
 	pc.readDeadline = newDeadline()
 	pc.closed = make(chan struct{})
 }
@@ -189,52 +188,37 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	return err
 }
 
-// ReadUndeliverable works exactly like ReadFrom, except it returns any packets that were sent to a different local address but cannot be forwarded further.
-// This happens if the LocalAddr is the immediate successor of the destination (higher by the smallest amount, modulo the keyspace size).
-// This may be useful for key discovery when a destination's full ed25519.PublicKey is not known (by zero padding the least unknown least significant bits).
-// Note that failing to call ReadUndeliverable may cause the connection to block and/or leak memory.
-func (pc *PacketConn) ReadUndeliverable(p []byte) (n int, local, remote net.Addr, err error) {
-	var trbs []byte
-	select {
-	case <-pc.closed:
-		return 0, nil, nil, errors.New("closed")
-	case <-pc.readDeadline.getCancel():
-		return 0, nil, nil, errors.New("deadline exceeded")
-	case trbs = <-pc.recvWrongKey:
-	}
-	defer putBytes(trbs)
-	var tr dhtTraffic
-	if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
-		panic("this should never happen")
-	}
-	copy(p, tr.payload)
-	n = len(tr.payload)
-	if len(p) < len(tr.payload) {
-		n = len(p)
-	}
-	localSlice := publicKey(append([]byte(nil), tr.dest...))
-	remoteSlice := publicKey(append([]byte(nil), tr.source...))
-	local = localSlice.addr()
-	remote = remoteSlice.addr()
-	return
+// SetRecvCheck sets a function that is called on the destination key of any received packet.
+// If the function is not set, or set to nil, then packets are received (by calling ReadFrom) if and only if the destination key exactly matches this node's public key.
+// If the function is set, then packet are received any time the provided function returns true.
+// This is used to allow packets to be received if e.g. only a certain part of this connection's public key would be known by the sender.
+func (pc *PacketConn) SetRecvCheck(isGood func(ed25519.PublicKey) bool) error {
+	phony.Block(&pc.actor, func() {
+		pc.recvCheck = isGood
+	})
+	return nil
 }
 
 func (pc *PacketConn) handleTraffic(trbs []byte) {
-	var tr dhtTraffic
-	if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
-		panic("this should never happen")
-	}
-	var ch chan []byte
-	if !tr.dest.equal(pc.core.crypto.publicKey) {
-		ch = pc.recvWrongKey
-	} else {
-		ch = pc.recv
-	}
 	pc.actor.Act(nil, func() {
-		select {
-		case ch <- trbs:
-		case <-pc.closed:
-			putBytes(trbs)
+		var tr dhtTraffic
+		if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
+			panic("this should never happen")
+		}
+		var doRecv bool
+		if pc.recvCheck != nil {
+			if pc.recvCheck(ed25519.PublicKey(tr.dest)) {
+				doRecv = true
+			}
+		} else if tr.dest.equal(pc.core.crypto.publicKey) {
+			doRecv = true
+		}
+		if doRecv {
+			select {
+			case pc.recv <- trbs:
+			case <-pc.closed:
+				putBytes(trbs)
+			}
 		}
 	})
 }
