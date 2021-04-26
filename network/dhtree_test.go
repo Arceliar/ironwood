@@ -1,4 +1,4 @@
-package ironwood
+package network
 
 import (
 	"bytes"

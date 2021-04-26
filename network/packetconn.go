@@ -1,14 +1,15 @@
-package ironwood
+package network
 
 import (
 	"crypto/ed25519"
-	"encoding/hex"
 	"errors"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/Arceliar/phony"
+
+	"github.com/Arceliar/ironwood/types"
 )
 
 type PacketConn struct {
@@ -21,26 +22,8 @@ type PacketConn struct {
 	readDeadline *deadline
 }
 
-// Addr implements the `net.Addr` interface for `ed25519.PublicKey` values.
-// An *Addr pointer is used as a net.Addr for PacketConn.
-type Addr ed25519.PublicKey
-
-func (key *publicKey) addr() *Addr {
-	return (*Addr)(key)
-}
-
-func (a *Addr) key() publicKey {
-	return publicKey(*a)
-}
-
-// Network returns "ed25519.PublicKey" as a string, but is otherwise unused.
-func (a *Addr) Network() string {
-	return "ed25519.PublicKey"
-}
-
-// String returns the ed25519.PublicKey as a hexidecimal string, but is otherwise unused.
-func (a *Addr) String() string {
-	return hex.EncodeToString(*a)
+func (key publicKey) addr() types.Addr {
+	return types.Addr(key)
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the net.PacketConn interface.
@@ -93,10 +76,10 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 		return 0, errors.New("closed")
 	default:
 	}
-	if _, ok := addr.(*Addr); !ok {
-		return 0, errors.New("incorrect address type")
+	if _, ok := addr.(types.Addr); !ok {
+		return 0, errors.New("incorrect address type, expected types.Addr")
 	}
-	dest := addr.(*Addr).key()
+	dest := publicKey(addr.(types.Addr))
 	if len(dest) != publicKeySize {
 		return 0, errors.New("incorrect address length")
 	}
@@ -140,8 +123,8 @@ func (pc *PacketConn) Close() error {
 
 // LocalAddr returns an *Addr of the ed25519.PublicKey for this PacketConn.
 func (pc *PacketConn) LocalAddr() net.Addr {
-	a := Addr(append([]byte(nil), pc.core.crypto.publicKey...))
-	return &a
+	a := types.Addr(append([]byte(nil), pc.core.crypto.publicKey...))
+	return a
 }
 
 // SetDeadline fulfills the net.PacketConn interface. Note that only read deadlines are affected.

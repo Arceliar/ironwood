@@ -1,4 +1,4 @@
-package ironwood
+package network
 
 import (
 	"crypto/ed25519"

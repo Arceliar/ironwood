@@ -1,4 +1,4 @@
-package ironwood
+package network
 
 import (
 	"bytes"
@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Arceliar/phony"
+
+	"github.com/Arceliar/ironwood/types"
 )
 
 func TestTwoNodes(t *testing.T) {
@@ -68,8 +70,8 @@ func TestTwoNodes(t *testing.T) {
 			panic("err")
 		}
 		msg = msg[:n]
-		aA := *(addrA.(*Addr))
-		fA := *(from.(*Addr))
+		aA := addrA.(types.Addr)
+		fA := from.(types.Addr)
 		if !bytes.Equal(aA, fA) {
 			panic("wrong source address")
 		}
@@ -112,8 +114,8 @@ func TestLineNetwork(t *testing.T) {
 		}
 		prev := conns[idx-1]
 		here := conns[idx]
-		keyA := ed25519.PublicKey(prev.LocalAddr().(*Addr).key())
-		keyB := ed25519.PublicKey(here.LocalAddr().(*Addr).key())
+		keyA := ed25519.PublicKey(prev.LocalAddr().(types.Addr))
+		keyB := ed25519.PublicKey(here.LocalAddr().(types.Addr))
 		linkA, linkB := newDummyConn(keyA, keyB)
 		defer linkA.Close()
 		defer linkB.Close()
@@ -133,8 +135,7 @@ func TestLineNetwork(t *testing.T) {
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
-		aA := aAddr.(*Addr)
-		aK := aA.key()
+		aK := publicKey(aAddr.(types.Addr))
 		for bIdx := range conns {
 			if bIdx == aIdx {
 				continue
@@ -174,8 +175,7 @@ func TestLineNetwork(t *testing.T) {
 						}
 						//panic("read problem")
 					}
-					fA := from.(*Addr)
-					fK := fA.key()
+					fK := publicKey(from.(types.Addr))
 					if fK.equal(aK) {
 						break
 					}
@@ -227,8 +227,8 @@ func TestRandomTreeNetwork(t *testing.T) {
 		if len(conns) > 0 {
 			pIdx := randIdx()
 			p := conns[pIdx]
-			keyA := ed25519.PublicKey(conn.LocalAddr().(*Addr).key())
-			keyB := ed25519.PublicKey(p.LocalAddr().(*Addr).key())
+			keyA := ed25519.PublicKey(conn.LocalAddr().(types.Addr))
+			keyB := ed25519.PublicKey(p.LocalAddr().(types.Addr))
 			linkA, linkB := newDummyConn(keyA, keyB)
 			defer linkA.Close()
 			defer linkB.Close()
@@ -248,8 +248,7 @@ func TestRandomTreeNetwork(t *testing.T) {
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
-		aA := aAddr.(*Addr)
-		aK := aA.key()
+		aK := publicKey(aAddr.(types.Addr))
 		for bIdx := range conns {
 			if bIdx == aIdx {
 				continue
@@ -289,8 +288,7 @@ func TestRandomTreeNetwork(t *testing.T) {
 						}
 						//panic("read problem")
 					}
-					fA := from.(*Addr)
-					fK := fA.key()
+					fK := publicKey(from.(types.Addr))
 					if fK.equal(aK) {
 						break
 					}
