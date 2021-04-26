@@ -3,6 +3,8 @@ package network
 import (
 	"bytes"
 	"crypto/ed25519"
+
+	"github.com/Arceliar/ironwood/types"
 )
 
 const (
@@ -34,6 +36,10 @@ func (key *publicKey) verify(message []byte, sig signature) bool {
 
 func (key *publicKey) equal(comparedKey publicKey) bool {
 	return bytes.Equal(*key, comparedKey)
+}
+
+func (key publicKey) addr() types.Addr {
+	return types.Addr(key)
 }
 
 func (c *crypto) init(secret ed25519.PrivateKey) {

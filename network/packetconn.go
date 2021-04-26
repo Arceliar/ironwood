@@ -12,6 +12,10 @@ import (
 	"github.com/Arceliar/ironwood/types"
 )
 
+func _type_asserts_() {
+	var _ types.PacketConn = new(PacketConn)
+}
+
 type PacketConn struct {
 	actor        phony.Inbox
 	core         *core
@@ -22,11 +26,7 @@ type PacketConn struct {
 	readDeadline *deadline
 }
 
-func (key publicKey) addr() types.Addr {
-	return types.Addr(key)
-}
-
-// NewPacketConn returns a *PacketConn struct which implements the net.PacketConn interface.
+// NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
 func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 	c := new(core)
 	if err := c.init(secret); err != nil {

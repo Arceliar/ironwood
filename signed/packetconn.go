@@ -5,25 +5,24 @@ import (
 	"crypto/ed25519"
 	"net"
 
+	"github.com/Arceliar/ironwood/network"
 	"github.com/Arceliar/ironwood/types"
 )
 
 type PacketConn struct {
-	net.PacketConn
-	secret    ed25519.PrivateKey
-	public    ed25519.PublicKey
-	pubToAddr func(ed25519.PublicKey) net.Addr
-	addrToPub func(net.Addr) ed25519.PublicKey
+	*network.PacketConn
+	secret ed25519.PrivateKey
+	public ed25519.PublicKey
 }
 
-func WrapPacketConn(pc net.PacketConn, secret ed25519.PrivateKey, pubToAddr func(ed25519.PublicKey) net.Addr, addrToPub func(net.Addr) ed25519.PublicKey) (*PacketConn, error) {
+// NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
+func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
+	pc, err := network.NewPacketConn(secret)
+	if err != nil {
+		return nil, err
+	}
 	pub := secret.Public().(ed25519.PublicKey)
-	return &PacketConn{pc, secret, pub, pubToAddr, addrToPub}, nil
-}
-
-// NPC returns the underlying net.PacketConn.
-func (pc *PacketConn) NPC() net.PacketConn {
-	return pc.PacketConn
+	return &PacketConn{pc, secret, pub}, nil
 }
 
 func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
@@ -35,8 +34,7 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 		if !ok {
 			continue // error?
 		}
-		fromAddr := from
-		fromKey := pc.addrToPub(fromAddr)
+		fromKey := ed25519.PublicKey(from.(types.Addr))
 		if !bytes.Equal(fromKey[:], key) {
 			continue // key mismatch
 		}
@@ -51,9 +49,7 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 
 func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	msg := pc.sign(nil, p)
-	destKey := ed25519.PublicKey(addr.(types.Addr))
-	destAddr := pc.pubToAddr(destKey)
-	n, err = pc.PacketConn.WriteTo(msg, destAddr)
+	n, err = pc.PacketConn.WriteTo(msg, addr)
 	n -= len(msg) - len(p) // subtract overhead
 	if n < 0 {
 		n = 0
