@@ -10,7 +10,7 @@ import (
 
 const (
 	sessionTimeout  = time.Minute
-	sessionOverhead = boxPubSize + boxPubSize + boxNonceSize + boxOverhead
+	sessionOverhead = boxPubSize + boxPubSize + boxNonceSize + boxOverhead + boxPubSize
 )
 
 /******************
@@ -172,11 +172,14 @@ func (info *sessionInfo) send(from phony.Actor, msg []byte) {
 		bs = append(bs, info.sendPub[:]...)
 		bs = append(bs, info.box[:]...)
 		bs = append(bs, info.sendNonce[:]...)
-		// TODO? a sequence number for sendPub
-		//  does it ever matter? reordering/replays of very recent packets?
-		bs = boxSeal(bs, msg, &info.sendNonce, &info.sendShared)
-		panic("TODO")
+		// We need to include info.recvPub below the layer of encryption
+		// The remote side checks this to confirm we're really us
+		var tmp []byte
+		tmp = append(tmp, info.recvPub[:]...)
+		tmp = append(tmp, msg...)
+		bs = boxSeal(bs, tmp, &info.sendNonce, &info.sendShared)
 		// send bs somewhere
+		panic("TODO")
 	})
 }
 
@@ -187,40 +190,68 @@ func (info *sessionInfo) recv(from phony.Actor, msg []byte) {
 			return
 		}
 		var theirKey, myKey boxPub
-		var theirNonce boxNonce
+		var nonce boxNonce
 		offset := 0
 		_, offset = copy(theirKey[:], msg[offset:]), offset+boxPubSize
 		_, offset = copy(myKey[:], msg[offset:]), offset+boxPubSize
-		_, offset = copy(theirNonce[:], msg[offset:]), offset+boxNonceSize
-		// boxed := msg[:offset]
+		_, offset = copy(nonce[:], msg[offset:]), offset+boxNonceSize
+		// boxed := msg[offset:]
 		matchRemote := bytesEqual(theirKey[:], info.box[:])
 		matchRecv := bytesEqual(myKey[:], info.recvPub[:])
 		matchSend := bytesEqual(myKey[:], info.sendPub[:])
+		var sharedKey *boxShared
+		var onSuccess func(boxPub)
 		switch {
 		case matchRemote && matchRecv:
-			// readShared
+			if !info.recvNonce.lessThan(&nonce) {
+				return
+			}
+			sharedKey = &info.recvShared
+			onSuccess = func(_ boxPub) {
+				panic("TODO") // check key?...
+				info.recvNonce = nonce
+			}
 		case matchRemote && matchSend:
-			// sendShared and ratchet our side forward if it works
-		case matchRemote:
-			// no key matches, so send an init? ack?
+			// this should never happen? it would mean bad shared key use?
+			panic("TODO")
 		case !matchRemote && matchRecv:
 			// the remote side (maybe) ratcheted forward
-			// generate a new readShared, update if it works
 			// TODO sequence number or something to prevent out-of-order problems?
+			panic("TODO")
+			// generate a new readShared, update if it works
+			sharedKey = new(boxShared)
+			getShared(sharedKey, &theirKey, &info.recvPriv)
+			onSuccess = func(_ boxPub) {
+				// their key was ratchted forward
+				// update box, recvShared, sendShared, and nonces
+				panic("TODO")
+			}
 		case !matchRemote && matchSend:
+			// We have no way to confirm that this is really from them...
 			// the remote side (maybe) ratcheted forward
 			// generate a new tempShared
 			// if it works, then ratchet our side forward and update their key too
 			// TODO sequence number...
-		case !matchRemote:
-			// no key matches, so send an init? ack?
-			// we can't trust the key in this scenario, fwiw...
+			// TODO should this ever happen in the first place?...
+			panic("TODO")
+		case !matchRecv && !matchSend:
+			// no local key matches, so send an init? ack?
+			panic("TODO")
+			return
 		default:
 			panic("this should be impossible")
 		}
 		// Presumably we set a pointer to the right key above
 		// Try decrypting, do something depending on what happened...
 		panic("TODO")
+		if msg, ok := boxOpen(nil, msg[offset:], &nonce, sharedKey); ok {
+			var key boxPub
+			copy(key[:], msg)
+			msg = msg[len(key):]
+			// TODO send packet somewhere
+			panic("TODO")
+			onSuccess(key)
+		}
 	})
 }
 
@@ -266,9 +297,10 @@ func (si *sessionInit) check(pub *edPub) bool {
 
 func (si *sessionInit) MarshalBinary() (data []byte, err error) {
 	data = make([]byte, sessionInitSize)
-	copy(data, si.sig[:])
-	copy(data[edSigSize:], si.box[:])
-	binary.BigEndian.PutUint64(data[edSigSize+boxPubSize:], si.seq)
+	offset := 0
+	_, offset = copy(data[offset:], si.sig[:]), offset+edSigSize
+	_, offset = copy(data[offset:], si.box[:]), offset+boxPubSize
+	binary.BigEndian.PutUint64(data[offset:], si.seq)
 	return
 }
 
@@ -276,9 +308,10 @@ func (si *sessionInit) UnmarshalBinary(data []byte) error {
 	if len(data) != sessionInitSize {
 		return errors.New("wrong sessionInit size")
 	}
-	copy(si.sig[:], data[:])
-	copy(si.box[:], data[edSigSize:])
-	si.seq = binary.BigEndian.Uint64(data[edSigSize+boxPubSize:])
+	offset := 0
+	_, offset = copy(si.sig[:], data[offset:]), offset+edSigSize
+	_, offset = copy(si.box[:], data[offset:]), offset+boxPubSize
+	si.seq = binary.BigEndian.Uint64(data[offset:])
 	return nil
 }
 
