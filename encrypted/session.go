@@ -8,7 +8,10 @@ import (
 	"github.com/Arceliar/phony"
 )
 
-const sessionTIMEOUT = time.Minute
+const (
+	sessionTimeout  = time.Minute
+	sessionOverhead = boxPubSize + boxPubSize + boxNonceSize + boxOverhead
+)
 
 /******************
  * sessionManager *
@@ -16,10 +19,9 @@ const sessionTIMEOUT = time.Minute
 
 type sessionManager struct {
 	phony.Inbox
-	pc     *PacketConn
-	secret edPriv
-	public edPub
-	// TODO maps of keys onto session state, etc
+	pc       *PacketConn
+	secret   edPriv
+	public   edPub
 	sessions map[edPub]*sessionInfo
 }
 
@@ -34,14 +36,14 @@ func (mgr *sessionManager) _newSession(ed *edPub, box *boxPub, seq uint64) *sess
 		info.mgr = mgr
 		info._resetTimer()
 	})
-	mgr.sessions[info.theirEdPub] = info
+	mgr.sessions[info.ed] = info
 	return info
 }
 
 func (mgr *sessionManager) _sessionForInit(pub *edPub, init *sessionInit) *sessionInfo {
 	var info *sessionInfo
 	if info = mgr.sessions[*pub]; info == nil && init.check(pub) {
-		info = mgr._newSession(pub, &init.boxPub, init.seq)
+		info = mgr._newSession(pub, &init.box, init.seq)
 	}
 	return info
 }
@@ -68,34 +70,34 @@ func (mgr *sessionManager) handleAck(from phony.Actor, pub *edPub, ack *sessionA
 
 type sessionInfo struct {
 	phony.Actor
-	mgr            *sessionManager
-	theirSeq       uint64
-	theirEdPub     edPub
-	theirBoxPub    boxPub
-	ourReadBoxPriv boxPriv
-	ourReadBoxPub  boxPub
-	ourSendBoxPriv boxPriv // Rotates into read position if they send to us
-	ourSendBoxPub  boxPub
-	readShared     boxShared   // their pub, our current read priv
-	sendShared     boxShared   // their pub, our current send priv / our next read priv
-	readNonce      boxNonce    // non-decreasing, update when reading, reset on new shared
-	sendNonce      boxNonce    // non-decreasing, update when sending, reset on new shared
-	timer          *time.Timer // time.AfterFunc
+	mgr        *sessionManager
+	seq        uint64 // remote seq
+	ed         edPub  // remote ed key
+	box        boxPub // remote box key
+	recvPriv   boxPriv
+	recvPub    boxPub
+	recvShared boxShared
+	recvNonce  boxNonce
+	sendPriv   boxPriv
+	sendPub    boxPub
+	sendShared boxShared
+	sendNonce  boxNonce
+	timer      *time.Timer
 }
 
 func newSession(ed *edPub, box *boxPub, seq uint64) *sessionInfo {
 	info := new(sessionInfo)
-	info.theirSeq = seq - 1 // so the first update works
-	info.theirEdPub = *ed
-	info.theirBoxPub = *box
+	info.seq = seq - 1 // so the first update works
+	info.ed = *ed
+	info.box = *box
 	rpub, rpriv := newBoxKeys()
-	info.ourReadBoxPub = *rpub
-	info.ourReadBoxPriv = *rpriv
+	info.recvPub = *rpub
+	info.recvPriv = *rpriv
 	spub, spriv := newBoxKeys()
-	info.ourSendBoxPub = *spub
-	info.ourSendBoxPriv = *spriv
-	getShared(&info.readShared, &info.theirBoxPub, &info.ourReadBoxPriv)
-	getShared(&info.sendShared, &info.theirBoxPub, &info.ourSendBoxPriv)
+	info.sendPub = *spub
+	info.sendPriv = *spriv
+	getShared(&info.recvShared, &info.box, &info.recvPriv)
+	getShared(&info.sendShared, &info.box, &info.sendPriv)
 	return info
 }
 
@@ -103,10 +105,10 @@ func (info *sessionInfo) _resetTimer() {
 	if info.timer != nil {
 		info.timer.Stop()
 	}
-	info.timer = time.AfterFunc(sessionTIMEOUT, func() {
+	info.timer = time.AfterFunc(sessionTimeout, func() {
 		info.mgr.Act(nil, func() {
-			if oldInfo := info.mgr.sessions[info.theirEdPub]; oldInfo == info {
-				delete(info.mgr.sessions, info.theirEdPub)
+			if oldInfo := info.mgr.sessions[info.ed]; oldInfo == info {
+				delete(info.mgr.sessions, info.ed)
 			}
 		})
 	})
@@ -114,25 +116,29 @@ func (info *sessionInfo) _resetTimer() {
 
 // advance to the next set of crypto keys
 func (info *sessionInfo) _ratchet() {
-	info.ourReadBoxPub = info.ourSendBoxPub
-	info.ourReadBoxPriv = info.ourSendBoxPriv
-	getShared(&info.readShared, &info.theirBoxPub, &info.ourReadBoxPriv)
-	info.readNonce = boxNonce{}
+	panic("TODO") // this is wrong, need to handle either node ratcheting...
+	info.recvPub = info.sendPub
+	info.recvPriv = info.sendPriv
+	getShared(&info.recvShared, &info.box, &info.recvPriv)
+	info.recvNonce = boxNonce{}
 	newPub, newPriv := newBoxKeys()
-	info.ourSendBoxPub = *newPub
-	info.ourSendBoxPriv = *newPriv
+	info.sendPub = *newPub
+	info.sendPriv = *newPriv
 	info.sendNonce = boxNonce{}
-	getShared(&info.sendShared, &info.theirBoxPub, &info.ourSendBoxPriv)
+	getShared(&info.sendShared, &info.box, &info.sendPriv)
 }
 
 func (info *sessionInfo) handleInit(from phony.Actor, init *sessionInit) {
 	info.Act(from, func() {
-		if !init.check(&info.theirEdPub) {
+		if !init.check(&info.ed) {
 			return
 		}
 		if info._handleUpdate(init) {
 			// Send a sessionAck
-			ack := sessionAck{newSessionInit(&info.mgr.pc.secret, &info.ourSendBoxPub)}
+			//  TODO save this somewhere?
+			//  To avoid constantly crating/signing new ones from init spam
+			//  On the off chance that someone is repalying old init packets...
+			ack := sessionAck{newSessionInit(&info.mgr.pc.secret, &info.recvPub)}
 			_ = ack
 			panic("TODO")
 		}
@@ -141,7 +147,7 @@ func (info *sessionInfo) handleInit(from phony.Actor, init *sessionInit) {
 
 func (info *sessionInfo) handleAck(from phony.Actor, ack *sessionAck) {
 	info.Act(from, func() {
-		if !ack.check(&info.theirEdPub) {
+		if !ack.check(&info.ed) {
 			return
 		}
 		info._handleUpdate(&ack.sessionInit)
@@ -150,26 +156,70 @@ func (info *sessionInfo) handleAck(from phony.Actor, ack *sessionAck) {
 
 // return true if everything looks OK and the session was updated
 func (info *sessionInfo) _handleUpdate(init *sessionInit) bool {
-	if init.seq <= info.theirSeq {
+	if init.seq <= info.seq {
 		return false
 	}
-	info.theirBoxPub = init.boxPub
+	info.box = init.box
 	info._ratchet()
 	info._resetTimer()
 	return true
 }
 
 func (info *sessionInfo) send(from phony.Actor, msg []byte) {
-	// TODO some worker pool to multi-thread this
+	// TODO? some worker pool to multi-thread this
 	info.Act(from, func() {
-		defer info.sendNonce.inc()
+		bs := make([]byte, 0, len(msg)+sessionOverhead)
+		bs = append(bs, info.sendPub[:]...)
+		bs = append(bs, info.box[:]...)
+		bs = append(bs, info.sendNonce[:]...)
+		// TODO? a sequence number for sendPub
+		//  does it ever matter? reordering/replays of very recent packets?
+		bs = boxSeal(bs, msg, &info.sendNonce, &info.sendShared)
 		panic("TODO")
+		// send bs somewhere
 	})
 }
 
 func (info *sessionInfo) recv(from phony.Actor, msg []byte) {
-	// TODO some worker pool to multi-thread this
+	// TODO? some worker pool to multi-thread this
 	info.Act(from, func() {
+		if len(msg) < sessionOverhead {
+			return
+		}
+		var theirKey, myKey boxPub
+		var theirNonce boxNonce
+		offset := 0
+		_, offset = copy(theirKey[:], msg[offset:]), offset+boxPubSize
+		_, offset = copy(myKey[:], msg[offset:]), offset+boxPubSize
+		_, offset = copy(theirNonce[:], msg[offset:]), offset+boxNonceSize
+		// boxed := msg[:offset]
+		matchRemote := bytesEqual(theirKey[:], info.box[:])
+		matchRecv := bytesEqual(myKey[:], info.recvPub[:])
+		matchSend := bytesEqual(myKey[:], info.sendPub[:])
+		switch {
+		case matchRemote && matchRecv:
+			// readShared
+		case matchRemote && matchSend:
+			// sendShared and ratchet our side forward if it works
+		case matchRemote:
+			// no key matches, so send an init? ack?
+		case !matchRemote && matchRecv:
+			// the remote side (maybe) ratcheted forward
+			// generate a new readShared, update if it works
+			// TODO sequence number or something to prevent out-of-order problems?
+		case !matchRemote && matchSend:
+			// the remote side (maybe) ratcheted forward
+			// generate a new tempShared
+			// if it works, then ratchet our side forward and update their key too
+			// TODO sequence number...
+		case !matchRemote:
+			// no key matches, so send an init? ack?
+			// we can't trust the key in this scenario, fwiw...
+		default:
+			panic("this should be impossible")
+		}
+		// Presumably we set a pointer to the right key above
+		// Try decrypting, do something depending on what happened...
 		panic("TODO")
 	})
 }
@@ -182,14 +232,14 @@ func (info *sessionInfo) recv(from phony.Actor, msg []byte) {
 // Used mainly for initial session setup
 
 type sessionInit struct {
-	sig    edSig // edPub was the from address, so we get that for free already
-	boxPub boxPub
-	seq    uint64 // timestamp or similar
+	sig edSig // edPub was the from address, so we get that for free already
+	box boxPub
+	seq uint64 // timestamp or similar
 }
 
 func newSessionInit(sig *edPriv, box *boxPub) sessionInit {
 	var init sessionInit
-	init.boxPub = *box
+	init.box = *box
 	init.seq = uint64(time.Now().Unix())
 	init.sign(sig)
 	return init
@@ -199,7 +249,7 @@ const sessionInitSize = edSigSize + boxPubSize + 8
 
 func (si *sessionInit) bytesForSig() []byte {
 	bs := make([]byte, boxPubSize+8)
-	copy(bs, si.boxPub[:])
+	copy(bs, si.box[:])
 	binary.BigEndian.PutUint64(bs[boxPubSize:], si.seq)
 	return bs
 }
@@ -217,7 +267,7 @@ func (si *sessionInit) check(pub *edPub) bool {
 func (si *sessionInit) MarshalBinary() (data []byte, err error) {
 	data = make([]byte, sessionInitSize)
 	copy(data, si.sig[:])
-	copy(data[edSigSize:], si.boxPub[:])
+	copy(data[edSigSize:], si.box[:])
 	binary.BigEndian.PutUint64(data[edSigSize+boxPubSize:], si.seq)
 	return
 }
@@ -227,7 +277,7 @@ func (si *sessionInit) UnmarshalBinary(data []byte) error {
 		return errors.New("wrong sessionInit size")
 	}
 	copy(si.sig[:], data[:])
-	copy(si.boxPub[:], data[edSigSize:])
+	copy(si.box[:], data[edSigSize:])
 	si.seq = binary.BigEndian.Uint64(data[edSigSize+boxPubSize:])
 	return nil
 }

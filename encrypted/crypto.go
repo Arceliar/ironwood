@@ -47,6 +47,7 @@ const (
 	boxPrivSize   = 32
 	boxSharedSize = 32
 	boxNonceSize  = 24
+	boxOverhead   = box.Overhead
 )
 
 type boxPub [boxPubSize]byte
@@ -75,11 +76,22 @@ func boxSeal(out, msg []byte, nonce *boxNonce, shared *boxShared) []byte {
 	return box.SealAfterPrecomputation(out, msg, (*[24]byte)(nonce), (*[32]byte)(shared))
 }
 
+func (n *boxNonce) lessThan(o *boxNonce) bool {
+	for idx := range n {
+		if n[idx] < o[idx] {
+			return true
+		} else if n[idx] > o[idx] {
+			return false
+		}
+	}
+	return false
+}
+
 func (n *boxNonce) inc() {
 	panic("TODO test this")
-	for _, e := range n {
-		e++
-		if e != 0 {
+	for idx := boxNonceSize - 1; idx >= 0; idx-- {
+		n[idx]++
+		if n[idx] != 0 {
 			break // continue only if we roll over
 		}
 	}
