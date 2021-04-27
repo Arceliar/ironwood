@@ -3,6 +3,7 @@ package encrypted
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"golang.org/x/crypto/nacl/box"
 )
 
@@ -12,6 +13,16 @@ import (
 
 func bytesEqual(a, b []byte) bool {
 	return bytes.Equal(a, b)
+}
+
+func bytesPush(dest, source []byte, offset int) (newOffset int) {
+	copy(dest[offset:], source)
+	return offset + len(source)
+}
+
+func bytesPop(dest, source []byte, offset int) (newOffset int) {
+	copy(dest[:], source[offset:])
+	return offset + len(dest)
 }
 
 /******
@@ -55,12 +66,12 @@ type boxPriv [boxPrivSize]byte
 type boxShared [boxSharedSize]byte
 type boxNonce [boxNonceSize]byte
 
-func newBoxKeys() (pub *boxPub, priv *boxPriv) {
-	bpub, bpriv, err := box.GenerateKey(nil)
+func newBoxKeys() (pub boxPub, priv boxPriv) {
+	bpub, bpriv, err := box.GenerateKey(rand.Reader)
 	if err != nil {
 		panic("failed to generate keys")
 	}
-	pub, priv = (*boxPub)(bpub), (*boxPriv)(bpriv)
+	pub, priv = boxPub(*bpub), boxPriv(*bpriv)
 	return
 }
 

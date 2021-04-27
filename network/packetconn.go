@@ -20,10 +20,10 @@ type PacketConn struct {
 	actor        phony.Inbox
 	core         *core
 	recv         chan []byte // dhtTraffic read buffer
-	recvCheck    func(ed25519.PublicKey) bool
+	oobHandler   func(ed25519.PublicKey, ed25519.PublicKey, []byte) []byte
+	readDeadline *deadline
 	closeMutex   sync.Mutex
 	closed       chan struct{}
-	readDeadline *deadline
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
@@ -86,6 +86,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	var tr dhtTraffic
 	tr.source = pc.core.crypto.publicKey
 	tr.dest = dest
+	tr.kind = wireTrafficStandard
 	tr.payload = p
 	trbs, err := tr.MarshalBinaryTo(getBytes(0))
 	if err != nil {
@@ -171,15 +172,55 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	return err
 }
 
-// SetRecvCheck sets a function that is called on the destination key of any received packet.
-// If the function is not set, or set to nil, then packets are received (by calling ReadFrom) if and only if the destination key exactly matches this node's public key.
-// If the function is set, then packet are received any time the provided function returns true.
-// This is used to allow packets to be received if e.g. only a certain part of this connection's public key would be known by the sender.
-func (pc *PacketConn) SetRecvCheck(isGood func(ed25519.PublicKey) bool) error {
+// SendOutOfBand sends some out-of-band data to a key.
+// The data will be forwarded towards the destination key as far as possible, and then handled by the out-of-band handler of the terminal node.
+// This could be used to do e.g. key discovery based on an incomplete key, or to implement application-specific helpers for debugging and analytics.
+func (pc *PacketConn) SendOutOfBand(toKey ed25519.PublicKey, data []byte) error {
+	var err error
 	phony.Block(&pc.actor, func() {
-		pc.recvCheck = isGood
+		select {
+		case <-pc.closed:
+			err = errors.New("closed")
+			return
+		default:
+		}
+		if len(toKey) != publicKeySize {
+			err = errors.New("incorrect address length")
+			return
+		}
+		var tr dhtTraffic
+		tr.source = pc.core.crypto.publicKey
+		tr.dest = publicKey(toKey)
+		tr.kind = wireTrafficOutOfBand
+		tr.payload = data
+		trbs, err := tr.MarshalBinaryTo(getBytes(0))
+		if err != nil {
+			// TODO do this when there's an oversized packet maybe?
+			putBytes(trbs)
+			err = errors.New("failed to encode traffic")
+			return
+		}
+		pc.core.dhtree.sendTraffic(nil, trbs)
 	})
-	return nil
+	return err
+}
+
+// SetOutOfBandHandler sets a function to handle out-of-band data.
+// This function will be called every time out-of-band data is received.
+// If no handler has been set, then any received out-of-band data is dropped.
+// If the handler returns a non-nil slice then that is treated as in-band data (accessible with ReadFrom).
+func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.PublicKey, data []byte) (inBand []byte)) error {
+	var err error
+	phony.Block(&pc.actor, func() {
+		select {
+		case <-pc.closed:
+			err = errors.New("closed")
+			return
+		default:
+		}
+		pc.oobHandler = handler
+	})
+	return err
 }
 
 func (pc *PacketConn) handleTraffic(trbs []byte) {
@@ -189,12 +230,29 @@ func (pc *PacketConn) handleTraffic(trbs []byte) {
 			panic("this should never happen")
 		}
 		var doRecv bool
-		if pc.recvCheck != nil {
-			if pc.recvCheck(ed25519.PublicKey(tr.dest)) {
+		switch tr.kind {
+		case wireTrafficDummy:
+		case wireTrafficStandard:
+			if tr.dest.equal(pc.core.crypto.publicKey) {
 				doRecv = true
 			}
-		} else if tr.dest.equal(pc.core.crypto.publicKey) {
-			doRecv = true
+		case wireTrafficOutOfBand:
+			if pc.oobHandler != nil {
+				if inBand := pc.oobHandler(ed25519.PublicKey(tr.source), ed25519.PublicKey(tr.dest), tr.payload); inBand != nil {
+					var newTr dhtTraffic
+					newTr.source = tr.source
+					newTr.dest = tr.dest
+					newTr.kind = wireTrafficStandard
+					newTr.payload = inBand
+					if tmp, err := newTr.MarshalBinaryTo(getBytes(0)); err == nil {
+						putBytes(trbs)
+						trbs = tmp
+						doRecv = true
+					}
+				}
+			}
+		default:
+			// Drop the traffic
 		}
 		if doRecv {
 			select {
@@ -202,6 +260,8 @@ func (pc *PacketConn) handleTraffic(trbs []byte) {
 			case <-pc.closed:
 				putBytes(trbs)
 			}
+		} else {
+			putBytes(trbs)
 		}
 	})
 }

@@ -12,9 +12,15 @@ type PacketConn interface {
 	// This function returns (almost) immediately if PacketConn.Close() is called.
 	// In all cases, the net.Conn is closed before returning.
 	HandleConn(key ed25519.PublicKey, conn net.Conn) error
-	// SetRecvCheck sets a function that is called on the destination key of any received packet.
-	// If the function is not set, or set to nil, then packets are received (by calling ReadFrom) if and only if the destination key exactly matches this node's public key.
-	// If the function is set, then packet are received any time the provided function returns true.
-	// This is used to allow packets to be received if e.g. only a certain part of this connection's public key would be known by the sender.
-	SetRecvCheck(isGood func(ed25519.PublicKey) bool) error
+
+	// SendOutOfBand sends some out-of-band data to a key.
+	// The data will be forwarded towards the destination key as far as possible, and then handled by the out-of-band handler of the terminal node.
+	// This could be used to do e.g. key discovery based on an incomplete key, or to implement application-specific helpers for debugging and analytics.
+	SendOutOfBand(toKey ed25519.PublicKey, data []byte) error
+
+	// SetOutOfBandHandler sets a function to handle out-of-band data.
+	// This function will be called every time out-of-band data is received.
+	// If no handler has been set, then any received out-of-band data is dropped.
+	// If the handler returns a non-nil slice then that is treated as in-band data (accessible with ReadFrom).
+	SetOutOfBandHandler(handler func(fromKey, toKey ed25519.PublicKey, data []byte) (inBand []byte)) error
 }

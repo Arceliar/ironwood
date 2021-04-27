@@ -1173,12 +1173,14 @@ func (t *dhtTeardown) UnmarshalBinary(data []byte) error {
 type dhtTraffic struct {
 	source  publicKey
 	dest    publicKey
+	kind    byte // in-band vs out-of-band
 	payload []byte
 }
 
 func (t *dhtTraffic) MarshalBinaryTo(slice []byte) ([]byte, error) {
 	slice = append(slice, t.source...)
 	slice = append(slice, t.dest...)
+	slice = append(slice, t.kind)
 	slice = append(slice, t.payload...)
 	if len(slice) > 65535 {
 		return slice, wireMarshalBinaryError
@@ -1187,12 +1189,14 @@ func (t *dhtTraffic) MarshalBinaryTo(slice []byte) ([]byte, error) {
 }
 
 func (t *dhtTraffic) UnmarshalBinaryInPlace(data []byte) error {
-	if len(data) < 2*publicKeySize {
+	if len(data) < 2*publicKeySize+1 {
 		return wireUnmarshalBinaryError
 	}
-	t.source = data[:publicKeySize]
-	t.dest = data[publicKeySize : 2*publicKeySize]
-	t.payload = data[2*publicKeySize:]
+	begin, end := 0, publicKeySize
+	t.source, begin, end = data[begin:end], end, end+publicKeySize
+	t.dest, begin = data[begin:end], end
+	t.kind, begin = data[begin], begin+1
+	t.payload = data[begin:]
 	return nil
 }
 

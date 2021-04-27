@@ -20,6 +20,14 @@ const (
 	wirePathTraffic
 )
 
+// TODO? proper packet types for out-of-band, instead of embedding into ordinary traffic
+
+const (
+	wireTrafficDummy = iota
+	wireTrafficStandard
+	wireTrafficOutOfBand
+)
+
 type binaryMarshaler encoding.BinaryMarshaler
 type binaryUnmarshaler encoding.BinaryUnmarshaler
 
