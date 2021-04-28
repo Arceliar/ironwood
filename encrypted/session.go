@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/Arceliar/phony"
+
+	"github.com/Arceliar/ironwood/types"
 )
 
 /*
@@ -17,14 +19,7 @@ TODO:
 
 const (
 	sessionTimeout         = time.Minute
-	sessionTrafficOverhead = 1 + boxPubSize + boxPubSize + boxNonceSize + boxOverhead + boxPubSize
-)
-
-const (
-	sessionDummyWire = iota
-	sessionInitWire
-	sessionAckWire
-	sessionTrafficWire
+	sessionTrafficOverhead = boxPubSize + boxPubSize + boxNonceSize + boxOverhead + boxPubSize
 )
 
 /******************
@@ -35,11 +30,13 @@ type sessionManager struct {
 	phony.Inbox
 	pc       *PacketConn
 	sessions map[edPub]*sessionInfo
+	buffers  map[edPub]*sessionBuffer
 }
 
 func (mgr *sessionManager) init(pc *PacketConn) {
 	mgr.pc = pc
 	mgr.sessions = make(map[edPub]*sessionInfo)
+	mgr.buffers = make(map[edPub]*sessionBuffer)
 }
 
 func (mgr *sessionManager) _newSession(ed *edPub, recv, send boxPub, seq uint64) *sessionInfo {
@@ -56,24 +53,82 @@ func (mgr *sessionManager) _sessionForInit(pub *edPub, init *sessionInit) *sessi
 	var info *sessionInfo
 	if info = mgr.sessions[*pub]; info == nil && init.check(pub) {
 		info = mgr._newSession(pub, init.recv, init.send, init.seq)
+		if buf := mgr.buffers[*pub]; buf != nil {
+			buf.timer.Stop()
+			delete(mgr.buffers, *pub)
+			info.recvPub, info.recvPriv = buf.init.recv, buf.recvPriv
+			info.sendPub, info.sendPriv = buf.init.send, buf.sendPriv
+			info._fixShared()
+			//panic("TODO") // send message... when?
+		}
 	}
 	return info
 }
 
-func (mgr *sessionManager) handleInit(from phony.Actor, pub *edPub, init *sessionInit) {
-	mgr.Act(from, func() {
+func (mgr *sessionManager) handleInit(pub *edPub, init *sessionInit) {
+	mgr.Act(nil, func() {
 		if info := mgr._sessionForInit(pub, init); info != nil {
 			info.handleInit(mgr, init)
 		}
 	})
 }
 
-func (mgr *sessionManager) handleAck(from phony.Actor, pub *edPub, ack *sessionAck) {
-	mgr.Act(from, func() {
+func (mgr *sessionManager) handleAck(pub *edPub, ack *sessionAck) {
+	mgr.Act(nil, func() {
+		_, isOld := mgr.sessions[*pub]
 		if info := mgr._sessionForInit(pub, &ack.sessionInit); info != nil {
-			info.handleAck(mgr, ack)
+			if isOld {
+				info.handleAck(mgr, ack)
+			} else {
+				info.handleInit(mgr, &ack.sessionInit)
+			}
 		}
-		// if we had no session before, do we need to do something?
+	})
+}
+
+func (mgr *sessionManager) handleTraffic(from phony.Actor, fromKey edPub, msg []byte) {
+	mgr.Act(from, func() {
+		if info := mgr.sessions[fromKey]; info != nil {
+			info.doRecv(mgr, msg)
+		} else {
+			// TODO? create a sessionBuffer for this?
+			sPub, _ := newBoxKeys()
+			nPub, _ := newBoxKeys()
+			init := newSessionInit(&mgr.pc.secret, &fromKey, &sPub, &nPub)
+			init.sendOob(mgr.pc)
+		}
+	})
+}
+
+func (mgr *sessionManager) writeTo(toKey edPub, msg []byte) {
+	phony.Block(mgr, func() {
+		if info := mgr.sessions[toKey]; info != nil {
+			info.doSend(mgr, msg)
+		} else {
+			// Need to buffer the traffic
+			var buf *sessionBuffer
+			if buf = mgr.buffers[toKey]; buf == nil {
+				// Create a new buffer (including timer)
+				buf = new(sessionBuffer)
+				recvPub, recvPriv := newBoxKeys()
+				sendPub, sendPriv := newBoxKeys()
+				buf.init = newSessionInit(&mgr.pc.secret, &toKey, &recvPub, &sendPub)
+				buf.recvPriv = recvPriv
+				buf.sendPriv = sendPriv
+				buf.timer = time.AfterFunc(0, func() {})
+				mgr.buffers[toKey] = buf
+			}
+			buf.data = msg
+			buf.timer.Stop()
+			buf.timer = time.AfterFunc(sessionTimeout, func() {
+				mgr.Act(nil, func() {
+					if b := mgr.buffers[toKey]; b == buf {
+						b.timer.Stop()
+						delete(mgr.buffers, toKey)
+					}
+				})
+			})
+		}
 	})
 }
 
@@ -82,7 +137,7 @@ func (mgr *sessionManager) handleAck(from phony.Actor, pub *edPub, ack *sessionA
  ***************/
 
 type sessionInfo struct {
-	phony.Actor
+	phony.Inbox
 	mgr        *sessionManager
 	seq        uint64 // remote seq
 	ed         edPub  // remote ed key
@@ -143,10 +198,9 @@ func (info *sessionInfo) handleInit(from phony.Actor, init *sessionInit) {
 			//  TODO save this somewhere?
 			//  To avoid constantly crating/signing new ones from init spam
 			//  On the off chance that someone is repalying old init packets...
-			init := newSessionInit(&info.mgr.pc.secret, &info.sendPub, &info.nextPub)
+			init := newSessionInit(&info.mgr.pc.secret, &info.ed, &info.sendPub, &info.nextPub)
 			ack := sessionAck{init}
-			_ = ack
-			panic("TODO")
+			ack.sendOob(info.mgr.pc)
 		}
 	})
 }
@@ -176,8 +230,7 @@ func (info *sessionInfo) _handleUpdate(init *sessionInit) bool {
 func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 	// TODO? some worker pool to multi-thread this
 	info.Act(from, func() {
-		bs := make([]byte, 1, sessionTrafficOverhead+len(msg))
-		bs[0] = sessionTrafficWire
+		bs := make([]byte, 0, sessionTrafficOverhead+len(msg))
 		bs = append(bs, info.sendPub[:]...)
 		bs = append(bs, info.recv[:]...)
 		bs = append(bs, info.sendNonce[:]...)
@@ -187,8 +240,8 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		tmp = append(tmp, info.nextPub[:]...)
 		tmp = append(tmp, msg...)
 		bs = boxSeal(bs, tmp, &info.sendNonce, &info.sendShared)
-		// send bs somewhere
-		panic("TODO")
+		// send
+		info.mgr.pc.PacketConn.WriteTo(bs, types.Addr(info.ed[:]))
 		info._resetTimer()
 	})
 }
@@ -197,11 +250,13 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 	// TODO? some worker pool to multi-thread this
 	info.Act(from, func() {
 		if len(msg) < sessionTrafficOverhead {
+			panic(len(msg))
+			panic("DEBUG")
 			return
 		}
 		var theirKey, myKey boxPub
 		var nonce boxNonce
-		offset := 1
+		offset := 0
 		offset = bytesPop(theirKey[:], msg, offset)
 		offset = bytesPop(myKey[:], msg, offset)
 		offset = bytesPop(nonce[:], msg, offset)
@@ -216,6 +271,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		case remoteRecv && localRecv:
 			// The boring case, nothing to ratchet, just update nonce
 			if !info.recvNonce.lessThan(&nonce) {
+				panic("DEBUG")
 				return
 			}
 			sharedKey = &info.recvShared
@@ -223,6 +279,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				// TODO some kind of check on the inner key? we expect it to be info.send...
 				info.recvNonce = nonce
 			}
+			panic("DEBUG")
 		case remoteRecv && localSend:
 			// We expect this to happen when they ratchet forward
 			// The inner packet contains their new send key
@@ -238,6 +295,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				// Generate new next keys
 				info.nextPub, info.nextPriv = newBoxKeys()
 			}
+			panic("DEBUG")
 		case remoteSend && localRecv:
 			// For some reason, they ratcheted forward early
 			// Advancing their side is better than spamming with sessionInit/Ack
@@ -248,23 +306,27 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				info.recvNonce, info.sendNonce = nonce, boxNonce{}
 				info._fixShared()
 			}
+			panic("DEBUG")
 		default:
 			// We can't make sense of their message
-			// Send a sessionInit/Ack (which?) and hope they fix it
-			panic("TODO")
+			// Send a sessionInit and hope they fix it
+			init := newSessionInit(&info.mgr.pc.secret, &info.ed, &info.sendPub, &info.nextPub)
+			init.sendOob(info.mgr.pc)
+			panic("DEBUG")
 			return
 		}
 		// Decrypt and handle packet
 		if unboxed, ok := boxOpen(nil, msg, &nonce, sharedKey); ok {
+			panic("DEBUG")
 			var key boxPub
 			copy(key[:], unboxed)
 			msg = unboxed[len(key):]
-			// TODO send msg somewhere (asap)
-			panic("TODO")
+			info.mgr.pc.network.recv(info, msg)
 			// Misc remaining followup work
 			onSuccess(key)
 			info._resetTimer()
 		}
+		panic("DEBUG")
 	})
 }
 
@@ -274,13 +336,15 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 
 type sessionInit struct {
 	sig  edSig  // edPub was the from address, so we get that for free already
+	dest edPub  // intended dest key
 	recv boxPub // dest.recv <- sender.sendPub
 	send boxPub // dest.send <- sender.sendNext
 	seq  uint64 // timestamp or similar
 }
 
-func newSessionInit(sig *edPriv, send, next *boxPub) sessionInit {
+func newSessionInit(sig *edPriv, dest *edPub, send, next *boxPub) sessionInit {
 	var init sessionInit
+	init.dest = *dest
 	init.recv = *send
 	init.send = *next
 	init.seq = uint64(time.Now().Unix())
@@ -288,12 +352,13 @@ func newSessionInit(sig *edPriv, send, next *boxPub) sessionInit {
 	return init
 }
 
-const sessionInitSize = 1 + edSigSize + boxPubSize + boxPubSize + 8
+const sessionInitSize = edSigSize + edPubSize + boxPubSize + boxPubSize + 8
 
 func (si *sessionInit) bytesForSig() []byte {
 	const msgSize = sessionInitSize - edSigSize
 	bs := make([]byte, msgSize)
 	offset := 0
+	offset = bytesPush(bs, si.dest[:], offset)
 	offset = bytesPush(bs, si.recv[:], offset)
 	offset = bytesPush(bs, si.send[:], offset)
 	binary.BigEndian.PutUint64(bs[offset:], si.seq)
@@ -312,9 +377,9 @@ func (si *sessionInit) check(pub *edPub) bool {
 
 func (si *sessionInit) MarshalBinary() (data []byte, err error) {
 	data = make([]byte, sessionInitSize)
-	data[0] = sessionInitWire
-	offset := 1
+	offset := 0
 	offset = bytesPush(data, si.sig[:], offset)
+	offset = bytesPush(data, si.dest[:], offset)
 	offset = bytesPush(data, si.recv[:], offset)
 	offset = bytesPush(data, si.send[:], offset)
 	binary.BigEndian.PutUint64(data[offset:], si.seq)
@@ -325,12 +390,19 @@ func (si *sessionInit) UnmarshalBinary(data []byte) error {
 	if len(data) != sessionInitSize {
 		return errors.New("wrong sessionInit size")
 	}
-	offset := 1
+	offset := 0
 	offset = bytesPop(si.sig[:], data, offset)
+	offset = bytesPop(si.dest[:], data, offset)
 	offset = bytesPop(si.recv[:], data, offset)
 	offset = bytesPop(si.send[:], data, offset)
 	si.seq = binary.BigEndian.Uint64(data[offset:])
 	return nil
+}
+
+func (si *sessionInit) sendOob(pc *PacketConn) {
+	bs, _ := si.MarshalBinary()
+	bs = append([]byte{outOfBandInit}, bs...)
+	pc.PacketConn.SendOutOfBand(si.dest.asKey(), bs)
 }
 
 /**************
@@ -341,8 +413,20 @@ type sessionAck struct {
 	sessionInit
 }
 
-func (sa *sessionAck) MarshalBinary(data []byte, err error) {
-	data, err = sa.sessionInit.MarshalBinary()
-	data[0] = sessionAckWire
-	return
+func (sa *sessionAck) sendOob(pc *PacketConn) {
+	bs, _ := sa.MarshalBinary()
+	bs = append([]byte{outOfBandAck}, bs...)
+	pc.PacketConn.SendOutOfBand(sa.dest.asKey(), bs)
+}
+
+/*****************
+ * sessionBuffer *
+ *****************/
+
+type sessionBuffer struct {
+	data     []byte
+	init     sessionInit
+	recvPriv boxPriv
+	sendPriv boxPriv
+	timer    *time.Timer // time.AfterFunc to clean up
 }

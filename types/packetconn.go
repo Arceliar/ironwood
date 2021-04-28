@@ -23,4 +23,8 @@ type PacketConn interface {
 	// If no handler has been set, then any received out-of-band data is dropped.
 	// If the handler returns a non-nil slice then that is treated as in-band data (accessible with ReadFrom).
 	SetOutOfBandHandler(handler func(fromKey, toKey ed25519.PublicKey, data []byte) (inBand []byte)) error
+
+	// IsClosed returns true if and only if the connection is closed.
+	// This is to check if the PacketConn is closed without potentially being stuck on a blocking operation (e.g. a read or write).
+	IsClosed() bool
 }

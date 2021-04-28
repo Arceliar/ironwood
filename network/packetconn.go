@@ -223,6 +223,17 @@ func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.Pu
 	return err
 }
 
+// IsClosed returns true if and only if the connection is closed.
+// This is to check if the PacketConn is closed without potentially being stuck on a blocking operation (e.g. a read or write).
+func (pc *PacketConn) IsClosed() bool {
+	select {
+	case <-pc.closed:
+		return true
+	default:
+	}
+	return false
+}
+
 func (pc *PacketConn) handleTraffic(trbs []byte) {
 	pc.actor.Act(nil, func() {
 		var tr dhtTraffic

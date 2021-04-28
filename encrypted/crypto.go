@@ -49,6 +49,10 @@ func edCheck(msg []byte, sig *edSig, pub *edPub) bool {
 	return ed25519.Verify(pub[:], msg, sig[:])
 }
 
+func (pub *edPub) asKey() ed25519.PublicKey {
+	return ed25519.PublicKey(pub[:])
+}
+
 /*******
  * box *
  *******/
