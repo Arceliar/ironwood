@@ -74,8 +74,8 @@ func (pc *PacketConn) SendOutOfBand(toKey ed25519.PublicKey, data []byte) error 
 	return pc.PacketConn.SendOutOfBand(toKey, msg)
 }
 
-func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.PublicKey, data []byte) (inBand []byte)) error {
-	oob := func(fromKey, toKey ed25519.PublicKey, data []byte) (inBand []byte) {
+func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.PublicKey, data []byte)) error {
+	oob := func(fromKey, toKey ed25519.PublicKey, data []byte) {
 		if len(data) == 0 {
 			panic("DEBUG")
 			return
@@ -98,19 +98,7 @@ func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.Pu
 				pc.sessions.handleAck(&fk, &ack)
 			}
 		case outOfBandUser:
-			if handler != nil {
-				if bs := handler(fromKey, toKey, data[1:]); bs != nil {
-					// Make the inBand data readable
-					var from edPub
-					copy(from[:], fromKey)
-					pc.network.reader.Act(nil, func() {
-						select {
-						case pc.network.readCh <- netReadInfo{from: from, data: bs}:
-						case <-pc.network.closed:
-						}
-					})
-				}
-			}
+			handler(fromKey, toKey, data[1:])
 		default:
 			panic("DEBUG")
 			fmt.Println(data)

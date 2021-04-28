@@ -3,6 +3,7 @@ package encrypted
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -91,6 +92,7 @@ func (mgr *sessionManager) handleTraffic(from phony.Actor, fromKey edPub, msg []
 		if info := mgr.sessions[fromKey]; info != nil {
 			info.doRecv(mgr, msg)
 		} else {
+			panic("DEBUG")
 			// TODO? create a sessionBuffer for this?
 			sPub, _ := newBoxKeys()
 			nPub, _ := newBoxKeys()
@@ -120,6 +122,7 @@ func (mgr *sessionManager) writeTo(toKey edPub, msg []byte) {
 			}
 			buf.data = msg
 			buf.timer.Stop()
+			buf.init.sendOob(mgr.pc)
 			buf.timer = time.AfterFunc(sessionTimeout, func() {
 				mgr.Act(nil, func() {
 					if b := mgr.buffers[toKey]; b == buf {
@@ -295,7 +298,6 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				// Generate new next keys
 				info.nextPub, info.nextPriv = newBoxKeys()
 			}
-			panic("DEBUG")
 		case remoteSend && localRecv:
 			// For some reason, they ratcheted forward early
 			// Advancing their side is better than spamming with sessionInit/Ack
@@ -312,7 +314,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			// Send a sessionInit and hope they fix it
 			init := newSessionInit(&info.mgr.pc.secret, &info.ed, &info.sendPub, &info.nextPub)
 			init.sendOob(info.mgr.pc)
-			panic("DEBUG")
+			//panic("DEBUG") FIXME don't start in this state
 			return
 		}
 		// Decrypt and handle packet
@@ -325,6 +327,9 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			// Misc remaining followup work
 			onSuccess(key)
 			info._resetTimer()
+		} else {
+			fmt.Println("DEBUG:", remoteRecv, remoteSend, localRecv, localSend)
+			panic("DEBUG")
 		}
 		panic("DEBUG")
 	})

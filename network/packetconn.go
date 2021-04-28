@@ -20,7 +20,7 @@ type PacketConn struct {
 	actor        phony.Inbox
 	core         *core
 	recv         chan []byte // dhtTraffic read buffer
-	oobHandler   func(ed25519.PublicKey, ed25519.PublicKey, []byte) []byte
+	oobHandler   func(ed25519.PublicKey, ed25519.PublicKey, []byte)
 	readDeadline *deadline
 	closeMutex   sync.Mutex
 	closed       chan struct{}
@@ -65,7 +65,6 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	}
 	fromSlice := publicKey(append([]byte(nil), tr.source...))
 	from = fromSlice.addr()
-
 	return
 }
 
@@ -176,40 +175,33 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 // The data will be forwarded towards the destination key as far as possible, and then handled by the out-of-band handler of the terminal node.
 // This could be used to do e.g. key discovery based on an incomplete key, or to implement application-specific helpers for debugging and analytics.
 func (pc *PacketConn) SendOutOfBand(toKey ed25519.PublicKey, data []byte) error {
-	var err error
-	phony.Block(&pc.actor, func() {
-		select {
-		case <-pc.closed:
-			err = errors.New("closed")
-			return
-		default:
-		}
-		if len(toKey) != publicKeySize {
-			err = errors.New("incorrect address length")
-			return
-		}
-		var tr dhtTraffic
-		tr.source = pc.core.crypto.publicKey
-		tr.dest = publicKey(toKey)
-		tr.kind = wireTrafficOutOfBand
-		tr.payload = data
-		trbs, err := tr.MarshalBinaryTo(getBytes(0))
-		if err != nil {
-			// TODO do this when there's an oversized packet maybe?
-			putBytes(trbs)
-			err = errors.New("failed to encode traffic")
-			return
-		}
-		pc.core.dhtree.sendTraffic(nil, trbs)
-	})
-	return err
+	select {
+	case <-pc.closed:
+		return errors.New("closed")
+	default:
+	}
+	if len(toKey) != publicKeySize {
+		return errors.New("incorrect address length")
+	}
+	var tr dhtTraffic
+	tr.source = pc.core.crypto.publicKey
+	tr.dest = publicKey(toKey)
+	tr.kind = wireTrafficOutOfBand
+	tr.payload = data
+	trbs, err := tr.MarshalBinaryTo(getBytes(0))
+	if err != nil {
+		// TODO do this when there's an oversized packet maybe?
+		putBytes(trbs)
+		return errors.New("failed to encode traffic")
+	}
+	pc.core.dhtree.sendTraffic(nil, trbs)
+	return nil
 }
 
 // SetOutOfBandHandler sets a function to handle out-of-band data.
 // This function will be called every time out-of-band data is received.
 // If no handler has been set, then any received out-of-band data is dropped.
-// If the handler returns a non-nil slice then that is treated as in-band data (accessible with ReadFrom).
-func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.PublicKey, data []byte) (inBand []byte)) error {
+func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.PublicKey, data []byte)) error {
 	var err error
 	phony.Block(&pc.actor, func() {
 		select {
@@ -243,26 +235,21 @@ func (pc *PacketConn) handleTraffic(trbs []byte) {
 		var doRecv bool
 		switch tr.kind {
 		case wireTrafficDummy:
+			panic("DEBUG")
 		case wireTrafficStandard:
 			if tr.dest.equal(pc.core.crypto.publicKey) {
 				doRecv = true
 			}
 		case wireTrafficOutOfBand:
 			if pc.oobHandler != nil {
-				if inBand := pc.oobHandler(ed25519.PublicKey(tr.source), ed25519.PublicKey(tr.dest), tr.payload); inBand != nil {
-					var newTr dhtTraffic
-					newTr.source = tr.source
-					newTr.dest = tr.dest
-					newTr.kind = wireTrafficStandard
-					newTr.payload = inBand
-					if tmp, err := newTr.MarshalBinaryTo(getBytes(0)); err == nil {
-						putBytes(trbs)
-						trbs = tmp
-						doRecv = true
-					}
-				}
+				source := append(ed25519.PublicKey(nil), tr.source...)
+				dest := append(ed25519.PublicKey(nil), tr.dest...)
+				msg := append([]byte(nil), tr.payload...)
+				// TODO something smarter than spamming goroutines
+				go pc.oobHandler(source, dest, msg)
 			}
 		default:
+			panic("DEBUG")
 			// Drop the traffic
 		}
 		if doRecv {
