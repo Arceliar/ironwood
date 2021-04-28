@@ -109,6 +109,9 @@ func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.Pu
 }
 
 const (
+	// FIXME Init and Ack have no business being out-of-band
+	//  Just send it over pc.PacketConn, add checks to handleTraffic
+	//  Saves on code elsewhere...
 	outOfBandDummy = iota
 	outOfBandInit
 	outOfBandAck

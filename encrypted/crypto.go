@@ -103,7 +103,7 @@ func (n *boxNonce) lessThan(o *boxNonce) bool {
 }
 
 func (n *boxNonce) inc() {
-	panic("TODO test this")
+	//panic("TODO test this")
 	for idx := boxNonceSize - 1; idx >= 0; idx-- {
 		n[idx]++
 		if n[idx] != 0 {
