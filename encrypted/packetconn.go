@@ -3,7 +3,6 @@ package encrypted
 import (
 	"crypto/ed25519"
 	"errors"
-	"fmt"
 	"net"
 
 	"github.com/Arceliar/phony"
@@ -68,52 +67,3 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	pc.sessions.writeTo(dest, append([]byte(nil), p...))
 	return
 }
-
-func (pc *PacketConn) SendOutOfBand(toKey ed25519.PublicKey, data []byte) error {
-	msg := append([]byte{outOfBandUser}, data...)
-	return pc.PacketConn.SendOutOfBand(toKey, msg)
-}
-
-func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.PublicKey, data []byte)) error {
-	oob := func(fromKey, toKey ed25519.PublicKey, data []byte) {
-		if len(data) == 0 {
-			panic("DEBUG")
-			return
-		}
-		switch data[0] {
-		case outOfBandDummy:
-			panic("DEBUG")
-		case outOfBandInit:
-			var init sessionInit
-			if init.UnmarshalBinary(data[1:]) == nil {
-				var fk edPub
-				copy(fk[:], fromKey)
-				pc.sessions.handleInit(&fk, &init)
-			}
-		case outOfBandAck:
-			var ack sessionAck
-			if ack.UnmarshalBinary(data[1:]) == nil {
-				var fk edPub
-				copy(fk[:], fromKey)
-				pc.sessions.handleAck(&fk, &ack)
-			}
-		case outOfBandUser:
-			handler(fromKey, toKey, data[1:])
-		default:
-			panic("DEBUG")
-			fmt.Println(data)
-		}
-		return
-	}
-	return pc.PacketConn.SetOutOfBandHandler(oob)
-}
-
-const (
-	// FIXME Init and Ack have no business being out-of-band
-	//  Just send it over pc.PacketConn, add checks to handleTraffic
-	//  Saves on code elsewhere...
-	outOfBandDummy = iota
-	outOfBandInit
-	outOfBandAck
-	outOfBandUser
-)
