@@ -105,7 +105,7 @@ func (mgr *sessionManager) handleData(from phony.Actor, pub *edPub, data []byte)
 func (mgr *sessionManager) _handleInit(pub *edPub, init *sessionInit) {
 	if info, buf := mgr._sessionForInit(pub, init); info != nil {
 		info.handleInit(mgr, init)
-		if buf != nil {
+		if buf != nil && buf.data != nil {
 			info.doSend(mgr, buf.data)
 		}
 	}
@@ -119,7 +119,7 @@ func (mgr *sessionManager) _handleAck(pub *edPub, ack *sessionAck) {
 		} else {
 			info.handleInit(mgr, &ack.sessionInit)
 		}
-		if buf != nil {
+		if buf != nil && buf.data != nil {
 			info.doSend(mgr, buf.data)
 		}
 	}
@@ -129,7 +129,11 @@ func (mgr *sessionManager) _handleTraffic(pub *edPub, msg []byte) {
 	if info := mgr.sessions[*pub]; info != nil {
 		info.doRecv(mgr, msg)
 	} else {
-		// TODO? create a sessionBuffer for this?
+		// We don't know that the node really exists, it could be spoofed/replay
+		// So we don't want to save session or a buffer based on this node
+		// So we send an init with keys we'll forget
+		// If they ack, we'll set up a session and let it self-heal...
+		//panic("DEBUG") // TODO test this
 		rPub, _ := newBoxKeys()
 		sPub, _ := newBoxKeys()
 		init := newSessionInit(&mgr.pc.secret, pub, &rPub, &sPub)
@@ -143,31 +147,34 @@ func (mgr *sessionManager) writeTo(toKey edPub, msg []byte) {
 			info.doSend(mgr, msg)
 		} else {
 			// Need to buffer the traffic
-			var buf *sessionBuffer
-			if buf = mgr.buffers[toKey]; buf == nil {
-				// Create a new buffer (including timer)
-				buf = new(sessionBuffer)
-				recvPub, recvPriv := newBoxKeys()
-				sendPub, sendPriv := newBoxKeys()
-				buf.init = newSessionInit(&mgr.pc.secret, &toKey, &recvPub, &sendPub)
-				buf.recvPriv = recvPriv
-				buf.sendPriv = sendPriv
-				buf.timer = time.AfterFunc(0, func() {})
-				mgr.buffers[toKey] = buf
-				// TODO double check that the above keys are correct
-			}
-			buf.data = msg
-			buf.timer.Stop()
-			buf.init.sendTo(mgr.pc)
-			buf.timer = time.AfterFunc(sessionTimeout, func() {
-				mgr.Act(nil, func() {
-					if b := mgr.buffers[toKey]; b == buf {
-						b.timer.Stop()
-						delete(mgr.buffers, toKey)
-					}
-				})
-			})
+			mgr._bufferAndInit(toKey, msg)
 		}
+	})
+}
+
+func (mgr *sessionManager) _bufferAndInit(toKey edPub, msg []byte) {
+	var buf *sessionBuffer
+	if buf = mgr.buffers[toKey]; buf == nil {
+		// Create a new buffer (including timer)
+		buf = new(sessionBuffer)
+		recvPub, recvPriv := newBoxKeys()
+		sendPub, sendPriv := newBoxKeys()
+		buf.init = newSessionInit(&mgr.pc.secret, &toKey, &recvPub, &sendPub)
+		buf.recvPriv = recvPriv
+		buf.sendPriv = sendPriv
+		buf.timer = time.AfterFunc(0, func() {})
+		mgr.buffers[toKey] = buf
+	}
+	buf.data = msg
+	buf.timer.Stop()
+	buf.init.sendTo(mgr.pc)
+	buf.timer = time.AfterFunc(sessionTimeout, func() {
+		mgr.Act(nil, func() {
+			if b := mgr.buffers[toKey]; b == buf {
+				b.timer.Stop()
+				delete(mgr.buffers, toKey)
+			}
+		})
 	})
 }
 
@@ -359,7 +366,8 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			// Send a sessionInit and hope they fix it
 			init := newSessionInit(&info.mgr.pc.secret, &info.ed, &info.recvPub, &info.sendPub)
 			init.sendTo(info.mgr.pc)
-			panic("DEBUG") //shouldn't happen in testing
+			fmt.Println("DEBUG:", fromCurrent, fromNext, toRecv, toSend)
+			panic("FIXME") // FIXME shouldn't happen in testing, it's fromCurrent toSend which is dangerous (since we send from send to their current, so there's possible nonce reuse involved)
 			return
 		}
 		// Decrypt and handle packet

@@ -1018,6 +1018,8 @@ type dhtBootstrapAck struct {
 	response  dhtBootstrap
 }
 
+// TODO change the response format, include the key we're responding to in the signature. Then 3rd parties can't use it to try to spoof a setup to this node (which we'd have to tear down, that's just annoying)
+
 func (ack *dhtBootstrapAck) check() bool {
 	return ack.bootstrap.check() && ack.response.check()
 }
