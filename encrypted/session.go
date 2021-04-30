@@ -63,12 +63,12 @@ func (mgr *sessionManager) _sessionForInit(pub *edPub, init *sessionInit) (*sess
 	var info *sessionInfo
 	var buf *sessionBuffer
 	if info = mgr.sessions[*pub]; info == nil && init.check(pub) {
-		info = mgr._newSession(pub, init.recv, init.send, init.seq)
+		info = mgr._newSession(pub, init.current, init.next, init.seq)
 		if buf = mgr.buffers[*pub]; buf != nil {
 			buf.timer.Stop()
 			delete(mgr.buffers, *pub)
-			info.recvPub, info.recvPriv = buf.init.recv, buf.recvPriv
-			info.sendPub, info.sendPriv = buf.init.send, buf.sendPriv
+			info.recvPub, info.recvPriv = buf.init.current, buf.currentPriv
+			info.sendPub, info.sendPriv = buf.init.next, buf.nextPriv
 			info._fixShared(&boxNonce{}, &boxNonce{})
 			// The caller is responsible for sending buf.data when ready
 		}
@@ -134,9 +134,9 @@ func (mgr *sessionManager) _handleTraffic(pub *edPub, msg []byte) {
 		// So we send an init with keys we'll forget
 		// If they ack, we'll set up a session and let it self-heal...
 		//panic("DEBUG") // TODO test this
-		rPub, _ := newBoxKeys()
-		sPub, _ := newBoxKeys()
-		init := newSessionInit(&mgr.pc.secret, pub, &rPub, &sPub)
+		currentPub, _ := newBoxKeys()
+		nextPub, _ := newBoxKeys()
+		init := newSessionInit(&mgr.pc.secret, pub, &currentPub, &nextPub)
 		init.sendTo(mgr.pc)
 	}
 }
@@ -157,11 +157,11 @@ func (mgr *sessionManager) _bufferAndInit(toKey edPub, msg []byte) {
 	if buf = mgr.buffers[toKey]; buf == nil {
 		// Create a new buffer (including timer)
 		buf = new(sessionBuffer)
-		recvPub, recvPriv := newBoxKeys()
-		sendPub, sendPriv := newBoxKeys()
-		buf.init = newSessionInit(&mgr.pc.secret, &toKey, &recvPub, &sendPub)
-		buf.recvPriv = recvPriv
-		buf.sendPriv = sendPriv
+		currentPub, currentPriv := newBoxKeys()
+		nextPub, nextPriv := newBoxKeys()
+		buf.init = newSessionInit(&mgr.pc.secret, &toKey, &currentPub, &nextPub)
+		buf.currentPriv = currentPriv
+		buf.nextPriv = nextPriv
 		buf.timer = time.AfterFunc(0, func() {})
 		mgr.buffers[toKey] = buf
 	}
@@ -264,8 +264,8 @@ func (info *sessionInfo) handleAck(from phony.Actor, ack *sessionAck) {
 
 // return true if everything looks OK and the session was updated
 func (info *sessionInfo) _handleUpdate(init *sessionInit) bool {
-	info.current = init.recv
-	info.next = init.send
+	info.current = init.current
+	info.next = init.next
 	info.seq = init.seq
 	// Don't roll back sendNonce, just to be safe
 	info._fixShared(&boxNonce{}, &info.sendNonce)
@@ -393,18 +393,18 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
  ***************/
 
 type sessionInit struct {
-	sig  edSig  // edPub was the from address, so we get that for free already
-	dest edPub  // intended dest key
-	recv boxPub // dest.recv <- sender.sendPub
-	send boxPub // dest.send <- sender.sendNext
-	seq  uint64 // timestamp or similar
+	sig     edSig  // edPub was the from address, so we get that for free already
+	dest    edPub  // intended dest key
+	current boxPub // dest.recv <- sender.sendPub
+	next    boxPub // dest.send <- sender.sendNext
+	seq     uint64 // timestamp or similar
 }
 
-func newSessionInit(sig *edPriv, dest *edPub, myRecvPub, mySendPub *boxPub) sessionInit {
+func newSessionInit(sig *edPriv, dest *edPub, current, next *boxPub) sessionInit {
 	var init sessionInit
 	init.dest = *dest
-	init.recv = *myRecvPub
-	init.send = *mySendPub
+	init.current = *current
+	init.next = *next
 	init.seq = uint64(time.Now().Unix())
 	init.sign(sig)
 	return init
@@ -415,8 +415,8 @@ func (si *sessionInit) bytesForSig() []byte {
 	bs := make([]byte, msgSize)
 	offset := 0
 	offset = bytesPush(bs, si.dest[:], offset)
-	offset = bytesPush(bs, si.recv[:], offset)
-	offset = bytesPush(bs, si.send[:], offset)
+	offset = bytesPush(bs, si.current[:], offset)
+	offset = bytesPush(bs, si.next[:], offset)
 	binary.BigEndian.PutUint64(bs[offset:], si.seq)
 	return bs
 }
@@ -437,8 +437,8 @@ func (si *sessionInit) MarshalBinary() (data []byte, err error) {
 	offset := 1
 	offset = bytesPush(data, si.sig[:], offset)
 	offset = bytesPush(data, si.dest[:], offset)
-	offset = bytesPush(data, si.recv[:], offset)
-	offset = bytesPush(data, si.send[:], offset)
+	offset = bytesPush(data, si.current[:], offset)
+	offset = bytesPush(data, si.next[:], offset)
 	binary.BigEndian.PutUint64(data[offset:], si.seq)
 	return
 }
@@ -457,8 +457,8 @@ func (si *sessionInit) unmarshal(data []byte) error {
 	offset := 1 // Skip the type byte (already checked by caller)
 	offset = bytesPop(si.sig[:], data, offset)
 	offset = bytesPop(si.dest[:], data, offset)
-	offset = bytesPop(si.recv[:], data, offset)
-	offset = bytesPop(si.send[:], data, offset)
+	offset = bytesPop(si.current[:], data, offset)
+	offset = bytesPop(si.next[:], data, offset)
 	si.seq = binary.BigEndian.Uint64(data[offset:])
 	return nil
 }
@@ -510,9 +510,9 @@ func (sa *sessionAck) sendTo(pc *PacketConn) {
  *****************/
 
 type sessionBuffer struct {
-	data     []byte
-	init     sessionInit
-	recvPriv boxPriv     // pairs with init.recv
-	sendPriv boxPriv     // pairs with init.send
-	timer    *time.Timer // time.AfterFunc to clean up
+	data        []byte
+	init        sessionInit
+	currentPriv boxPriv     // pairs with init.recv
+	nextPriv    boxPriv     // pairs with init.send
+	timer       *time.Timer // time.AfterFunc to clean up
 }
