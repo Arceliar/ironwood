@@ -259,6 +259,11 @@ func (info *sessionInfo) handleAck(from phony.Actor, ack *sessionAck) {
 			return
 		}
 		info._handleUpdate(&ack.sessionInit)
+		// Now advance keys forward
+		info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
+		info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
+		info.nextPub, info.nextPriv = newBoxKeys()
+		info._fixShared(&boxNonce{}, &boxNonce{})
 	})
 }
 
@@ -322,10 +327,8 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				return
 			}
 			sharedKey = &info.recvShared
-			onSuccess = func(innerKey boxPub) {
+			onSuccess = func(_ boxPub) {
 				info.recvNonce = nonce
-				// Technically they *could* change their next key, they just shouldn't
-				info.next = innerKey
 			}
 		case fromNext && toSend:
 			// The remote side appears to have ratcheted forward
@@ -364,10 +367,10 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		default:
 			// We can't make sense of their message
 			// Send a sessionInit and hope they fix it
-			init := newSessionInit(&info.mgr.pc.secret, &info.ed, &info.recvPub, &info.sendPub)
+			init := newSessionInit(&info.mgr.pc.secret, &info.ed, &info.sendPub, &info.nextPub)
 			init.sendTo(info.mgr.pc)
 			fmt.Println("DEBUG:", fromCurrent, fromNext, toRecv, toSend)
-			panic("FIXME") // FIXME shouldn't happen in testing, it's fromCurrent toSend which is dangerous (since we send from send to their current, so there's possible nonce reuse involved)
+			panic("FIXME") // FIXME shouldn't happen in testing? Maybe a race between inits/acks?
 			return
 		}
 		// Decrypt and handle packet
