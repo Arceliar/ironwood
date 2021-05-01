@@ -118,6 +118,14 @@ func (n *boxNonce) lessThan(o *boxNonce) bool {
 	return false
 }
 
+func newRandomNonce() *boxNonce {
+	var nonce boxNonce
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil
+	}
+	return &nonce
+}
+
 // TODO we need to catch if nonce hits its max value and force a rekey
 //  To that end, maybe we can use a smaller nonce size? or a vuint and reset on uint64 max?
 
