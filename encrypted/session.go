@@ -2,7 +2,6 @@ package encrypted
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"time"
 
@@ -21,7 +20,7 @@ TODO:
 const (
 	sessionTimeout         = time.Minute
 	sessionTrafficOverhead = 1 + boxPubSize + boxPubSize + boxNonceSize + boxOverhead + boxPubSize
-	sessionInitSize        = 1 + edSigSize + edPubSize + boxPubSize + boxPubSize + 8
+	sessionInitSize        = 1 + boxPubSize + boxOverhead + boxPubSize + boxPubSize + 8
 	sessionAckSize         = sessionInitSize
 )
 
@@ -62,13 +61,13 @@ func (mgr *sessionManager) _newSession(ed *edPub, recv, send boxPub, seq uint64)
 func (mgr *sessionManager) _sessionForInit(pub *edPub, init *sessionInit) (*sessionInfo, *sessionBuffer) {
 	var info *sessionInfo
 	var buf *sessionBuffer
-	if info = mgr.sessions[*pub]; info == nil && init.check(pub) {
+	if info = mgr.sessions[*pub]; info == nil {
 		info = mgr._newSession(pub, init.current, init.next, init.seq)
 		if buf = mgr.buffers[*pub]; buf != nil {
 			buf.timer.Stop()
 			delete(mgr.buffers, *pub)
-			info.recvPub, info.recvPriv = buf.init.current, buf.currentPriv
-			info.sendPub, info.sendPriv = buf.init.next, buf.nextPriv
+			info.sendPub, info.sendPriv = buf.init.current, buf.currentPriv
+			info.nextPub, info.nextPriv = buf.init.next, buf.nextPriv
 			info._fixShared(&boxNonce{}, &boxNonce{})
 			// The caller is responsible for sending buf.data when ready
 		}
@@ -86,12 +85,12 @@ func (mgr *sessionManager) handleData(from phony.Actor, pub *edPub, data []byte)
 			panic("DEBUG")
 		case sessionTypeInit:
 			init := new(sessionInit)
-			if init.UnmarshalBinary(data) == nil {
+			if init.decrypt(&mgr.pc.secret, pub, data) {
 				mgr._handleInit(pub, init)
 			}
 		case sessionTypeAck:
 			ack := new(sessionAck)
-			if ack.UnmarshalBinary(data) == nil {
+			if ack.decrypt(&mgr.pc.secret, pub, data) {
 				mgr._handleAck(pub, ack)
 			}
 		case sessionTypeTraffic:
@@ -136,8 +135,8 @@ func (mgr *sessionManager) _handleTraffic(pub *edPub, msg []byte) {
 		//panic("DEBUG") // TODO test this
 		currentPub, _ := newBoxKeys()
 		nextPub, _ := newBoxKeys()
-		init := newSessionInit(&mgr.pc.secret, pub, &currentPub, &nextPub)
-		init.sendTo(mgr.pc)
+		init := newSessionInit(&currentPub, &nextPub)
+		mgr.sendInit(pub, &init)
 	}
 }
 
@@ -159,7 +158,7 @@ func (mgr *sessionManager) _bufferAndInit(toKey edPub, msg []byte) {
 		buf = new(sessionBuffer)
 		currentPub, currentPriv := newBoxKeys()
 		nextPub, nextPriv := newBoxKeys()
-		buf.init = newSessionInit(&mgr.pc.secret, &toKey, &currentPub, &nextPub)
+		buf.init = newSessionInit(&currentPub, &nextPub)
 		buf.currentPriv = currentPriv
 		buf.nextPriv = nextPriv
 		buf.timer = time.AfterFunc(0, func() {})
@@ -167,7 +166,7 @@ func (mgr *sessionManager) _bufferAndInit(toKey edPub, msg []byte) {
 	}
 	buf.data = msg
 	buf.timer.Stop()
-	buf.init.sendTo(mgr.pc)
+	mgr.sendInit(&toKey, &buf.init)
 	buf.timer = time.AfterFunc(sessionTimeout, func() {
 		mgr.Act(nil, func() {
 			if b := mgr.buffers[toKey]; b == buf {
@@ -176,6 +175,18 @@ func (mgr *sessionManager) _bufferAndInit(toKey edPub, msg []byte) {
 			}
 		})
 	})
+}
+
+func (mgr *sessionManager) sendInit(dest *edPub, init *sessionInit) {
+	if bs, err := init.encrypt(dest); err == nil {
+		mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
+	}
+}
+
+func (mgr *sessionManager) sendAck(dest *edPub, ack *sessionAck) {
+	if bs, err := ack.encrypt(dest); err == nil {
+		mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
+	}
 }
 
 /***************
@@ -237,45 +248,38 @@ func (info *sessionInfo) _resetTimer() {
 
 func (info *sessionInfo) handleInit(from phony.Actor, init *sessionInit) {
 	info.Act(from, func() {
-		if init.seq <= info.seq || !init.check(&info.ed) {
+		if init.seq <= info.seq {
 			return
 		}
-		if info._handleUpdate(init) {
-			// Send a sessionAck
-			//  TODO save this somewhere?
-			//  To avoid constantly creating/signing new ones from init spam
-			//  On the off chance that someone is replaying old init packets...
-			// Note that the ack contains our sendPub and nextPub
-			init := newSessionInit(&info.mgr.pc.secret, &info.ed, &info.sendPub, &info.nextPub)
-			ack := sessionAck{init}
-			ack.sendTo(info.mgr.pc)
-		}
+		info._handleUpdate(init)
+		// Send a sessionAck
+		init := newSessionInit(&info.sendPub, &info.nextPub)
+		ack := sessionAck{init}
+		info._sendAck(&ack)
 	})
 }
 
 func (info *sessionInfo) handleAck(from phony.Actor, ack *sessionAck) {
 	info.Act(from, func() {
-		if ack.seq <= info.seq || !ack.check(&info.ed) {
+		if ack.seq <= info.seq {
 			return
 		}
 		info._handleUpdate(&ack.sessionInit)
-		// Now advance keys forward
-		info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
-		info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
-		info.nextPub, info.nextPriv = newBoxKeys()
-		info._fixShared(&boxNonce{}, &boxNonce{})
 	})
 }
 
 // return true if everything looks OK and the session was updated
-func (info *sessionInfo) _handleUpdate(init *sessionInit) bool {
+func (info *sessionInfo) _handleUpdate(init *sessionInit) {
 	info.current = init.current
 	info.next = init.next
 	info.seq = init.seq
-	// Don't roll back sendNonce, just to be safe
+	// Advance our keys, since this counts as a response
+	info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
+	info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
+	info.nextPub, info.nextPriv = newBoxKeys()
+	// Don't roll back sendNonce, just to be extra safe
 	info._fixShared(&boxNonce{}, &info.sendNonce)
 	info._resetTimer()
-	return true
 }
 
 func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
@@ -367,10 +371,11 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		default:
 			// We can't make sense of their message
 			// Send a sessionInit and hope they fix it
-			init := newSessionInit(&info.mgr.pc.secret, &info.ed, &info.sendPub, &info.nextPub)
-			init.sendTo(info.mgr.pc)
 			fmt.Println("DEBUG:", fromCurrent, fromNext, toRecv, toSend)
 			panic("FIXME") // FIXME shouldn't happen in testing? Maybe a race between inits/acks?
+			panic("TODO")  // TODO sanity check that these are the right keys to send... (what if we don't get an ack? should we reset any keys here just to be safe?)
+			init := newSessionInit(&info.recvPub, &info.sendPub)
+			info._sendInit(&init)
 			return
 		}
 		// Decrypt and handle packet
@@ -391,87 +396,82 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 	})
 }
 
+func (info *sessionInfo) _sendInit(init *sessionInit) {
+	info.mgr.sendInit(&info.ed, init)
+}
+
+func (info sessionInfo) _sendAck(ack *sessionAck) {
+	info.mgr.sendAck(&info.ed, ack)
+}
+
 /***************
  * sessionInit *
  ***************/
 
 type sessionInit struct {
-	sig     edSig  // edPub was the from address, so we get that for free already
-	dest    edPub  // intended dest key
-	current boxPub // dest.recv <- sender.sendPub
-	next    boxPub // dest.send <- sender.sendNext
+	current boxPub
+	next    boxPub
 	seq     uint64 // timestamp or similar
 }
 
-func newSessionInit(sig *edPriv, dest *edPub, current, next *boxPub) sessionInit {
+func newSessionInit(current, next *boxPub) sessionInit {
 	var init sessionInit
-	init.dest = *dest
 	init.current = *current
 	init.next = *next
 	init.seq = uint64(time.Now().Unix())
-	init.sign(sig)
 	return init
 }
 
-func (si *sessionInit) bytesForSig() []byte {
-	const msgSize = sessionInitSize - edSigSize
-	bs := make([]byte, msgSize)
-	offset := 0
-	offset = bytesPush(bs, si.dest[:], offset)
-	offset = bytesPush(bs, si.current[:], offset)
-	offset = bytesPush(bs, si.next[:], offset)
-	binary.BigEndian.PutUint64(bs[offset:], si.seq)
-	return bs
-}
-
-func (si *sessionInit) sign(priv *edPriv) {
-	bs := si.bytesForSig()
-	si.sig = *edSign(bs, priv)
-}
-
-func (si *sessionInit) check(pub *edPub) bool {
-	bs := si.bytesForSig()
-	return edCheck(bs, &si.sig, pub)
-}
-
-func (si *sessionInit) MarshalBinary() (data []byte, err error) {
-	data = make([]byte, sessionInitSize)
+func (init *sessionInit) encrypt(to *edPub) ([]byte, error) {
+	var toBox *boxPub
+	var err error
+	if toBox, err = to.toBox(); err != nil {
+		return nil, err
+	}
+	// Prepare the payload (to be encrypted)
+	payload := make([]byte, 0, sessionInitSize) // TODO correct size, this is overkill
+	payload = append(payload, init.current[:]...)
+	payload = append(payload, init.next[:]...)
+	offset := len(payload)
+	payload = payload[:offset+8]
+	binary.BigEndian.PutUint64(payload[offset:offset+8], init.seq)
+	// Encrypt
+	ePub, ePriv := newBoxKeys()
+	var shared boxShared
+	var nonce boxNonce // Nonce is always 0 since we use a one-time ephemeral key
+	getShared(&shared, toBox, &ePriv)
+	bs := boxSeal(nil, payload, &nonce, &shared)
+	// Assemble final message
+	data := make([]byte, 1, sessionInitSize)
 	data[0] = sessionTypeInit
-	offset := 1
-	offset = bytesPush(data, si.sig[:], offset)
-	offset = bytesPush(data, si.dest[:], offset)
-	offset = bytesPush(data, si.current[:], offset)
-	offset = bytesPush(data, si.next[:], offset)
-	binary.BigEndian.PutUint64(data[offset:], si.seq)
-	return
+	data = append(data, ePub[:]...)
+	data = append(data, bs...)
+	return data, nil
 }
 
-func (si *sessionInit) UnmarshalBinary(data []byte) error {
+func (init *sessionInit) decrypt(priv *boxPriv, from *edPub, data []byte) bool {
 	if len(data) != sessionInitSize {
-		return errors.New("wrong sessionInit size")
+		panic("DEBUG")
+		return false
 	}
-	if data[0] != sessionTypeInit {
-		return errors.New("wrong data type")
+	var ePub boxPub
+	offset := 1
+	offset = bytesPop(ePub[:], data, offset)
+	bs := data[offset:]
+	var shared boxShared
+	getShared(&shared, &ePub, priv)
+	var nonce boxNonce
+	payload := make([]byte, 0, sessionInitSize) // TODO correct size
+	var ok bool
+	if payload, ok = boxOpen(payload, bs, &nonce, &shared); !ok {
+		panic("DEBUG")
+		return false
 	}
-	return si.unmarshal(data)
-}
-
-func (si *sessionInit) unmarshal(data []byte) error {
-	offset := 1 // Skip the type byte (already checked by caller)
-	offset = bytesPop(si.sig[:], data, offset)
-	offset = bytesPop(si.dest[:], data, offset)
-	offset = bytesPop(si.current[:], data, offset)
-	offset = bytesPop(si.next[:], data, offset)
-	si.seq = binary.BigEndian.Uint64(data[offset:])
-	return nil
-}
-
-func (si *sessionInit) sendTo(pc *PacketConn) {
-	if bs, err := si.MarshalBinary(); err == nil {
-		pc.PacketConn.WriteTo(bs, types.Addr(si.dest.asKey()))
-	} else {
-		panic("this should never happen")
-	}
+	offset = 0
+	offset = bytesPop(init.current[:], payload, offset)
+	offset = bytesPop(init.next[:], payload, offset)
+	init.seq = binary.BigEndian.Uint64(payload[offset:])
+	return true
 }
 
 /**************
@@ -482,30 +482,12 @@ type sessionAck struct {
 	sessionInit
 }
 
-func (sa *sessionAck) MarshalBinary() (data []byte, err error) {
-	data, err = sa.sessionInit.MarshalBinary()
+func (ack *sessionAck) encrypt(to *edPub) ([]byte, error) {
+	data, err := ack.sessionInit.encrypt(to)
 	if err == nil {
 		data[0] = sessionTypeAck
 	}
-	return
-}
-
-func (sa *sessionAck) UnmarshalBinary(data []byte) error {
-	if len(data) != sessionAckSize {
-		return errors.New("wrong sessionInit size")
-	}
-	if data[0] != sessionTypeAck {
-		return errors.New("wrong data type")
-	}
-	return sa.sessionInit.unmarshal(data)
-}
-
-func (sa *sessionAck) sendTo(pc *PacketConn) {
-	if bs, err := sa.MarshalBinary(); err == nil {
-		pc.PacketConn.WriteTo(bs, types.Addr(sa.dest.asKey()))
-	} else {
-		panic("this should never happen")
-	}
+	return data, err
 }
 
 /*****************

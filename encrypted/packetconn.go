@@ -14,8 +14,7 @@ import (
 type PacketConn struct {
 	actor phony.Inbox
 	*network.PacketConn
-	secret   edPriv
-	public   edPub
+	secret   boxPriv
 	sessions sessionManager
 	network  netManager
 }
@@ -26,10 +25,10 @@ func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	pub := secret.Public().(ed25519.PublicKey)
 	pc := &PacketConn{PacketConn: npc}
-	copy(pc.secret[:], secret[:])
-	copy(pc.public[:], pub[:])
+	var priv edPriv
+	copy(priv[:], secret[:])
+	pc.secret = *priv.toBox()
 	pc.sessions.init(pc)
 	pc.network.init(pc)
 	pc.SetOutOfBandHandler(nil)

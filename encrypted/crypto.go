@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"golang.org/x/crypto/nacl/box"
+
+	"github.com/Arceliar/ironwood/encrypted/internal/e2c"
 )
 
 /********
@@ -51,6 +53,20 @@ func edCheck(msg []byte, sig *edSig, pub *edPub) bool {
 
 func (pub *edPub) asKey() ed25519.PublicKey {
 	return ed25519.PublicKey(pub[:])
+}
+
+func (pub *edPub) toBox() (*boxPub, error) {
+	var c boxPub
+	e := e2c.Ed25519PublicKeyToCurve25519(pub.asKey())
+	copy(c[:], e)
+	return &c, nil
+}
+
+func (priv *edPriv) toBox() *boxPriv {
+  var c boxPriv
+  e := e2c.Ed25519PrivateKeyToCurve25519(ed25519.PrivateKey(priv[:]))
+  copy(c[:], e)
+	return &c
 }
 
 /*******
