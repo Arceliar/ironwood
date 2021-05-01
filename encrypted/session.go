@@ -428,6 +428,10 @@ func (init *sessionInit) encrypt(from *boxPriv, to *edPub) ([]byte, error) {
 	if toBox, err = to.toBox(); err != nil {
 		return nil, err
 	}
+	var nonce *boxNonce
+	if nonce, err = newRandomNonce(); err != nil {
+		return nil, err
+	}
 	// Prepare the payload (to be encrypted)
 	payload := make([]byte, 0, sessionInitSize) // TODO correct size, this is overkill
 	payload = append(payload, init.current[:]...)
@@ -436,10 +440,9 @@ func (init *sessionInit) encrypt(from *boxPriv, to *edPub) ([]byte, error) {
 	payload = payload[:offset+8]
 	binary.BigEndian.PutUint64(payload[offset:offset+8], init.seq)
 	// Encrypt
-	nonce := *newRandomNonce()
 	var shared boxShared
 	getShared(&shared, toBox, from)
-	bs := boxSeal(nil, payload, &nonce, &shared)
+	bs := boxSeal(nil, payload, nonce, &shared)
 	// Assemble final message
 	data := make([]byte, 1, sessionInitSize)
 	data[0] = sessionTypeInit

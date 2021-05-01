@@ -118,12 +118,12 @@ func (n *boxNonce) lessThan(o *boxNonce) bool {
 	return false
 }
 
-func newRandomNonce() *boxNonce {
+func newRandomNonce() (*boxNonce, error) {
 	var nonce boxNonce
 	if _, err := rand.Read(nonce[:]); err != nil {
-		return nil
+		return nil, err
 	}
-	return &nonce
+	return &nonce, nil
 }
 
 // TODO we need to catch if nonce hits its max value and force a rekey

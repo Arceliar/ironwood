@@ -496,8 +496,8 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 		// We may have multiple former predecessor paths
 		//  From t.pred = nil when the tree changes, but kept around to bootstrap
 		// So loop over paths and close any going to a *different* node than the current predecessor
-		// The current predecessor can close the old path from the successor side after setup
-		if dinfo.source.equal(t.core.crypto.publicKey) && !source.equal(t.dkeys[dinfo]) {
+		// The current predecessor can close the old path from that side after setup
+		if dest, isIn := t.dkeys[dinfo]; isIn && !dest.equal(source) {
 			t._teardown(nil, dinfo.getTeardown())
 		}
 	}
