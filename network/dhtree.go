@@ -26,9 +26,9 @@ type dhtree struct {
 	tinfos     map[*peer]*treeInfo     // map[string(publicKey)]*treeInfo, key=peer
 	dinfos     map[dhtInfoKey]*dhtInfo //
 	self       *treeInfo               // self info
-	pred       *dhtInfo                // predessor in dht, who we maintain a path to
+	pred       *dhtInfo                // predecessor in dht, who we maintain a path to
 	succ       *dhtInfo                // successor in dht, they maintain a path to us
-	dkeys      map[*dhtInfo]publicKey  // map of *dhtInfo->destKey for current and past predessors
+	dkeys      map[*dhtInfo]publicKey  // map of *dhtInfo->destKey for current and past predecessors
 	seq        uint64                  // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
 	timer      *time.Timer             // time.AfterFunc to send bootstrap packets
 	wait       bool                    // FIXME this is a hack to let bad news spread before changing parents
@@ -127,7 +127,7 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 }
 
 // _fix selects the best parent (and is called in response to receiving a tree update)
-// if this is not the same as our current parent, then it sends a tree update to our peers and resets our succecessor/predessor in the dht
+// if this is not the same as our current parent, then it sends a tree update to our peers and resets our successor/predecessor in the dht
 func (t *dhtree) _fix() {
 	oldSelf := t.self
 	if t.self == nil || treeLess(t.core.crypto.publicKey, t.self.root) {
@@ -190,10 +190,10 @@ func (t *dhtree) _fix() {
 			})
 		}
 		t._sendTree() //t.core.peers.sendTree(t, t.self)
-		/* TODO? Tear down the old predessor if the root is different?
+		/* TODO? Tear down the old predecessor if the root is different?
 		if t.pred != nil && oldSelf != nil && !oldSelf.root.equal(t.self.root) {
-			// The root changed, so we need to notify our predessor
-			// Otherwise we may not be their best succecessor anymore
+			// The root changed, so we need to notify our predecessor
+			// Otherwise we may not be their best successor anymore
 			// All we can really do is tear down
 			t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
 		}
@@ -393,13 +393,13 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
 
 // _dhtAdd adds a dhtInfo to the dht and returns true
 // it may return false if the path associated with the dhtInfo isn't allowed for some reason
-//  e.g. we know a better predessor/succecessor for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
+//  e.g. we know a better predecessor/successor for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	/* TODO? something along these lines...
 	for _, dinfo := range t.dinfos {
 		if dhtOrdered(info.source, dinfo.source, info.dest) {
-			return false // There's a better predessor for this source
+			return false // There's a better predecessor for this source
 		}
 	}
 	for _, dinfo := range t.dinfos {
@@ -423,8 +423,8 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 	return dbs
 }
 
-// _handleBootstrap takes a bootstrap packet and checks if we know of a better predessor for the source node
-// if yes, then we forward to the next hop in the path towards that predessor
+// _handleBootstrap takes a bootstrap packet and checks if we know of a better predecessor for the source node
+// if yes, then we forward to the next hop in the path towards that predecessor
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	source := bootstrap.label.key
@@ -451,8 +451,8 @@ func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 
 // _handleBootstrapAck takes an ack packet and checks if we know a next hop on the tree
 // if yes, then we forward to the next hop
-// if no, then we decide whether or not this node is better than our current predessor
-// if yes, then we get rid of our current predessor (if any) and start setting up a new path to the response node in the ack
+// if no, then we decide whether or not this node is better than our current predecessor
+// if yes, then we get rid of our current predecessor (if any) and start setting up a new path to the response node in the ack
 // if no, then we drop the bootstrap acknowledgement without doing anything
 func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 	source := ack.response.label.key
@@ -475,11 +475,14 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 		return
 	case t.pred == nil:
 	case dhtOrdered(t.dkeys[t.pred], source, t.core.crypto.publicKey):
-		// This bootstrap is from a better predessor than our current one
+		// This bootstrap is from a better predecessor than our current one
+	case !source.equal(t.dkeys[t.pred]):
+		// This isn't from the current predecessor or better, so ignore it
+		return
 	case !t.pred.root.equal(t.self.root) || t.pred.rootSeq != t.self.seq:
-		// The curent predessor needs replacing (old tree info)
+		// The curent predecessor needs replacing (old tree info)
 	default:
-		// We already have a better (FIXME? or equal) predessor
+		// We already have a better (FIXME? or equal) predecessor
 		return
 	}
 	if !ack.response.check() {
@@ -488,12 +491,12 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 	}
 	t.pred = nil
 	for _, dinfo := range t.dinfos {
-		// Former predessors need to be notified that we're no longer a succecessor
+		// Former predecessors need to be notified that we're no longer a successor
 		// The only way to signal that is by tearing down the path
-		// We may have multiple former predessor paths
+		// We may have multiple former predecessor paths
 		//  From t.pred = nil when the tree changes, but kept around to bootstrap
-		// So loop over paths and close any going to a *different* node than the current predessor
-		// The current predessor can close the old path from the succecessor side after setup
+		// So loop over paths and close any going to a *different* node than the current predecessor
+		// The current predecessor can close the old path from the successor side after setup
 		if dinfo.source.equal(t.core.crypto.publicKey) && !source.equal(t.dkeys[dinfo]) {
 			t._teardown(nil, dinfo.getTeardown())
 		}
@@ -526,8 +529,8 @@ func (t *dhtree) _newSetup(dest *dhtBootstrap) *dhtSetup {
 }
 
 // _handleSetup checks if it's safe to add a path from the setup source to the setup destination
-// if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better succecessor, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
-// otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our succecessor path (if we are, tearing down our existing succecessor if one exists)
+// if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better successor, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
+// otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our successor path (if we are, tearing down our existing successor if one exists)
 func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	next := t._treeLookup(&setup.dest.label)
 	dest := setup.dest.label.key
@@ -577,13 +580,13 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 		})
 	})
 	if prev == nil {
-		// sanity checks, this should only happen when setting up our predessor
+		// sanity checks, this should only happen when setting up our predecessor
 		if !setup.source.equal(t.core.crypto.publicKey) {
 			panic("wrong source")
 		} else if setup.seq != t.seq {
 			panic("wrong seq")
 		} else if t.pred != nil {
-			panic("already have a predessor")
+			panic("already have a predecessor")
 		}
 		t.pred = dinfo
 		t.dkeys[dinfo] = dest
@@ -593,7 +596,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	} else {
 		if t.succ != nil {
 			// TODO get this right!
-			//  We need to replace the old succecessor in most cases
+			//  We need to replace the old successor in most cases
 			//  The exceptions are when:
 			//    1. The dinfo's root/seq don't match our current root/seq
 			//    2. The dinfo matches, but so does t.succ, and t.succ is better
@@ -605,7 +608,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 			} else if !t.succ.root.equal(t.self.root) || t.succ.rootSeq != t.self.seq {
 				// The old succ is old enough to be replaced
 			} else if dhtOrdered(t.core.crypto.publicKey, t.succ.source, dinfo.source) {
-				// Both dinfo and t.succ match our root/seq, but dinfo is actually worse as a succecessor
+				// Both dinfo and t.succ match our root/seq, but dinfo is actually worse as a successor
 				doUpdate = false
 			}
 			if doUpdate {

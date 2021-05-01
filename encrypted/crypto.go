@@ -63,9 +63,9 @@ func (pub *edPub) toBox() (*boxPub, error) {
 }
 
 func (priv *edPriv) toBox() *boxPriv {
-  var c boxPriv
-  e := e2c.Ed25519PrivateKeyToCurve25519(ed25519.PrivateKey(priv[:]))
-  copy(c[:], e)
+	var c boxPriv
+	e := e2c.Ed25519PrivateKeyToCurve25519(ed25519.PrivateKey(priv[:]))
+	copy(c[:], e)
 	return &c
 }
 

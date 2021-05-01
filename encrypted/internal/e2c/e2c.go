@@ -12,7 +12,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha512"
 	"math/big"
-	
+
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -53,4 +53,3 @@ func Ed25519PublicKeyToCurve25519(pk ed25519.PublicKey) []byte {
 
 	return out
 }
-
