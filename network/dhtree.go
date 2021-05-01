@@ -846,39 +846,39 @@ func (info *treeInfo) dist(dest *treeLabel) int {
 	return a + b - 2*lcaIdx
 }
 
-func (info *treeInfo) MarshalBinary() (data []byte, err error) {
-	data = append(data, info.root[:]...)
+func (info *treeInfo) encode(out []byte) ([]byte, error) {
+	out = append(out, info.root[:]...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, info.seq)
-	data = append(data, seq...)
+	out = append(out, seq...)
 	for _, hop := range info.hops {
-		data = append(data, hop.next[:]...)
-		data = wireEncodeUint(data, uint64(hop.port))
-		data = append(data, hop.sig[:]...)
+		out = append(out, hop.next[:]...)
+		out = wireEncodeUint(out, uint64(hop.port))
+		out = append(out, hop.sig[:]...)
 	}
-	return
+	return out, nil
 }
 
-func (info *treeInfo) UnmarshalBinary(data []byte) error {
+func (info *treeInfo) decode(data []byte) error {
 	nfo := treeInfo{}
 	if !wireChopSlice(nfo.root[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	if len(data) >= 8 {
 		nfo.seq = binary.BigEndian.Uint64(data[:8])
 		data = data[8:]
 	} else {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	for len(data) > 0 {
 		hop := treeHop{}
 		switch {
 		case !wireChopSlice(hop.next[:], &data):
-			return wireUnmarshalBinaryError
+			return wireDecodeError
 		case !wireChopUint((*uint64)(&hop.port), &data):
-			return wireUnmarshalBinaryError
+			return wireDecodeError
 		case !wireChopSlice(hop.sig[:], &data):
-			return wireUnmarshalBinaryError
+			return wireDecodeError
 		}
 		nfo.hops = append(nfo.hops, hop)
 	}
@@ -909,35 +909,35 @@ func (l *treeLabel) check() bool {
 	return l.key.verify(bs, &l.sig)
 }
 
-func (l *treeLabel) MarshalBinary() (data []byte, err error) {
-	data = append(data, l.sig[:]...)
-	data = append(data, l.key[:]...)
-	data = append(data, l.root[:]...)
+func (l *treeLabel) encode(out []byte) ([]byte, error) {
+	out = append(out, l.sig[:]...)
+	out = append(out, l.key[:]...)
+	out = append(out, l.root[:]...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, l.seq)
-	data = append(data, seq...)
-	data = wireEncodePath(data, l.path)
-	return data, nil
+	out = append(out, seq...)
+	out = wireEncodePath(out, l.path)
+	return out, nil
 }
 
-func (l *treeLabel) UnmarshalBinary(data []byte) error {
+func (l *treeLabel) decode(data []byte) error {
 	var tmp treeLabel
 	if !wireChopSlice(tmp.sig[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if !wireChopSlice(tmp.key[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if !wireChopSlice(tmp.root[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if len(data) < 8 {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else {
 		tmp.seq = binary.BigEndian.Uint64(data[:8])
 		data = data[8:]
 	}
 	if !wireChopPath(&tmp.path, &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if len(data) != 0 {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	*l = tmp
 	return nil
@@ -983,13 +983,13 @@ func (dbs *dhtBootstrap) check() bool {
 	return dbs.label.check()
 }
 
-func (dbs *dhtBootstrap) MarshalBinary() (data []byte, err error) {
-	return dbs.label.MarshalBinary()
+func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
+	return dbs.label.encode(out)
 }
 
-func (dbs *dhtBootstrap) UnmarshalBinary(data []byte) error {
+func (dbs *dhtBootstrap) decode(data []byte) error {
 	var tmp dhtBootstrap
-	if err := tmp.label.UnmarshalBinary(data); err != nil {
+	if err := tmp.label.decode(data); err != nil {
 		return err
 	}
 	*dbs = tmp
@@ -1011,28 +1011,29 @@ func (ack *dhtBootstrapAck) check() bool {
 	return ack.bootstrap.check() && ack.response.check()
 }
 
-func (ack *dhtBootstrapAck) MarshalBinary() (data []byte, err error) {
-	var bootBytes, resBytes []byte
-	if bootBytes, err = ack.bootstrap.MarshalBinary(); err != nil {
-		return
-	} else if resBytes, err = ack.response.MarshalBinary(); err != nil {
-		return
+func (ack *dhtBootstrapAck) encode(out []byte) ([]byte, error) {
+	var bootBytes, resBytes []byte // TODO get rid of these
+	var err error
+	if bootBytes, err = ack.bootstrap.encode(nil); err != nil {
+		return nil, err
+	} else if resBytes, err = ack.response.encode(nil); err != nil {
+		return nil, err
 	}
-	data = wireEncodeUint(data, uint64(len(bootBytes)))
-	data = append(data, bootBytes...)
-	data = append(data, resBytes...)
-	return
+	out = wireEncodeUint(out, uint64(len(bootBytes)))
+	out = append(out, bootBytes...)
+	out = append(out, resBytes...)
+	return out, nil
 }
 
-func (ack *dhtBootstrapAck) UnmarshalBinary(data []byte) error {
+func (ack *dhtBootstrapAck) decode(data []byte) error {
 	bootLen, begin := wireDecodeUint(data)
 	end := begin + int(bootLen)
 	var tmp dhtBootstrapAck
 	if end > len(data) {
-		return wireUnmarshalBinaryError
-	} else if err := tmp.bootstrap.UnmarshalBinary(data[begin:end]); err != nil {
+		return wireDecodeError
+	} else if err := tmp.bootstrap.decode(data[begin:end]); err != nil {
 		return err
-	} else if err := tmp.response.UnmarshalBinary(data[end:]); err != nil {
+	} else if err := tmp.response.decode(data[end:]); err != nil {
 		return err
 	}
 	*ack = tmp
@@ -1054,7 +1055,7 @@ func (s *dhtSetup) bytesForSig() []byte {
 	bs := make([]byte, 8)
 	binary.BigEndian.PutUint64(bs, s.seq)
 	bs = append(bs, s.source[:]...)
-	m, err := s.dest.MarshalBinary()
+	m, err := s.dest.encode(nil) // TODO non-nil here
 	if err != nil {
 		panic("this should never happen")
 	}
@@ -1079,32 +1080,33 @@ func (s *dhtSetup) getTeardown() *dhtTeardown {
 	}
 }
 
-func (s *dhtSetup) MarshalBinary() (data []byte, err error) {
-	var tmp []byte
-	if tmp, err = s.dest.MarshalBinary(); err != nil {
-		return
+func (s *dhtSetup) encode(out []byte) ([]byte, error) {
+	var tmp []byte // TODO get rid of this
+	var err error
+	if tmp, err = s.dest.encode(tmp); err != nil {
+		return nil, err
 	}
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, s.seq)
-	data = append(data, s.sig[:]...)
-	data = append(data, s.source[:]...)
-	data = append(data, seq...)
-	data = append(data, tmp...)
-	return
+	out = append(out, s.sig[:]...)
+	out = append(out, s.source[:]...)
+	out = append(out, seq...)
+	out = append(out, tmp...)
+	return out, nil
 }
 
-func (s *dhtSetup) UnmarshalBinary(data []byte) error {
+func (s *dhtSetup) decode(data []byte) error {
 	var tmp dhtSetup
 	if !wireChopSlice(tmp.sig[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if !wireChopSlice(tmp.source[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	if len(data) < 8 {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	if err := tmp.dest.UnmarshalBinary(data); err != nil {
+	if err := tmp.dest.decode(data); err != nil {
 		return err
 	}
 	*s = tmp
@@ -1126,29 +1128,30 @@ func (t *dhtTeardown) getKey() dhtInfoKey {
 	return dhtInfoKey{t.source, t.root, t.rootSeq}
 }
 
-func (t *dhtTeardown) MarshalBinary() (data []byte, err error) {
-	data = make([]byte, 8)
-	binary.BigEndian.PutUint64(data, t.seq)
-	data = append(data, t.source[:]...)
-	data = append(data, t.root[:]...)
+func (t *dhtTeardown) encode(out []byte) ([]byte, error) {
+	seq := make([]byte, 8)
+	binary.BigEndian.PutUint64(seq, t.seq)
+	out = append(out, seq...)
+	out = append(out, t.source[:]...)
+	out = append(out, t.root[:]...)
 	rseq := make([]byte, 8)
 	binary.BigEndian.PutUint64(rseq, t.rootSeq)
-	data = append(data, rseq...)
-	return
+	out = append(out, rseq...)
+	return out, nil
 }
 
-func (t *dhtTeardown) UnmarshalBinary(data []byte) error {
+func (t *dhtTeardown) decode(data []byte) error {
 	var tmp dhtTeardown
 	if len(data) < 8 {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
 	if !wireChopSlice(tmp.source[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if !wireChopSlice(tmp.root[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if len(data) != 8 {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	tmp.rootSeq = binary.BigEndian.Uint64(data)
 	*t = tmp
@@ -1166,30 +1169,26 @@ type dhtTraffic struct {
 	payload []byte
 }
 
-func (t *dhtTraffic) MarshalBinary() ([]byte, error) {
-	var bs []byte
-	bs = append(bs, t.source[:]...)
-	bs = append(bs, t.dest[:]...)
-	bs = append(bs, t.kind)
-	bs = append(bs, t.payload...)
-	if len(bs) > 65535 {
-		return nil, wireMarshalBinaryError
-	}
-	return bs, nil
+func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
+	out = append(out, t.source[:]...)
+	out = append(out, t.dest[:]...)
+	out = append(out, t.kind)
+	out = append(out, t.payload...)
+	return out, nil
 }
 
-func (t *dhtTraffic) UnmarshalBinary(data []byte) error {
+func (t *dhtTraffic) decode(data []byte) error {
 	var tmp dhtTraffic
 	if !wireChopSlice(tmp.source[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if !wireChopSlice(tmp.dest[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	if len(data) < 1 {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	tmp.kind, data = data[0], data[1:]
-	tmp.payload = append(tmp.payload, data...)
+	tmp.payload = append(tmp.payload[:0], data...)
 	*t = tmp
 	return nil
 }

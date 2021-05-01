@@ -31,7 +31,7 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 		n := new(pathNotify)
 		n.label = pf.dhtree._getLabel()
 		n.dest = dest
-		ibytes, err := n.label.MarshalBinary()
+		ibytes, err := n.label.encode(nil) // TODO non-nil
 		if err != nil {
 			panic("this should never happen")
 		}
@@ -175,7 +175,7 @@ func (pn *pathNotify) check() bool {
 	if !pn.label.check() {
 		return false
 	}
-	ibytes, err := pn.label.MarshalBinary()
+	ibytes, err := pn.label.encode(nil) // TODO non-nil
 	if err != nil {
 		return false
 	}
@@ -186,28 +186,29 @@ func (pn *pathNotify) check() bool {
 	return dest.verify(bs, &pn.sig)
 }
 
-func (pn *pathNotify) MarshalBinary() (data []byte, err error) {
+func (pn *pathNotify) encode(out []byte) ([]byte, error) {
 	if pn.label == nil {
-		return nil, wireMarshalBinaryError
+		return nil, wireEncodeError
 	}
 	var bs []byte
-	if bs, err = pn.label.MarshalBinary(); err != nil {
-		return
+	var err error
+	if bs, err = pn.label.encode(nil); err != nil { // TODO non-nil
+		return out, err
 	}
-	data = append(data, pn.sig[:]...)
-	data = append(data, pn.dest[:]...)
-	data = append(data, bs...)
-	return
+	out = append(out, pn.sig[:]...)
+	out = append(out, pn.dest[:]...)
+	out = append(out, bs...)
+	return out, nil
 }
 
-func (pn *pathNotify) UnmarshalBinary(data []byte) error {
+func (pn *pathNotify) decode(data []byte) error {
 	var tmp pathNotify
 	tmp.label = new(treeLabel)
 	if !wireChopSlice(tmp.sig[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if !wireChopSlice(tmp.dest[:], &data) {
-		return wireUnmarshalBinaryError
-	} else if err := tmp.label.UnmarshalBinary(data); err != nil {
+		return wireDecodeError
+	} else if err := tmp.label.decode(data); err != nil {
 		return err
 	}
 	*pn = tmp
@@ -223,32 +224,33 @@ type pathLookup struct {
 	rpath  []peerPort
 }
 
-func (l *pathLookup) MarshalBinary() (data []byte, err error) {
+func (l *pathLookup) encode(out []byte) ([]byte, error) {
 	var bs []byte
-	if bs, err = l.notify.MarshalBinary(); err != nil {
-		return
+	var err error
+	if bs, err = l.notify.encode(nil); err != nil {
+		return nil, err
 	}
-	data = wireEncodeUint(data, uint64(len(bs)))
-	data = append(data, bs...)
-	data = wireEncodePath(data, l.rpath)
-	return
+	out = wireEncodeUint(out, uint64(len(bs)))
+	out = append(out, bs...)
+	out = wireEncodePath(out, l.rpath)
+	return out, nil
 }
 
-func (l *pathLookup) UnmarshalBinary(data []byte) error {
+func (l *pathLookup) decode(data []byte) error {
 	var tmp pathLookup
 	u, begin := wireDecodeUint(data)
 	end := int(u) + begin
 	if end > len(data) {
-		return wireUnmarshalBinaryError
-	} else if err := tmp.notify.UnmarshalBinary(data[begin:end]); err != nil {
+		return wireDecodeError
+	} else if err := tmp.notify.decode(data[begin:end]); err != nil {
 		return err
 	} else if data = data[end:]; !wireChopPath(&tmp.rpath, &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if len(data) > 0 {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if len(tmp.rpath) > 0 && tmp.rpath[len(tmp.rpath)-1] == 0 {
 		// there should never already be a 0 here
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	*l = tmp
 	return nil
@@ -268,26 +270,26 @@ type pathResponse struct {
 	rpath []peerPort
 }
 
-func (r *pathResponse) MarshalBinary() (data []byte, err error) {
-	data = append(data, r.from[:]...)
-	data = wireEncodePath(data, r.path)
-	data = wireEncodePath(data, r.rpath)
-	return
+func (r *pathResponse) encode(out []byte) ([]byte, error) {
+	out = append(out, r.from[:]...)
+	out = wireEncodePath(out, r.path)
+	out = wireEncodePath(out, r.rpath)
+	return out, nil
 }
 
-func (r *pathResponse) UnmarshalBinary(data []byte) error {
+func (r *pathResponse) decode(data []byte) error {
 	var tmp pathResponse
 	if !wireChopSlice(tmp.from[:], &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if !wireChopPath(&tmp.path, &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if !wireChopPath(&tmp.rpath, &data) {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if len(data) > 0 {
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	} else if len(tmp.rpath) > 0 && tmp.rpath[len(tmp.rpath)-1] == 0 {
 		// there should never already be a 0 here
-		return wireUnmarshalBinaryError
+		return wireDecodeError
 	}
 	*r = tmp
 	return nil
@@ -302,21 +304,16 @@ type pathTraffic struct {
 	dt   dhtTraffic
 }
 
-func (t *pathTraffic) MarshalBinary() ([]byte, error) {
-	dt, err := t.dt.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-	bs := wireEncodePath(nil, t.path)
-	bs = append(bs, dt...)
-	return bs, nil
+func (t *pathTraffic) encode(out []byte) ([]byte, error) {
+	out = wireEncodePath(out, t.path)
+	return t.dt.encode(out)
 }
 
-func (t *pathTraffic) UnmarshalBinary(data []byte) error {
+func (t *pathTraffic) decode(data []byte) error {
 	var tmp pathTraffic
 	if !wireChopPath(&tmp.path, &data) {
-		return wireUnmarshalBinaryError
-	} else if err := tmp.dt.UnmarshalBinary(data); err != nil {
+		return wireDecodeError
+	} else if err := tmp.dt.decode(data); err != nil {
 		return err
 	}
 	*t = tmp

@@ -81,10 +81,6 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	copy(tr.dest[:], dest)
 	tr.kind = wireTrafficStandard
 	tr.payload = append(tr.payload, p...)
-	if _, err := tr.MarshalBinary(); err != nil {
-		// TODO do this when there's an oversized packet maybe?
-		return 0, errors.New("failed to encode traffic")
-	}
 	pc.core.dhtree.sendTraffic(nil, &tr)
 	return len(p), nil
 }
@@ -181,10 +177,6 @@ func (pc *PacketConn) SendOutOfBand(toKey ed25519.PublicKey, data []byte) error 
 	copy(tr.dest[:], toKey)
 	tr.kind = wireTrafficOutOfBand
 	tr.payload = append(tr.payload, data...)
-	if _, err := tr.MarshalBinary(); err != nil {
-		// TODO do this when there's an oversized packet maybe?
-		return errors.New("failed to encode traffic")
-	}
 	pc.core.dhtree.sendTraffic(nil, &tr)
 	return nil
 }

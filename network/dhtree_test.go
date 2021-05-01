@@ -32,12 +32,12 @@ func TestMarshalTreeInfo(t *testing.T) {
 		}
 		copy(sk[:], newPriv)
 	}
-	bs, err := info.MarshalBinary()
+	bs, err := info.encode(nil)
 	if err != nil {
 		panic(err)
 	}
 	newInfo := new(treeInfo)
-	err = newInfo.UnmarshalBinary(bs)
+	err = newInfo.decode(bs)
 	if err != nil {
 		panic(err)
 	}
@@ -96,12 +96,12 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 	if !bootstrap.check() {
 		panic("failed to check bootstrap")
 	}
-	bs, err := bootstrap.MarshalBinary()
+	bs, err := bootstrap.encode(nil)
 	if err != nil {
 		panic(err)
 	}
 	newBootstrap := new(dhtBootstrap)
-	err = newBootstrap.UnmarshalBinary(bs)
+	err = newBootstrap.decode(bs)
 	if err != nil {
 		panic(err)
 	}
@@ -144,12 +144,12 @@ func TestMarshalDHTSetup(t *testing.T) {
 	if !setup.check() {
 		panic("initial check failed")
 	}
-	bs, err := setup.MarshalBinary()
+	bs, err := setup.encode(nil)
 	if err != nil {
 		panic(err)
 	}
 	newSetup := new(dhtSetup)
-	if err = newSetup.UnmarshalBinary(bs); err != nil {
+	if err = newSetup.decode(bs); err != nil {
 		panic(err)
 	}
 	if !newSetup.check() {

@@ -1,7 +1,6 @@
 package network
 
 import (
-	"encoding"
 	"encoding/binary"
 	"errors"
 )
@@ -28,11 +27,8 @@ const (
 	wireTrafficOutOfBand
 )
 
-type binaryMarshaler encoding.BinaryMarshaler
-type binaryUnmarshaler encoding.BinaryUnmarshaler
-
-var wireMarshalBinaryError = errors.New("wire MarshalBinary error")
-var wireUnmarshalBinaryError = errors.New("wire UnmarshalBinary error")
+var wireEncodeError = errors.New("wire encode error")
+var wireDecodeError = errors.New("wire decode error")
 
 func wireChopSlice(out []byte, data *[]byte) bool {
 	if len(*data) < len(out) {
@@ -52,28 +48,17 @@ func wireChopBytes(out *[]byte, data *[]byte, size int) bool {
 	return true
 }
 
-func wireEncode(pType uint8, obj binaryMarshaler) (data []byte, err error) {
-	data, err = obj.MarshalBinary()
-	data = append([]byte{pType}, data...)
-	return
+type wireEncodeable interface {
+	encode(out []byte) ([]byte, error)
 }
 
-func wireDecode(data []byte) (obj binaryUnmarshaler, err error) {
-	if len(data) == 0 {
-		return nil, wireUnmarshalBinaryError
+func wireEncode(out []byte, pType uint8, obj wireEncodeable) ([]byte, error) {
+	out = append(out, pType)
+	var err error
+	if out, err = obj.encode(out); err != nil {
+		return nil, err
 	}
-	switch data[0] {
-	case wireProtoTree:
-		obj = new(treeInfo)
-	case wireProtoDHTBootstrap:
-		obj = new(dhtBootstrap)
-	case wireProtoDHTSetup:
-		obj = new(dhtSetup)
-	case wireProtoDHTTeardown:
-		obj = new(dhtTeardown)
-	}
-	err = obj.UnmarshalBinary(data[1:])
-	return
+	return out, nil
 }
 
 func wireEncodeUint(dest []byte, u uint64) []byte {

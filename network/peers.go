@@ -84,17 +84,7 @@ type peer struct {
 
 func (p *peer) _write(bs []byte) {
 	p.timer.Stop()
-	if len(bs) > int(^uint16(0)) {
-		return
-	}
-	size := 2 + len(bs)
-	if len(p.writeBuf) < size {
-		p.writeBuf = make([]byte, size)
-	}
-	p.writeBuf = p.writeBuf[:size]
-	binary.BigEndian.PutUint16(p.writeBuf[:2], uint16(len(bs)))
-	copy(p.writeBuf[2:], bs)
-	_, _ = p.conn.Write(p.writeBuf)
+	_, _ = p.conn.Write(bs)
 	p.timer = time.AfterFunc(peerKEEPALIVE, p.keepAlive)
 }
 
@@ -113,7 +103,7 @@ func (p *peer) handler() error {
 		default:
 		}
 		p.Act(nil, func() {
-			p._write([]byte{wireDummy})
+			p._write([]byte{0x00, 0x01, wireDummy})
 		})
 	}
 	p.peers.core.dhtree.Act(nil, func() {
@@ -178,7 +168,7 @@ func (p *peer) handlePacket(bs []byte) error {
 
 func (p *peer) handleTree(bs []byte) error {
 	info := new(treeInfo)
-	if err := info.UnmarshalBinary(bs); err != nil {
+	if err := info.decode(bs); err != nil {
 		return err
 	}
 	if !info.checkSigs() {
@@ -196,12 +186,19 @@ func (p *peer) handleTree(bs []byte) error {
 	return nil
 }
 
-func (p *peer) _sendProto(pType byte, data binaryMarshaler) {
-	bs, err := wireEncode(pType, data)
+func (p *peer) _sendProto(pType byte, data wireEncodeable) {
+	p.writeBuf = append(p.writeBuf[:0], 0x00, 0x00) // This will be the length
+	var err error
+	p.writeBuf, err = wireEncode(p.writeBuf, pType, data)
 	if err != nil {
 		panic(err)
 	}
-	p._write(bs)
+	bs := p.writeBuf[2:] // The message part
+	if len(bs) > int(^uint16(0)) {
+		return
+	}
+	binary.BigEndian.PutUint16(p.writeBuf[:2], uint16(len(bs)))
+	p._write(p.writeBuf)
 }
 
 func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
@@ -213,7 +210,7 @@ func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
 
 func (p *peer) handleBootstrap(bs []byte) error {
 	bootstrap := new(dhtBootstrap)
-	if err := bootstrap.UnmarshalBinary(bs); err != nil {
+	if err := bootstrap.decode(bs); err != nil {
 		return err
 	}
 	p.peers.core.dhtree.handleBootstrap(nil, bootstrap)
@@ -228,7 +225,7 @@ func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 
 func (p *peer) handleBootstrapAck(bs []byte) error {
 	ack := new(dhtBootstrapAck)
-	if err := ack.UnmarshalBinary(bs); err != nil {
+	if err := ack.decode(bs); err != nil {
 		return err
 	}
 	p.peers.core.dhtree.handleBootstrapAck(nil, ack)
@@ -243,7 +240,7 @@ func (p *peer) sendBootstrapAck(from phony.Actor, ack *dhtBootstrapAck) {
 
 func (p *peer) handleSetup(bs []byte) error {
 	setup := new(dhtSetup)
-	if err := setup.UnmarshalBinary(bs); err != nil {
+	if err := setup.decode(bs); err != nil {
 		return err
 	}
 	if !setup.check() {
@@ -261,7 +258,7 @@ func (p *peer) sendSetup(from phony.Actor, setup *dhtSetup) {
 
 func (p *peer) handleTeardown(bs []byte) error {
 	teardown := new(dhtTeardown)
-	if err := teardown.UnmarshalBinary(bs); err != nil {
+	if err := teardown.decode(bs); err != nil {
 		return err
 	}
 	p.peers.core.dhtree.teardown(nil, p, teardown)
@@ -276,7 +273,7 @@ func (p *peer) sendTeardown(from phony.Actor, teardown *dhtTeardown) {
 
 func (p *peer) handlePathNotify(bs []byte) error {
 	notify := new(pathNotify)
-	if err := notify.UnmarshalBinary(bs); err != nil {
+	if err := notify.decode(bs); err != nil {
 		return err
 	}
 	p.peers.core.dhtree.pathfinder.handleNotify(nil, notify)
@@ -291,7 +288,7 @@ func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
 
 func (p *peer) handlePathLookup(bs []byte) error {
 	lookup := new(pathLookup)
-	if err := lookup.UnmarshalBinary(bs); err != nil {
+	if err := lookup.decode(bs); err != nil {
 		return err
 	}
 	lookup.rpath = append(lookup.rpath, p.port)
@@ -307,7 +304,7 @@ func (p *peer) sendPathLookup(from phony.Actor, lookup *pathLookup) {
 
 func (p *peer) handlePathResponse(bs []byte) error {
 	response := new(pathResponse)
-	if err := response.UnmarshalBinary(bs); err != nil {
+	if err := response.decode(bs); err != nil {
 		return err
 	}
 	response.rpath = append(response.rpath, p.port)
@@ -338,7 +335,7 @@ func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
 
 func (p *peer) handleDHTTraffic(bs []byte) error {
 	tr := new(dhtTraffic)
-	if err := tr.UnmarshalBinary(bs); err != nil {
+	if err := tr.decode(bs); err != nil {
 		return err // This is just to check that it unmarshals correctly
 	}
 	p.peers.core.dhtree.handleDHTTraffic(nil, tr, true)
@@ -353,7 +350,7 @@ func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 
 func (p *peer) handlePathTraffic(bs []byte) error {
 	tr := new(pathTraffic)
-	if err := tr.UnmarshalBinary(bs); err != nil {
+	if err := tr.decode(bs); err != nil {
 		return err
 	}
 	// TODO? don't send to p.peers, have a (read-only) copy of the map locally? via atomics?
@@ -368,6 +365,7 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 			nextPort, tr.path = tr.path[0], tr.path[1:]
 		}
 		if next := ps.peers[nextPort]; next != nil {
+			// Forward using the source routed path
 			next.sendPathTraffic(nil, tr)
 		} else {
 			// Fall back to dhtTraffic
