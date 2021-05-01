@@ -19,7 +19,7 @@ func TestVerify(t *testing.T) {
 	c.init(priv)
 	msg := []byte("this is a test")
 	sig := c.privateKey.sign(msg)
-	if !c.publicKey.verify(msg, sig) {
+	if !c.publicKey.verify(msg, &sig) {
 		panic("verification failed")
 	}
 }
@@ -41,7 +41,7 @@ func BenchmarkVerify(b *testing.B) {
 	msg := []byte("this is a test")
 	sig := c.privateKey.sign(msg)
 	for idx := 0; idx < b.N; idx++ {
-		if !c.publicKey.verify(msg, sig) {
+		if !c.publicKey.verify(msg, &sig) {
 			panic("verification failed")
 		}
 	}

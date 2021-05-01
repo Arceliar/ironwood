@@ -79,18 +79,22 @@ type peer struct {
 	port        peerPort
 	keepAlive   func()
 	timer       *time.Timer
+	writeBuf    []byte
 }
 
 func (p *peer) _write(bs []byte) {
 	p.timer.Stop()
-	out := getBytes(2 + len(bs))
-	defer putBytes(out)
 	if len(bs) > int(^uint16(0)) {
 		return
 	}
-	binary.BigEndian.PutUint16(out[:2], uint16(len(bs)))
-	copy(out[2:], bs)
-	_, _ = p.conn.Write(out)
+	size := 2 + len(bs)
+	if len(p.writeBuf) < size {
+		p.writeBuf = make([]byte, size)
+	}
+	p.writeBuf = p.writeBuf[:size]
+	binary.BigEndian.PutUint16(p.writeBuf[:2], uint16(len(bs)))
+	copy(p.writeBuf[2:], bs)
+	_, _ = p.conn.Write(p.writeBuf)
 	p.timer = time.AfterFunc(peerKEEPALIVE, p.keepAlive)
 }
 
@@ -334,66 +338,46 @@ func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
 
 func (p *peer) handleDHTTraffic(bs []byte) error {
 	tr := new(dhtTraffic)
-	if err := tr.UnmarshalBinaryInPlace(bs); err != nil {
+	if err := tr.UnmarshalBinary(bs); err != nil {
 		return err // This is just to check that it unmarshals correctly
 	}
-	trbs := append(getBytes(0), bs...)
-	p.peers.core.dhtree.handleDHTTraffic(nil, trbs, true)
+	p.peers.core.dhtree.handleDHTTraffic(nil, tr, true)
 	return nil
 }
 
-func (p *peer) sendDHTTraffic(from phony.Actor, trbs []byte) {
+func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 	p.Act(from, func() {
-		out := getBytes(0)
-		out = append(out, wireDHTTraffic)
-		out = append(out, trbs...)
-		p._write(out)
-		putBytes(out)
-		putBytes(trbs)
+		p._sendProto(wireDHTTraffic, tr) // TODO not sendProto, something that can drop...
 	})
 }
 
 func (p *peer) handlePathTraffic(bs []byte) error {
 	tr := new(pathTraffic)
-	if err := tr.UnmarshalBinaryInPlace(bs); err != nil {
+	if err := tr.UnmarshalBinary(bs); err != nil {
 		return err
 	}
-	// TODO? skip all of the above and just trust it?...
 	// TODO? don't send to p.peers, have a (read-only) copy of the map locally? via atomics?
-	trbs := append(getBytes(0), bs...)
-	p.peers.handlePathTraffic(nil, trbs)
+	p.peers.handlePathTraffic(nil, tr)
 	return nil
 }
 
-func (ps *peers) handlePathTraffic(from phony.Actor, trbs []byte) {
+func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 	ps.Act(from, func() {
-		nextPort, trbs := pathPopFirstHop(trbs)
-		if next, isIn := ps.peers[nextPort]; isIn {
-			next.sendPathTraffic(nil, trbs)
+		var nextPort peerPort
+		if len(tr.path) > 0 {
+			nextPort, tr.path = tr.path[0], tr.path[1:]
+		}
+		if next := ps.peers[nextPort]; next != nil {
+			next.sendPathTraffic(nil, tr)
 		} else {
 			// Fall back to dhtTraffic
-			if nextPort != 0 {
-				tr := new(pathTraffic)
-				if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
-					return
-				}
-				var err error
-				if trbs, err = tr.dt.MarshalBinaryTo(trbs[:0]); err != nil {
-					return
-				}
-			}
-			ps.core.dhtree.handleDHTTraffic(nil, trbs, false)
+			ps.core.dhtree.handleDHTTraffic(nil, &tr.dt, false)
 		}
 	})
 }
 
-func (p *peer) sendPathTraffic(from phony.Actor, trbs []byte) {
+func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	p.Act(from, func() {
-		out := getBytes(0)
-		out = append(out, wirePathTraffic)
-		out = append(out, trbs...)
-		p._write(out)
-		putBytes(out)
-		putBytes(trbs)
+		p._sendProto(wirePathTraffic, tr) // TODO not sendProto, something that can drop...
 	})
 }

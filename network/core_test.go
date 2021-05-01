@@ -49,10 +49,10 @@ func TestTwoNodes(t *testing.T) {
 		phony.Block(tB, func() {
 			lB = tB._treeLookup(sA)
 		})
-		if lA == nil || !bytes.Equal(lA.key, tB.core.crypto.publicKey) {
+		if lA == nil || !bytes.Equal(lA.key[:], tB.core.crypto.publicKey[:]) {
 			continue
 		}
-		if lB == nil || !bytes.Equal(lB.key, tA.core.crypto.publicKey) {
+		if lB == nil || !bytes.Equal(lB.key[:], tA.core.crypto.publicKey[:]) {
 			continue
 		}
 		break
@@ -135,7 +135,8 @@ func TestLineNetwork(t *testing.T) {
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
-		aK := publicKey(aAddr.(types.Addr))
+		var aK publicKey
+		copy(aK[:], aAddr.(types.Addr))
 		for bIdx := range conns {
 			if bIdx == aIdx {
 				continue
@@ -175,7 +176,8 @@ func TestLineNetwork(t *testing.T) {
 						}
 						//panic("read problem")
 					}
-					fK := publicKey(from.(types.Addr))
+					var fK publicKey
+					copy(fK[:], from.(types.Addr))
 					if fK.equal(aK) {
 						break
 					}
@@ -248,7 +250,8 @@ func TestRandomTreeNetwork(t *testing.T) {
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
-		aK := publicKey(aAddr.(types.Addr))
+		var aK publicKey
+		copy(aK[:], aAddr.(types.Addr))
 		for bIdx := range conns {
 			if bIdx == aIdx {
 				continue
@@ -288,7 +291,8 @@ func TestRandomTreeNetwork(t *testing.T) {
 						}
 						//panic("read problem")
 					}
-					fK := publicKey(from.(types.Addr))
+					var fK publicKey
+					copy(fK[:], from.(types.Addr))
 					if fK.equal(aK) {
 						break
 					}
@@ -336,7 +340,7 @@ func waitForRoot(conns []*PacketConn, timeout time.Duration) {
 		var root publicKey
 		for _, conn := range conns {
 			phony.Block(&conn.core.dhtree, func() {
-				root = append(root, conn.core.dhtree.self.root...)
+				root = conn.core.dhtree.self.root
 			})
 			break
 		}
@@ -344,7 +348,7 @@ func waitForRoot(conns []*PacketConn, timeout time.Duration) {
 		for _, conn := range conns {
 			var croot publicKey
 			phony.Block(&conn.core.dhtree, func() {
-				croot = append(croot, conn.core.dhtree.self.root...)
+				croot = conn.core.dhtree.self.root
 			})
 			if !croot.equal(root) {
 				bad = true

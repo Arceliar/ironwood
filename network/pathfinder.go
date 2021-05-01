@@ -14,12 +14,12 @@ const (
 // WARNING The pathfinder should only be used from within the dhtree's actor, it's not threadsafe
 type pathfinder struct {
 	dhtree *dhtree
-	paths  map[string]*pathInfo
+	paths  map[publicKey]*pathInfo
 }
 
 func (pf *pathfinder) init(t *dhtree) {
 	pf.dhtree = t
-	pf.paths = make(map[string]*pathInfo)
+	pf.paths = make(map[publicKey]*pathInfo)
 }
 
 func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
@@ -27,7 +27,7 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 	if keepAlive {
 		throttle = pathfinderTIMEOUT
 	}
-	if info, isIn := pf.paths[string(dest)]; isIn && time.Since(info.ntime) > throttle {
+	if info, isIn := pf.paths[dest]; isIn && time.Since(info.ntime) > throttle {
 		n := new(pathNotify)
 		n.label = pf.dhtree._getLabel()
 		n.dest = dest
@@ -36,7 +36,7 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 			panic("this should never happen")
 		}
 		var bs []byte
-		bs = append(bs, dest...)
+		bs = append(bs, dest[:]...)
 		bs = append(bs, ibytes...)
 		n.sig = pf.dhtree.core.crypto.privateKey.sign(bs)
 		info.ntime = time.Now()
@@ -46,7 +46,7 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 }
 
 func (pf *pathfinder) _getLookup(n *pathNotify) *pathLookup {
-	if info, isIn := pf.paths[string(n.label.key)]; isIn {
+	if info, isIn := pf.paths[n.label.key]; isIn {
 		if time.Since(info.ltime) < pathfinderTHROTTLE || !n.check() {
 			return nil
 		}
@@ -77,7 +77,7 @@ func (pf *pathfinder) _getResponse(l *pathLookup) *pathResponse {
 
 func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 	var info *pathInfo
-	if nfo, isIn := pf.paths[string(dest)]; isIn {
+	if nfo, isIn := pf.paths[dest]; isIn {
 		info = nfo
 		info.timer.Stop()
 		// TODO? Check info.ntime and possibly send a notify?
@@ -85,13 +85,13 @@ func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 		info = new(pathInfo)
 		info.ltime = time.Now().Add(-pathfinderTHROTTLE)
 		info.ntime = time.Now().Add(-pathfinderTHROTTLE)
-		pf.paths[string(dest)] = info
+		pf.paths[dest] = info
 	}
 	info.timer = time.AfterFunc(pathfinderTIMEOUT, func() {
 		pf.dhtree.Act(nil, func() {
-			if pf.paths[string(dest)] == info {
+			if pf.paths[dest] == info {
 				info.timer.Stop()
-				delete(pf.paths, string(dest))
+				delete(pf.paths, dest)
 			}
 		})
 	})
@@ -122,7 +122,7 @@ func (pf *pathfinder) handleLookup(from phony.Actor, l *pathLookup) {
 func (pf *pathfinder) handleResponse(from phony.Actor, r *pathResponse) {
 	pf.dhtree.Act(from, func() {
 		// Note: this only handles the case where there's no valid next hop in the path
-		if info, isIn := pf.paths[string(r.from)]; isIn {
+		if info, isIn := pf.paths[r.from]; isIn {
 			// Reverse r.rpath and save it to info.path
 			info.path = info.path[:0]
 			for idx := len(r.rpath) - 1; idx >= 0; idx-- {
@@ -180,10 +180,10 @@ func (pn *pathNotify) check() bool {
 		return false
 	}
 	var bs []byte
-	bs = append(bs, pn.dest...)
+	bs = append(bs, pn.dest[:]...)
 	bs = append(bs, ibytes...)
 	dest := pn.label.key
-	return dest.verify(bs, pn.sig)
+	return dest.verify(bs, &pn.sig)
 }
 
 func (pn *pathNotify) MarshalBinary() (data []byte, err error) {
@@ -194,8 +194,8 @@ func (pn *pathNotify) MarshalBinary() (data []byte, err error) {
 	if bs, err = pn.label.MarshalBinary(); err != nil {
 		return
 	}
-	data = append(data, pn.sig...)
-	data = append(data, pn.dest...)
+	data = append(data, pn.sig[:]...)
+	data = append(data, pn.dest[:]...)
 	data = append(data, bs...)
 	return
 }
@@ -203,9 +203,9 @@ func (pn *pathNotify) MarshalBinary() (data []byte, err error) {
 func (pn *pathNotify) UnmarshalBinary(data []byte) error {
 	var tmp pathNotify
 	tmp.label = new(treeLabel)
-	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
+	if !wireChopSlice(tmp.sig[:], &data) {
 		return wireUnmarshalBinaryError
-	} else if !wireChopBytes((*[]byte)(&tmp.dest), &data, publicKeySize) {
+	} else if !wireChopSlice(tmp.dest[:], &data) {
 		return wireUnmarshalBinaryError
 	} else if err := tmp.label.UnmarshalBinary(data); err != nil {
 		return err
@@ -269,7 +269,7 @@ type pathResponse struct {
 }
 
 func (r *pathResponse) MarshalBinary() (data []byte, err error) {
-	data = append(data, r.from...)
+	data = append(data, r.from[:]...)
 	data = wireEncodePath(data, r.path)
 	data = wireEncodePath(data, r.rpath)
 	return
@@ -277,7 +277,7 @@ func (r *pathResponse) MarshalBinary() (data []byte, err error) {
 
 func (r *pathResponse) UnmarshalBinary(data []byte) error {
 	var tmp pathResponse
-	if !wireChopBytes((*[]byte)(&tmp.from), &data, publicKeySize) {
+	if !wireChopSlice(tmp.from[:], &data) {
 		return wireUnmarshalBinaryError
 	} else if !wireChopPath(&tmp.path, &data) {
 		return wireUnmarshalBinaryError
@@ -302,18 +302,21 @@ type pathTraffic struct {
 	dt   dhtTraffic
 }
 
-func (t *pathTraffic) MarshalBinaryTo(slice []byte) ([]byte, error) {
-	slice = wireEncodePath(slice, t.path)
-	var err error
-	slice, err = t.dt.MarshalBinaryTo(slice)
-	return slice, err
+func (t *pathTraffic) MarshalBinary() ([]byte, error) {
+	dt, err := t.dt.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	bs := wireEncodePath(nil, t.path)
+	bs = append(bs, dt...)
+	return bs, nil
 }
 
-func (t *pathTraffic) UnmarshalBinaryInPlace(data []byte) error {
+func (t *pathTraffic) UnmarshalBinary(data []byte) error {
 	var tmp pathTraffic
 	if !wireChopPath(&tmp.path, &data) {
 		return wireUnmarshalBinaryError
-	} else if err := tmp.dt.UnmarshalBinaryInPlace(data); err != nil {
+	} else if err := tmp.dt.UnmarshalBinary(data); err != nil {
 		return err
 	}
 	*t = tmp

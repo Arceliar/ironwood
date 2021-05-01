@@ -11,20 +11,26 @@ func TestMarshalTreeInfo(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
+	var sk privateKey
+	copy(sk[:], priv)
 	info := new(treeInfo)
-	info.root = publicKey(pub)
+	copy(info.root[:], pub)
 	for idx := 0; idx < 10; idx++ {
 		newPub, newPriv, err := ed25519.GenerateKey(nil)
 		if err != nil {
 			panic(err)
 		}
-		info = info.add(privateKey(priv), &peer{key: publicKey(newPub)})
+		var pk publicKey
+		copy(pk[:], newPub)
+		info = info.add(sk, &peer{key: pk})
 		if !info.checkSigs() {
+			t.Log(len(info.hops))
+			t.Log(info.hops[len(info.hops)-1].sig)
 			panic("checkSigs failed")
 		} else if !info.checkLoops() {
 			panic("checkLoops failed")
 		}
-		pub, priv = newPub, newPriv
+		copy(sk[:], newPriv)
 	}
 	bs, err := info.MarshalBinary()
 	if err != nil {
@@ -35,7 +41,7 @@ func TestMarshalTreeInfo(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	if !bytes.Equal(info.root, newInfo.root) {
+	if !bytes.Equal(info.root[:], newInfo.root[:]) {
 		panic("unequal roots")
 	}
 	if len(newInfo.hops) != len(info.hops) {
@@ -44,10 +50,10 @@ func TestMarshalTreeInfo(t *testing.T) {
 	for idx := range newInfo.hops {
 		newHop := newInfo.hops[idx]
 		hop := info.hops[idx]
-		if !bytes.Equal(newHop.next, hop.next) {
+		if !bytes.Equal(newHop.next[:], hop.next[:]) {
 			panic("unequal next")
 		}
-		if !bytes.Equal(newHop.sig, hop.sig) {
+		if !bytes.Equal(newHop.sig[:], hop.sig[:]) {
 			panic("unequal sig")
 		}
 	}
@@ -63,20 +69,24 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
+	var sk privateKey
+	copy(sk[:], priv)
 	info := new(treeInfo)
-	info.root = publicKey(pub)
+	copy(info.root[:], pub)
 	for idx := 0; idx < 10; idx++ {
 		newPub, newPriv, err := ed25519.GenerateKey(nil)
 		if err != nil {
 			panic(err)
 		}
-		info = info.add(privateKey(priv), &peer{key: publicKey(newPub), port: 1})
+		var pk publicKey
+		copy(pk[:], newPub)
+		info = info.add(sk, &peer{key: pk, port: 1})
 		if !info.checkSigs() {
 			panic("checkSigs failed")
 		} else if !info.checkLoops() {
 			panic("checkLoops failed")
 		}
-		pub, priv = newPub, newPriv
+		copy(sk[:], newPriv)
 	}
 	c := new(core)
 	c.init(priv)
@@ -105,20 +115,24 @@ func TestMarshalDHTSetup(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
+	var sk privateKey
+	copy(sk[:], priv)
 	info := new(treeInfo)
-	info.root = publicKey(pub)
+	copy(info.root[:], pub)
 	for idx := 0; idx < 10; idx++ {
 		newPub, newPriv, err := ed25519.GenerateKey(nil)
 		if err != nil {
 			panic(err)
 		}
-		info = info.add(privateKey(priv), &peer{key: publicKey(newPub)})
+		var pk publicKey
+		copy(pk[:], newPub)
+		info = info.add(sk, &peer{key: pk})
 		if !info.checkSigs() {
 			panic("checkSigs failed")
 		} else if !info.checkLoops() {
 			panic("checkLoops failed")
 		}
-		pub, priv = newPub, newPriv
+		copy(sk[:], newPriv)
 	}
 	_, sourcePriv, err := ed25519.GenerateKey(nil)
 	if err != nil {

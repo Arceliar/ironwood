@@ -22,21 +22,21 @@ type dhtree struct {
 	phony.Inbox
 	core       *core
 	pathfinder pathfinder
-	expired    map[string]uint64       // map[string(publicKey)](treeInfo.seq) of expired infos per root pubkey (highest seq)
-	tinfos     map[*peer]*treeInfo     // map[string(publicKey)]*treeInfo, key=peer
-	dinfos     map[dhtInfoKey]*dhtInfo //
-	self       *treeInfo               // self info
-	pred       *dhtInfo                // predecessor in dht, who we maintain a path to
-	succ       *dhtInfo                // successor in dht, they maintain a path to us
-	dkeys      map[*dhtInfo]publicKey  // map of *dhtInfo->destKey for current and past predecessors
-	seq        uint64                  // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
-	timer      *time.Timer             // time.AfterFunc to send bootstrap packets
-	wait       bool                    // FIXME this is a hack to let bad news spread before changing parents
+	expired    map[publicKey]uint64 // map[root publicKey](treeInfo.seq) of expired infos per root pubkey (highest seq)
+	tinfos     map[*peer]*treeInfo
+	dinfos     map[dhtInfoKey]*dhtInfo
+	self       *treeInfo              // self info
+	pred       *dhtInfo               // predecessor in dht, who we maintain a path to
+	succ       *dhtInfo               // successor in dht, they maintain a path to us
+	dkeys      map[*dhtInfo]publicKey // map of *dhtInfo->destKey for current and past predecessors
+	seq        uint64                 // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
+	timer      *time.Timer            // time.AfterFunc to send bootstrap packets
+	wait       bool                   // FIXME this is a hack to let bad news spread before changing parents
 }
 
 func (t *dhtree) init(c *core) {
 	t.core = c
-	t.expired = make(map[string]uint64)
+	t.expired = make(map[publicKey]uint64)
 	t.tinfos = make(map[*peer]*treeInfo)
 	t.dinfos = make(map[dhtInfoKey]*dhtInfo) // TODO clean these up after some timeout
 	t.dkeys = make(map[*dhtInfo]publicKey)
@@ -136,7 +136,7 @@ func (t *dhtree) _fix() {
 		t.self = &treeInfo{root: t.core.crypto.publicKey, seq: uint64(time.Now().Unix())}
 	}
 	for _, info := range t.tinfos {
-		if oldSeq, isIn := t.expired[string(info.root)]; isIn {
+		if oldSeq, isIn := t.expired[info.root]; isIn {
 			if info.seq <= oldSeq {
 				continue // skip expired sequence numbers
 			}
@@ -178,8 +178,8 @@ func (t *dhtree) _fix() {
 			self := t.self
 			time.AfterFunc(treeTIMEOUT, func() {
 				t.Act(nil, func() {
-					if oldSeq, isIn := t.expired[string(self.root)]; !isIn || oldSeq < self.seq {
-						t.expired[string(self.root)] = self.seq
+					if oldSeq, isIn := t.expired[self.root]; !isIn || oldSeq < self.seq {
+						t.expired[self.root] = self.seq
 						if t.self.root.equal(self.root) && t.self.seq <= self.seq {
 							t.self = nil
 							t._fix()
@@ -688,46 +688,30 @@ func (t *dhtree) _doBootstrap() {
 
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
-func (t *dhtree) handleDHTTraffic(from phony.Actor, trbs []byte, doNotify bool) {
+func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
 	t.Act(from, func() {
-		var tr dhtTraffic
-		if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
-			return
-		}
 		next := t._dhtLookup(tr.dest)
 		if next == nil {
 			if tr.dest.equal(t.core.crypto.publicKey) {
-				var dest publicKey
-				dest = append(dest, tr.source...)
+				dest := tr.source
 				t.pathfinder._doNotify(dest, !doNotify)
 			}
-			t.core.pconn.handleTraffic(trbs)
+			t.core.pconn.handleTraffic(tr)
 		} else {
-			next.sendDHTTraffic(t, trbs)
+			next.sendDHTTraffic(t, tr)
 		}
 	})
 }
 
-func (t *dhtree) sendTraffic(from phony.Actor, trbs []byte) {
+func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
 	t.Act(from, func() {
-		var dt dhtTraffic
-		if err := dt.UnmarshalBinaryInPlace(trbs); err != nil {
-			return
-		}
-		if path := t.pathfinder._getPath(dt.dest); path != nil {
-			var pt pathTraffic
+		if path := t.pathfinder._getPath(tr.dest); path != nil {
+			pt := new(pathTraffic)
 			pt.path = path
-			pt.dt = dt
-			var ptbs []byte
-			var err error
-			if ptbs, err = pt.MarshalBinaryTo(getBytes(0)); err != nil {
-				panic("This should never happen")
-				return
-			}
-			t.core.peers.handlePathTraffic(t, ptbs)
-			putBytes(trbs)
+			pt.dt = *tr
+			t.core.peers.handlePathTraffic(t, pt)
 		} else {
-			t.handleDHTTraffic(nil, trbs, false)
+			t.handleDHTTraffic(nil, tr, false)
 		}
 	})
 }
@@ -737,15 +721,15 @@ func (t *dhtree) _getLabel() *treeLabel {
 	//  (to avoid repeated signing every time we call this)
 	// Fill easy fields of label
 	label := new(treeLabel)
-	label.key = append(label.key, t.core.crypto.publicKey...)
-	label.root = append(label.root, t.self.root...)
+	label.key = t.core.crypto.publicKey
+	label.root = t.self.root
 	label.seq = t.self.seq
 	for _, hop := range t.self.hops {
 		label.path = append(label.path, hop.port)
 	}
 	// Now prepare sig
 	var bs []byte
-	bs = append(bs, label.root...)
+	bs = append(bs, label.root[:]...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, label.seq)
 	bs = append(bs, seq...)
@@ -794,14 +778,14 @@ func (info *treeInfo) checkSigs() bool {
 	}
 	var bs []byte
 	key := info.root
-	bs = append(bs, info.root...)
+	bs = append(bs, info.root[:]...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, info.seq)
 	bs = append(bs, seq...)
 	for _, hop := range info.hops {
-		bs = append(bs, hop.next...)
+		bs = append(bs, hop.next[:]...)
 		bs = wireEncodeUint(bs, uint64(hop.port))
-		if !key.verify(bs, hop.sig) {
+		if !key.verify(bs, &hop.sig) {
 			return false
 		}
 		key = hop.next
@@ -811,28 +795,28 @@ func (info *treeInfo) checkSigs() bool {
 
 func (info *treeInfo) checkLoops() bool {
 	key := info.root
-	keys := make(map[string]bool) // Used to avoid loops
+	keys := make(map[publicKey]bool) // Used to avoid loops
 	for _, hop := range info.hops {
-		if keys[string(key)] {
+		if keys[key] {
 			return false
 		}
-		keys[string(key)] = true
+		keys[key] = true
 		key = hop.next
 	}
-	return !keys[string(key)]
+	return !keys[key]
 }
 
 func (info *treeInfo) add(priv privateKey, next *peer) *treeInfo {
 	var bs []byte
-	bs = append(bs, info.root...)
+	bs = append(bs, info.root[:]...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, info.seq)
 	bs = append(bs, seq...)
 	for _, hop := range info.hops {
-		bs = append(bs, hop.next...)
+		bs = append(bs, hop.next[:]...)
 		bs = wireEncodeUint(bs, uint64(hop.port))
 	}
-	bs = append(bs, next.key...)
+	bs = append(bs, next.key[:]...)
 	bs = wireEncodeUint(bs, uint64(next.port))
 	sig := priv.sign(bs)
 	hop := treeHop{next: next.key, port: next.port, sig: sig}
@@ -863,21 +847,21 @@ func (info *treeInfo) dist(dest *treeLabel) int {
 }
 
 func (info *treeInfo) MarshalBinary() (data []byte, err error) {
-	data = append(data, info.root...)
+	data = append(data, info.root[:]...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, info.seq)
 	data = append(data, seq...)
 	for _, hop := range info.hops {
-		data = append(data, hop.next...)
+		data = append(data, hop.next[:]...)
 		data = wireEncodeUint(data, uint64(hop.port))
-		data = append(data, hop.sig...)
+		data = append(data, hop.sig[:]...)
 	}
 	return
 }
 
 func (info *treeInfo) UnmarshalBinary(data []byte) error {
 	nfo := treeInfo{}
-	if !wireChopBytes((*[]byte)(&nfo.root), &data, publicKeySize) {
+	if !wireChopSlice(nfo.root[:], &data) {
 		return wireUnmarshalBinaryError
 	}
 	if len(data) >= 8 {
@@ -889,11 +873,11 @@ func (info *treeInfo) UnmarshalBinary(data []byte) error {
 	for len(data) > 0 {
 		hop := treeHop{}
 		switch {
-		case !wireChopBytes((*[]byte)(&hop.next), &data, publicKeySize):
+		case !wireChopSlice(hop.next[:], &data):
 			return wireUnmarshalBinaryError
 		case !wireChopUint((*uint64)(&hop.port), &data):
 			return wireUnmarshalBinaryError
-		case !wireChopBytes((*[]byte)(&hop.sig), &data, signatureSize):
+		case !wireChopSlice(hop.sig[:], &data):
 			return wireUnmarshalBinaryError
 		}
 		nfo.hops = append(nfo.hops, hop)
@@ -917,18 +901,18 @@ type treeLabel struct {
 
 func (l *treeLabel) check() bool {
 	var bs []byte
-	bs = append(bs, l.root...)
+	bs = append(bs, l.root[:]...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, l.seq)
 	bs = append(bs, seq...)
 	bs = wireEncodePath(bs, l.path)
-	return l.key.verify(bs, l.sig)
+	return l.key.verify(bs, &l.sig)
 }
 
 func (l *treeLabel) MarshalBinary() (data []byte, err error) {
-	data = append(data, l.sig...)
-	data = append(data, l.key...)
-	data = append(data, l.root...)
+	data = append(data, l.sig[:]...)
+	data = append(data, l.key[:]...)
+	data = append(data, l.root[:]...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, l.seq)
 	data = append(data, seq...)
@@ -938,11 +922,11 @@ func (l *treeLabel) MarshalBinary() (data []byte, err error) {
 
 func (l *treeLabel) UnmarshalBinary(data []byte) error {
 	var tmp treeLabel
-	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
+	if !wireChopSlice(tmp.sig[:], &data) {
 		return wireUnmarshalBinaryError
-	} else if !wireChopBytes((*[]byte)(&tmp.key), &data, publicKeySize) {
+	} else if !wireChopSlice(tmp.key[:], &data) {
 		return wireUnmarshalBinaryError
-	} else if !wireChopBytes((*[]byte)(&tmp.root), &data, publicKeySize) {
+	} else if !wireChopSlice(tmp.root[:], &data) {
 		return wireUnmarshalBinaryError
 	} else if len(data) < 8 {
 		return wireUnmarshalBinaryError
@@ -978,13 +962,13 @@ func (info *dhtInfo) getTeardown() *dhtTeardown {
 }
 
 type dhtInfoKey struct {
-	source  string // publicKey
-	root    string // publicKey
+	source  publicKey
+	root    publicKey
 	rootSeq uint64
 }
 
 func (info *dhtInfo) getKey() dhtInfoKey {
-	return dhtInfoKey{string(info.source), string(info.root), info.rootSeq}
+	return dhtInfoKey{info.source, info.root, info.rootSeq}
 }
 
 /****************
@@ -1069,7 +1053,7 @@ type dhtSetup struct {
 func (s *dhtSetup) bytesForSig() []byte {
 	bs := make([]byte, 8)
 	binary.BigEndian.PutUint64(bs, s.seq)
-	bs = append(bs, s.source...)
+	bs = append(bs, s.source[:]...)
 	m, err := s.dest.MarshalBinary()
 	if err != nil {
 		panic("this should never happen")
@@ -1083,7 +1067,7 @@ func (s *dhtSetup) check() bool {
 		return false
 	}
 	bfs := s.bytesForSig()
-	return s.source.verify(bfs, s.sig)
+	return s.source.verify(bfs, &s.sig)
 }
 
 func (s *dhtSetup) getTeardown() *dhtTeardown {
@@ -1102,8 +1086,8 @@ func (s *dhtSetup) MarshalBinary() (data []byte, err error) {
 	}
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, s.seq)
-	data = append(data, s.sig...)
-	data = append(data, s.source...)
+	data = append(data, s.sig[:]...)
+	data = append(data, s.source[:]...)
 	data = append(data, seq...)
 	data = append(data, tmp...)
 	return
@@ -1111,9 +1095,9 @@ func (s *dhtSetup) MarshalBinary() (data []byte, err error) {
 
 func (s *dhtSetup) UnmarshalBinary(data []byte) error {
 	var tmp dhtSetup
-	if !wireChopBytes((*[]byte)(&tmp.sig), &data, signatureSize) {
+	if !wireChopSlice(tmp.sig[:], &data) {
 		return wireUnmarshalBinaryError
-	} else if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
+	} else if !wireChopSlice(tmp.source[:], &data) {
 		return wireUnmarshalBinaryError
 	}
 	if len(data) < 8 {
@@ -1139,14 +1123,14 @@ type dhtTeardown struct {
 }
 
 func (t *dhtTeardown) getKey() dhtInfoKey {
-	return dhtInfoKey{string(t.source), string(t.root), t.rootSeq}
+	return dhtInfoKey{t.source, t.root, t.rootSeq}
 }
 
 func (t *dhtTeardown) MarshalBinary() (data []byte, err error) {
 	data = make([]byte, 8)
 	binary.BigEndian.PutUint64(data, t.seq)
-	data = append(data, t.source...)
-	data = append(data, t.root...)
+	data = append(data, t.source[:]...)
+	data = append(data, t.root[:]...)
 	rseq := make([]byte, 8)
 	binary.BigEndian.PutUint64(rseq, t.rootSeq)
 	data = append(data, rseq...)
@@ -1159,9 +1143,9 @@ func (t *dhtTeardown) UnmarshalBinary(data []byte) error {
 		return wireUnmarshalBinaryError
 	}
 	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	if !wireChopBytes((*[]byte)(&tmp.source), &data, publicKeySize) {
+	if !wireChopSlice(tmp.source[:], &data) {
 		return wireUnmarshalBinaryError
-	} else if !wireChopBytes((*[]byte)(&tmp.root), &data, publicKeySize) {
+	} else if !wireChopSlice(tmp.root[:], &data) {
 		return wireUnmarshalBinaryError
 	} else if len(data) != 8 {
 		return wireUnmarshalBinaryError
@@ -1178,30 +1162,35 @@ func (t *dhtTeardown) UnmarshalBinary(data []byte) error {
 type dhtTraffic struct {
 	source  publicKey
 	dest    publicKey
-	kind    byte // in-band vs out-of-band
+	kind    byte // in-band vs out-of-band, TODO? separate type?
 	payload []byte
 }
 
-func (t *dhtTraffic) MarshalBinaryTo(slice []byte) ([]byte, error) {
-	slice = append(slice, t.source...)
-	slice = append(slice, t.dest...)
-	slice = append(slice, t.kind)
-	slice = append(slice, t.payload...)
-	if len(slice) > 65535 {
-		return slice, wireMarshalBinaryError
+func (t *dhtTraffic) MarshalBinary() ([]byte, error) {
+	var bs []byte
+	bs = append(bs, t.source[:]...)
+	bs = append(bs, t.dest[:]...)
+	bs = append(bs, t.kind)
+	bs = append(bs, t.payload...)
+	if len(bs) > 65535 {
+		return nil, wireMarshalBinaryError
 	}
-	return slice, nil
+	return bs, nil
 }
 
-func (t *dhtTraffic) UnmarshalBinaryInPlace(data []byte) error {
-	if len(data) < 2*publicKeySize+1 {
+func (t *dhtTraffic) UnmarshalBinary(data []byte) error {
+	var tmp dhtTraffic
+	if !wireChopSlice(tmp.source[:], &data) {
+		return wireUnmarshalBinaryError
+	} else if !wireChopSlice(tmp.dest[:], &data) {
 		return wireUnmarshalBinaryError
 	}
-	begin, end := 0, publicKeySize
-	t.source, begin, end = data[begin:end], end, end+publicKeySize
-	t.dest, begin = data[begin:end], end
-	t.kind, begin = data[begin], begin+1
-	t.payload = data[begin:]
+	if len(data) < 1 {
+		return wireUnmarshalBinaryError
+	}
+	tmp.kind, data = data[0], data[1:]
+	tmp.payload = append(tmp.payload, data...)
+	*t = tmp
 	return nil
 }
 

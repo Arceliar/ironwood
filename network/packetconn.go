@@ -19,7 +19,7 @@ func _type_asserts_() {
 type PacketConn struct {
 	actor        phony.Inbox
 	core         *core
-	recv         chan []byte // dhtTraffic read buffer
+	recv         chan *dhtTraffic //read buffer
 	oobHandler   func(ed25519.PublicKey, ed25519.PublicKey, []byte)
 	readDeadline *deadline
 	closeMutex   sync.Mutex
@@ -37,7 +37,7 @@ func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 
 func (pc *PacketConn) init(c *core) {
 	pc.core = c
-	pc.recv = make(chan []byte, 1)
+	pc.recv = make(chan *dhtTraffic, 1)
 	pc.readDeadline = newDeadline()
 	pc.closed = make(chan struct{})
 }
@@ -45,26 +45,20 @@ func (pc *PacketConn) init(c *core) {
 // ReadFrom fulfills the net.PacketConn interface, with a *Addr returned as the from address.
 // Note that failing to call ReadFrom may cause the connection to block and/or leak memory.
 func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
-	var trbs []byte
+	var tr *dhtTraffic
 	select {
 	case <-pc.closed:
 		return 0, nil, errors.New("closed")
 	case <-pc.readDeadline.getCancel():
 		return 0, nil, errors.New("deadline exceeded")
-	case trbs = <-pc.recv:
-	}
-	defer putBytes(trbs)
-	var tr dhtTraffic
-	if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
-		panic("this should never happen")
+	case tr = <-pc.recv:
 	}
 	copy(p, tr.payload)
 	n = len(tr.payload)
 	if len(p) < len(tr.payload) {
 		n = len(p)
 	}
-	fromSlice := publicKey(append([]byte(nil), tr.source...))
-	from = fromSlice.addr()
+	from = tr.source.addr()
 	return
 }
 
@@ -78,22 +72,20 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if _, ok := addr.(types.Addr); !ok {
 		return 0, errors.New("incorrect address type, expected types.Addr")
 	}
-	dest := publicKey(addr.(types.Addr))
+	dest := addr.(types.Addr)
 	if len(dest) != publicKeySize {
 		return 0, errors.New("incorrect address length")
 	}
 	var tr dhtTraffic
 	tr.source = pc.core.crypto.publicKey
-	tr.dest = dest
+	copy(tr.dest[:], dest)
 	tr.kind = wireTrafficStandard
-	tr.payload = p
-	trbs, err := tr.MarshalBinaryTo(getBytes(0))
-	if err != nil {
+	tr.payload = append(tr.payload, p...)
+	if _, err := tr.MarshalBinary(); err != nil {
 		// TODO do this when there's an oversized packet maybe?
-		putBytes(trbs)
 		return 0, errors.New("failed to encode traffic")
 	}
-	pc.core.dhtree.sendTraffic(nil, trbs)
+	pc.core.dhtree.sendTraffic(nil, &tr)
 	return len(p), nil
 }
 
@@ -123,8 +115,7 @@ func (pc *PacketConn) Close() error {
 
 // LocalAddr returns an *Addr of the ed25519.PublicKey for this PacketConn.
 func (pc *PacketConn) LocalAddr() net.Addr {
-	a := types.Addr(append([]byte(nil), pc.core.crypto.publicKey...))
-	return a
+	return pc.core.crypto.publicKey.addr()
 }
 
 // SetDeadline fulfills the net.PacketConn interface. Note that only read deadlines are affected.
@@ -157,10 +148,12 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn) error {
 	if len(key) != publicKeySize {
 		return errors.New("incorrect key length")
 	}
-	if pc.core.crypto.publicKey.equal(publicKey(key)) {
+	var pk publicKey
+	copy(pk[:], key)
+	if pc.core.crypto.publicKey.equal(pk) {
 		return errors.New("attempted to connect to self")
 	}
-	p, err := pc.core.peers.addPeer(publicKey(key), conn)
+	p, err := pc.core.peers.addPeer(pk, conn)
 	if err != nil {
 		return err
 	}
@@ -185,16 +178,14 @@ func (pc *PacketConn) SendOutOfBand(toKey ed25519.PublicKey, data []byte) error 
 	}
 	var tr dhtTraffic
 	tr.source = pc.core.crypto.publicKey
-	tr.dest = publicKey(toKey)
+	copy(tr.dest[:], toKey)
 	tr.kind = wireTrafficOutOfBand
-	tr.payload = data
-	trbs, err := tr.MarshalBinaryTo(getBytes(0))
-	if err != nil {
+	tr.payload = append(tr.payload, data...)
+	if _, err := tr.MarshalBinary(); err != nil {
 		// TODO do this when there's an oversized packet maybe?
-		putBytes(trbs)
 		return errors.New("failed to encode traffic")
 	}
-	pc.core.dhtree.sendTraffic(nil, trbs)
+	pc.core.dhtree.sendTraffic(nil, &tr)
 	return nil
 }
 
@@ -226,12 +217,8 @@ func (pc *PacketConn) IsClosed() bool {
 	return false
 }
 
-func (pc *PacketConn) handleTraffic(trbs []byte) {
+func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
 	pc.actor.Act(nil, func() {
-		var tr dhtTraffic
-		if err := tr.UnmarshalBinaryInPlace(trbs); err != nil {
-			panic("this should never happen")
-		}
 		var doRecv bool
 		switch tr.kind {
 		case wireTrafficDummy:
@@ -242,9 +229,9 @@ func (pc *PacketConn) handleTraffic(trbs []byte) {
 			}
 		case wireTrafficOutOfBand:
 			if pc.oobHandler != nil {
-				source := append(ed25519.PublicKey(nil), tr.source...)
-				dest := append(ed25519.PublicKey(nil), tr.dest...)
-				msg := append([]byte(nil), tr.payload...)
+				source := append(ed25519.PublicKey(nil), tr.source[:]...)
+				dest := append(ed25519.PublicKey(nil), tr.dest[:]...)
+				msg := append([]byte(nil), tr.payload[:]...)
 				// TODO something smarter than spamming goroutines
 				go pc.oobHandler(source, dest, msg)
 			}
@@ -254,12 +241,9 @@ func (pc *PacketConn) handleTraffic(trbs []byte) {
 		}
 		if doRecv {
 			select {
-			case pc.recv <- trbs:
+			case pc.recv <- tr:
 			case <-pc.closed:
-				putBytes(trbs)
 			}
-		} else {
-			putBytes(trbs)
 		}
 	})
 }

@@ -1,7 +1,6 @@
 package network
 
 import (
-	"bytes"
 	"crypto/ed25519"
 
 	"github.com/Arceliar/ironwood/types"
@@ -13,9 +12,9 @@ const (
 	signatureSize  = ed25519.SignatureSize
 )
 
-type publicKey ed25519.PublicKey
-type privateKey ed25519.PrivateKey
-type signature []byte
+type publicKey [publicKeySize]byte
+type privateKey [privateKeySize]byte
+type signature [signatureSize]byte
 
 type crypto struct {
 	privateKey privateKey
@@ -23,26 +22,29 @@ type crypto struct {
 }
 
 func (key *privateKey) sign(message []byte) signature {
-	return ed25519.Sign(ed25519.PrivateKey(*key), message)
+	var sig signature
+	tmp := ed25519.Sign(ed25519.PrivateKey(key[:]), message)
+	copy(sig[:], tmp)
+	return sig
 }
 
-func (key *privateKey) equal(comparedKey privateKey) bool {
-	return bytes.Equal(*key, comparedKey)
+func (key privateKey) equal(comparedKey privateKey) bool {
+	return key == comparedKey
 }
 
-func (key *publicKey) verify(message []byte, sig signature) bool {
-	return ed25519.Verify(ed25519.PublicKey(*key), message, sig)
+func (key *publicKey) verify(message []byte, sig *signature) bool {
+	return ed25519.Verify(ed25519.PublicKey(key[:]), message, sig[:])
 }
 
-func (key *publicKey) equal(comparedKey publicKey) bool {
-	return bytes.Equal(*key, comparedKey)
+func (key publicKey) equal(comparedKey publicKey) bool {
+	return key == comparedKey
 }
 
 func (key publicKey) addr() types.Addr {
-	return types.Addr(key)
+	return types.Addr(key[:])
 }
 
 func (c *crypto) init(secret ed25519.PrivateKey) {
-	c.privateKey = privateKey(secret)
-	c.publicKey = publicKey(secret.Public().(ed25519.PublicKey))
+	copy(c.privateKey[:], secret)
+	copy(c.publicKey[:], secret.Public().(ed25519.PublicKey))
 }

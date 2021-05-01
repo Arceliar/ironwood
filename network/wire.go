@@ -34,6 +34,15 @@ type binaryUnmarshaler encoding.BinaryUnmarshaler
 var wireMarshalBinaryError = errors.New("wire MarshalBinary error")
 var wireUnmarshalBinaryError = errors.New("wire UnmarshalBinary error")
 
+func wireChopSlice(out []byte, data *[]byte) bool {
+	if len(*data) < len(out) {
+		return false
+	}
+	copy(out, *data)
+	*data = (*data)[len(out):]
+	return true
+}
+
 func wireChopBytes(out *[]byte, data *[]byte, size int) bool {
 	if len(*data) < size {
 		return false
