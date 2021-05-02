@@ -3,6 +3,7 @@ package network
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"time"
@@ -52,6 +53,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		p.conn = conn
 		p.key = key
 		p.port = port
+		p.queueMax = ^uint64(0)
 		p.writer.peer = p
 		p.writer.timer = time.AfterFunc(0, func() {})
 		ps.peers[port] = p
@@ -81,7 +83,6 @@ type peer struct {
 	queue       packetQueue
 	queueMax    uint64
 	queueSeq    uint64
-	sending     bool // is the writer currently sending something?
 	blocked     bool // is the writer (seemingly) blocked on a send?
 	waiting     bool // are we waiting for the writer to ask for queued traffic?
 	writer      peerWriter
@@ -361,9 +362,6 @@ func (p *peer) handleDHTTraffic(bs []byte) error {
 
 func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 	p.Act(from, func() {
-		for p.blocked && p.queue.size > p.queueMax {
-			p.queue.pop()
-		}
 		id := pqStreamID{
 			source: tr.source,
 			dest:   tr.dest,
@@ -401,9 +399,6 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 
 func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	p.Act(from, func() {
-		for p.blocked && p.queue.size > p.queueMax {
-			p.queue.pop()
-		}
 		id := pqStreamID{
 			source: tr.dt.source,
 			dest:   tr.dt.dest,
@@ -415,6 +410,19 @@ func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 
 func (p *peer) pop() {
 	p.Act(nil, func() {
+		if p.blocked {
+			seq := p.queueSeq
+			p.Act(nil, func() {
+				if p.queueSeq == seq {
+					p.queueMax = p.queue.size
+				}
+			})
+		}
+		for p.blocked && p.queue.size > p.queueMax {
+			break // FIXME even with dropping disabled, the queue is way too slow
+			p.queue.pop()
+		}
+		fmt.Println("DEBUG:", p.blocked, p.queue.size, p.queueMax)
 		if p.waiting {
 			return
 		}
@@ -437,22 +445,21 @@ func (p *peer) pop() {
 			if p.blocked {
 				p.queueMax = p.queue.size
 			}
-		} else {
+		}
+		if p.queue.size == 0 {
 			p.blocked = false
-			p.queueMax = 0
+			p.queueMax = ^uint64(0)
 		}
 	})
 }
 
 func (p *peer) notifySending() {
 	p.Act(nil, func() {
-		p.sending = true
-		p.queueSeq++
 		seq := p.queueSeq
 		p.Act(nil, func() {
 			if !p.blocked && p.queueSeq == seq {
 				p.blocked = true
-				p.queueMax = p.queue.size
+				p.queueMax = ^uint64(0)
 			}
 		})
 	})
@@ -460,7 +467,6 @@ func (p *peer) notifySending() {
 
 func (p *peer) notifySent() {
 	p.Act(nil, func() {
-		p.sending = false
 		p.queueSeq++
 	})
 }
