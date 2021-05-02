@@ -120,26 +120,6 @@ func (w *peerWriter) sendPacket(pType byte, data wireEncodeable) {
 	})
 }
 
-func (p *peer) notifySending() {
-	p.Act(nil, func() {
-		p.sending = true
-		seq := p.queueSeq
-		p.Act(nil, func() {
-			if !p.blocked && p.queueSeq == seq {
-				p.blocked = true
-				p.queueMax = p.queue.size
-			}
-		})
-	})
-}
-
-func (p *peer) notifySent() {
-	p.Act(nil, func() {
-		p.sending = false
-		p.queueSeq++
-	})
-}
-
 func (p *peer) handler() error {
 	defer func() {
 		if p.info != nil {
@@ -439,13 +419,10 @@ func (p *peer) pop() {
 			return
 		}
 		if packet, ok := p.queue.pop(); ok {
-			var size int
 			switch packet.(type) {
 			case *dhtTraffic:
-				size = len(packet.(*dhtTraffic).payload)
 				p.writer.sendPacket(wireDHTTraffic, packet)
 			case *pathTraffic:
-				size = len(packet.(*pathTraffic).dt.payload)
 				p.writer.sendPacket(wirePathTraffic, packet)
 			default:
 				panic("this should never happen")
@@ -458,11 +435,32 @@ func (p *peer) pop() {
 				p.pop()
 			})
 			if p.blocked {
-				p.queueMax -= uint64(size)
+				p.queueMax = p.queue.size
 			}
 		} else {
 			p.blocked = false
 			p.queueMax = 0
 		}
+	})
+}
+
+func (p *peer) notifySending() {
+	p.Act(nil, func() {
+		p.sending = true
+		p.queueSeq++
+		seq := p.queueSeq
+		p.Act(nil, func() {
+			if !p.blocked && p.queueSeq == seq {
+				p.blocked = true
+				p.queueMax = p.queue.size
+			}
+		})
+	})
+}
+
+func (p *peer) notifySent() {
+	p.Act(nil, func() {
+		p.sending = false
+		p.queueSeq++
 	})
 }
