@@ -52,7 +52,8 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		p.conn = conn
 		p.key = key
 		p.port = port
-		p.timer = time.AfterFunc(0, func() {})
+		p.writer.peer = p
+		p.writer.timer = time.AfterFunc(0, func() {})
 		ps.peers[port] = p
 	})
 	return p, err
@@ -77,15 +78,66 @@ type peer struct {
 	key         publicKey
 	info        *treeInfo
 	port        peerPort
-	keepAlive   func()
-	timer       *time.Timer
-	writeBuf    []byte
+	queue       packetQueue
+	queueMax    uint64
+	queueSeq    uint64
+	sending     bool // is the writer currently sending something?
+	blocked     bool // is the writer (seemingly) blocked on a send?
+	waiting     bool // are we waiting for the writer to ask for queued traffic?
+	writer      peerWriter
 }
 
-func (p *peer) _write(bs []byte) {
-	p.timer.Stop()
-	_, _ = p.conn.Write(bs)
-	p.timer = time.AfterFunc(peerKEEPALIVE, p.keepAlive)
+type peerWriter struct {
+	phony.Inbox
+	peer      *peer
+	keepAlive func()
+	writeBuf  []byte
+	timer     *time.Timer
+}
+
+func (w *peerWriter) _write(bs []byte) {
+	w.timer.Stop()
+	w.peer.notifySending()
+	_, _ = w.peer.conn.Write(bs)
+	w.peer.notifySent()
+	w.timer = time.AfterFunc(peerKEEPALIVE, w.keepAlive)
+}
+
+func (w *peerWriter) sendPacket(pType byte, data wireEncodeable) {
+	w.Act(nil, func() {
+		w.writeBuf = append(w.writeBuf[:0], 0x00, 0x00) // This will be the length
+		var err error
+		w.writeBuf, err = wireEncode(w.writeBuf, pType, data)
+		if err != nil {
+			panic(err)
+		}
+		bs := w.writeBuf[2:] // The message part
+		if len(bs) > int(^uint16(0)) {
+			return
+		}
+		binary.BigEndian.PutUint16(w.writeBuf[:2], uint16(len(bs)))
+		w._write(w.writeBuf)
+	})
+}
+
+func (p *peer) notifySending() {
+	p.Act(nil, func() {
+		p.sending = true
+		seq := p.queueSeq
+		p.Act(nil, func() {
+			if !p.blocked && p.queueSeq == seq {
+				p.blocked = true
+				p.queueMax = p.queue.size
+			}
+		})
+	})
+}
+
+func (p *peer) notifySent() {
+	p.Act(nil, func() {
+		p.sending = false
+		p.queueSeq++
+	})
 }
 
 func (p *peer) handler() error {
@@ -96,14 +148,14 @@ func (p *peer) handler() error {
 	}()
 	done := make(chan struct{})
 	defer close(done)
-	p.keepAlive = func() {
+	p.writer.keepAlive = func() {
 		select {
 		case <-done:
 			return
 		default:
 		}
-		p.Act(nil, func() {
-			p._write([]byte{0x00, 0x01, wireDummy})
+		p.writer.Act(nil, func() {
+			p.writer._write([]byte{0x00, 0x01, wireDummy})
 		})
 	}
 	p.peers.core.dhtree.Act(nil, func() {
@@ -186,25 +238,10 @@ func (p *peer) handleTree(bs []byte) error {
 	return nil
 }
 
-func (p *peer) _sendProto(pType byte, data wireEncodeable) {
-	p.writeBuf = append(p.writeBuf[:0], 0x00, 0x00) // This will be the length
-	var err error
-	p.writeBuf, err = wireEncode(p.writeBuf, pType, data)
-	if err != nil {
-		panic(err)
-	}
-	bs := p.writeBuf[2:] // The message part
-	if len(bs) > int(^uint16(0)) {
-		return
-	}
-	binary.BigEndian.PutUint16(p.writeBuf[:2], uint16(len(bs)))
-	p._write(p.writeBuf)
-}
-
 func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
 	p.Act(from, func() {
 		info = info.add(p.peers.core.crypto.privateKey, p)
-		p._sendProto(wireProtoTree, info)
+		p.writer.sendPacket(wireProtoTree, info)
 	})
 }
 
@@ -219,7 +256,7 @@ func (p *peer) handleBootstrap(bs []byte) error {
 
 func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	p.Act(from, func() {
-		p._sendProto(wireProtoDHTBootstrap, bootstrap)
+		p.writer.sendPacket(wireProtoDHTBootstrap, bootstrap)
 	})
 }
 
@@ -234,7 +271,7 @@ func (p *peer) handleBootstrapAck(bs []byte) error {
 
 func (p *peer) sendBootstrapAck(from phony.Actor, ack *dhtBootstrapAck) {
 	p.Act(from, func() {
-		p._sendProto(wireProtoDHTBootstrapAck, ack)
+		p.writer.sendPacket(wireProtoDHTBootstrapAck, ack)
 	})
 }
 
@@ -252,7 +289,7 @@ func (p *peer) handleSetup(bs []byte) error {
 
 func (p *peer) sendSetup(from phony.Actor, setup *dhtSetup) {
 	p.Act(from, func() {
-		p._sendProto(wireProtoDHTSetup, setup)
+		p.writer.sendPacket(wireProtoDHTSetup, setup)
 	})
 }
 
@@ -267,7 +304,7 @@ func (p *peer) handleTeardown(bs []byte) error {
 
 func (p *peer) sendTeardown(from phony.Actor, teardown *dhtTeardown) {
 	p.Act(from, func() {
-		p._sendProto(wireProtoDHTTeardown, teardown)
+		p.writer.sendPacket(wireProtoDHTTeardown, teardown)
 	})
 }
 
@@ -282,7 +319,7 @@ func (p *peer) handlePathNotify(bs []byte) error {
 
 func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
 	p.Act(from, func() {
-		p._sendProto(wireProtoPathNotify, notify)
+		p.writer.sendPacket(wireProtoPathNotify, notify)
 	})
 }
 
@@ -298,7 +335,7 @@ func (p *peer) handlePathLookup(bs []byte) error {
 
 func (p *peer) sendPathLookup(from phony.Actor, lookup *pathLookup) {
 	p.Act(from, func() {
-		p._sendProto(wireProtoPathLookup, lookup)
+		p.writer.sendPacket(wireProtoPathLookup, lookup)
 	})
 }
 
@@ -329,7 +366,7 @@ func (ps *peers) handlePathResponse(from phony.Actor, response *pathResponse) {
 
 func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
 	p.Act(from, func() {
-		p._sendProto(wireProtoPathResponse, response)
+		p.writer.sendPacket(wireProtoPathResponse, response)
 	})
 }
 
@@ -344,7 +381,15 @@ func (p *peer) handleDHTTraffic(bs []byte) error {
 
 func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 	p.Act(from, func() {
-		p._sendProto(wireDHTTraffic, tr) // TODO not sendProto, something that can drop...
+		for p.blocked && p.queue.size > p.queueMax {
+			p.queue.pop()
+		}
+		id := pqStreamID{
+			source: tr.source,
+			dest:   tr.dest,
+		}
+		p.queue.push(id, tr, len(tr.payload))
+		p.pop()
 	})
 }
 
@@ -376,6 +421,48 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 
 func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	p.Act(from, func() {
-		p._sendProto(wirePathTraffic, tr) // TODO not sendProto, something that can drop...
+		for p.blocked && p.queue.size > p.queueMax {
+			p.queue.pop()
+		}
+		id := pqStreamID{
+			source: tr.dt.source,
+			dest:   tr.dt.dest,
+		}
+		p.queue.push(id, tr, len(tr.dt.payload))
+		p.pop()
+	})
+}
+
+func (p *peer) pop() {
+	p.Act(nil, func() {
+		if p.waiting {
+			return
+		}
+		if packet, ok := p.queue.pop(); ok {
+			var size int
+			switch packet.(type) {
+			case *dhtTraffic:
+				size = len(packet.(*dhtTraffic).payload)
+				p.writer.sendPacket(wireDHTTraffic, packet)
+			case *pathTraffic:
+				size = len(packet.(*pathTraffic).dt.payload)
+				p.writer.sendPacket(wirePathTraffic, packet)
+			default:
+				panic("this should never happen")
+			}
+			p.waiting = true
+			p.writer.Act(nil, func() {
+				p.Act(nil, func() {
+					p.waiting = false
+				})
+				p.pop()
+			})
+			if p.blocked {
+				p.queueMax -= uint64(size)
+			}
+		} else {
+			p.blocked = false
+			p.queueMax = 0
+		}
 	})
 }
