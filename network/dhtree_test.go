@@ -111,36 +111,20 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 }
 
 func TestMarshalDHTSetup(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(nil)
+	_, destPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		panic(err)
 	}
-	var sk privateKey
-	copy(sk[:], priv)
-	info := new(treeInfo)
-	copy(info.root[:], pub)
-	for idx := 0; idx < 10; idx++ {
-		newPub, newPriv, err := ed25519.GenerateKey(nil)
-		if err != nil {
-			panic(err)
-		}
-		var pk publicKey
-		copy(pk[:], newPub)
-		info = info.add(sk, &peer{key: pk})
-		if !info.checkSigs() {
-			panic("checkSigs failed")
-		} else if !info.checkLoops() {
-			panic("checkLoops failed")
-		}
-		copy(sk[:], newPriv)
-	}
-	_, sourcePriv, err := ed25519.GenerateKey(nil)
+	sourcePub, sourcePriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		panic(err)
 	}
-	pc, _ := NewPacketConn(sourcePriv)
-	bootstrap := pc.core.dhtree._newBootstrap()
-	setup := pc.core.dhtree._newSetup(bootstrap)
+	dpc, _ := NewPacketConn(destPriv)
+	spc, _ := NewPacketConn(sourcePriv)
+	var pk publicKey
+	copy(pk[:], sourcePub)
+	token := dpc.core.dhtree._getToken(pk)
+	setup := spc.core.dhtree._newSetup(token)
 	if !setup.check() {
 		panic("initial check failed")
 	}

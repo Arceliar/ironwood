@@ -26,6 +26,7 @@ type dhtree struct {
 	tinfos     map[*peer]*treeInfo
 	dinfos     map[dhtInfoKey]*dhtInfo
 	self       *treeInfo              // self info
+	parent     *peer                  // peer that sent t.self to us
 	pred       *dhtInfo               // predecessor in dht, who we maintain a path to
 	succ       *dhtInfo               // successor in dht, they maintain a path to us
 	dkeys      map[*dhtInfo]publicKey // map of *dhtInfo->destKey for current and past predecessors
@@ -38,7 +39,7 @@ func (t *dhtree) init(c *core) {
 	t.core = c
 	t.expired = make(map[publicKey]uint64)
 	t.tinfos = make(map[*peer]*treeInfo)
-	t.dinfos = make(map[dhtInfoKey]*dhtInfo) // TODO clean these up after some timeout
+	t.dinfos = make(map[dhtInfoKey]*dhtInfo)
 	t.dkeys = make(map[*dhtInfo]publicKey)
 	t._fix() // Initialize t.self and start announce and timeout timers
 	t.seq = uint64(time.Now().UnixNano())
@@ -82,6 +83,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			//  We set t.self without calling _fix(), so it doesn't start a timer for announce or timeout
 			//  The hack to fix it is to set t.self = nil after the wait timer fires below
 			t.self = &treeInfo{root: t.core.crypto.publicKey}
+			t.parent = nil
 			t._sendTree() //t.core.peers.sendTree(t, t.self)
 			if !t.wait {
 				t.wait = true
@@ -89,6 +91,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 					t.Act(nil, func() {
 						t.wait = false
 						t.self = nil // So fix can reset things / start a proper timer
+						t.parent = nil
 						t._fix()
 						t._doBootstrap()
 					})
@@ -116,6 +119,7 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 		delete(t.tinfos, p)
 		if t.self == oldInfo {
 			t.self = nil
+			t.parent = nil
 			t._fix()
 		}
 		for _, dinfo := range t.dinfos {
@@ -134,8 +138,9 @@ func (t *dhtree) _fix() {
 		// Note that seq needs to be non-decreasing for the node to function as a root
 		//  a timestamp it used to partly mitigate rollbacks from restarting
 		t.self = &treeInfo{root: t.core.crypto.publicKey, seq: uint64(time.Now().Unix())}
+		t.parent = nil
 	}
-	for _, info := range t.tinfos {
+	for p, info := range t.tinfos {
 		if oldSeq, isIn := t.expired[info.root]; isIn {
 			if info.seq <= oldSeq {
 				continue // skip expired sequence numbers
@@ -146,28 +151,28 @@ func (t *dhtree) _fix() {
 			// This has a loop, e.g. it's from a child, so skip it
 		case treeLess(info.root, t.self.root):
 			// This is a better root
-			t.self = info
+			t.self, t.parent = info, p
 		case treeLess(t.self.root, info.root):
 			// This is a worse root, so don't do anything with it
 		case info.seq > t.self.seq:
 			// This is a newer sequence number, so update parent
-			t.self = info
+			t.self, t.parent = info, p
 		case info.seq < t.self.seq:
 			// This is an older sequnce number, so ignore it
 		case info.time.Before(t.self.time):
 			// This info has been around for longer (e.g. the path is more stable)
-			t.self = info
+			t.self, t.parent = info, p
 		case info.time.After(t.self.time):
 			// This info has been around for less time (e.g. the path is less stable)
 			// Note that everything after this is extremely unlikely to be reached...
 		case len(info.hops) < len(t.self.hops):
 			// This is a shorter path to the root
-			t.self = info
+			t.self, t.parent = info, p
 		case len(info.hops) > len(t.self.hops):
 			// This is a longer path to the root, so don't do anything
 		case treeLess(info.from(), t.self.from()):
 			// This peer has a higher key than our current parent
-			t.self = info
+			t.self, t.parent = info, p
 		}
 	}
 	if t.self != oldSelf {
@@ -182,6 +187,7 @@ func (t *dhtree) _fix() {
 						t.expired[self.root] = self.seq
 						if t.self.root.equal(self.root) && t.self.seq <= self.seq {
 							t.self = nil
+							t.parent = nil
 							t._fix()
 							t._doBootstrap()
 						}
@@ -190,14 +196,6 @@ func (t *dhtree) _fix() {
 			})
 		}
 		t._sendTree() //t.core.peers.sendTree(t, t.self)
-		/* TODO? Tear down the old predecessor if the root is different?
-		if t.pred != nil && oldSelf != nil && !oldSelf.root.equal(t.self.root) {
-			// The root changed, so we need to notify our predecessor
-			// Otherwise we may not be their best successor anymore
-			// All we can really do is tear down
-			t._teardown(t.core.crypto.publicKey, t.pred.getTeardown())
-		}
-		//*/
 		if t.self.root.equal(t.core.crypto.publicKey) {
 			// We're the root, so schedule a timestamp update to happen later
 			self := t.self
@@ -206,6 +204,7 @@ func (t *dhtree) _fix() {
 				t.Act(nil, func() {
 					if t.self == self {
 						t.self = nil
+						t.parent = nil
 						t._fix()
 						t._doBootstrap()
 					}
@@ -224,7 +223,6 @@ func (t *dhtree) _fix() {
 
 // _treeLookup selects the best next hop (in treespace) for the destination
 func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
-	// TODO rewrite this to use a treeLabel instead of a treeInfo
 	if t.core.crypto.publicKey.equal(dest.key) {
 		return nil
 	}
@@ -265,20 +263,8 @@ func (t *dhtree) _dhtLookup(dest publicKey) *peer {
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
 	if treeLess(dest, best) && !treeLess(dest, t.self.root) {
-		for p, info := range t.tinfos {
-			// TODO store parent so we don't need to iterate here
-			if info == t.self {
-				best = t.self.root
-				bestPeer = p
-				for _, hop := range t.self.hops {
-					if dhtOrdered(best, hop.next, dest) {
-						best = hop.next
-						bestPeer = p
-					}
-				}
-				break
-			}
-		}
+		best = t.self.root
+		bestPeer = t.parent
 	}
 	for p, info := range t.tinfos {
 		if (!dest.equal(best) && dest.equal(info.root)) || dhtOrdered(best, info.root, dest) {
@@ -332,20 +318,8 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
 	if !treeLess(best, dest) && treeLess(t.self.root, dest) {
-		for p, info := range t.tinfos {
-			// TODO store parent so we don't need to iterate here
-			if info == t.self {
-				best = t.self.root
-				bestPeer = p
-				for _, hop := range t.self.hops {
-					if dhtOrdered(best, hop.next, dest) {
-						best = hop.next
-						bestPeer = p
-					}
-				}
-				break
-			}
-		}
+		best = t.self.root
+		bestPeer = t.parent
 	}
 	for p, info := range t.tinfos {
 		if dhtOrdered(best, info.root, dest) {
@@ -396,22 +370,7 @@ func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
 //  e.g. we know a better predecessor/successor for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
-	/* TODO? something along these lines...
-	for _, dinfo := range t.dinfos {
-		if dhtOrdered(info.source, dinfo.source, info.dest) {
-			return false // There's a better predecessor for this source
-		}
-	}
-	for _, dinfo := range t.dinfos {
-		if dinfo == t.succ || dinfo == t.pred {
-			continue // Special cases, handled elsewhere
-		}
-		if dhtOrdered(dinfo.source, info.source, dinfo.dest) {
-			t._teardown(dinfo.prev, dinfo.getTeardown())
-			t._teardown(dinfo.next, dinfo.getTeardown())
-		}
-	}
-	*/
+	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
 	t.dinfos[info.getKey()] = info
 	return true
 }
@@ -438,7 +397,7 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	}
 	ack := new(dhtBootstrapAck)
 	ack.bootstrap = *bootstrap
-	ack.response = *t._newBootstrap()
+	ack.response = *t._getToken(source)
 	t._handleBootstrapAck(ack)
 }
 
@@ -455,27 +414,31 @@ func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 // if yes, then we get rid of our current predecessor (if any) and start setting up a new path to the response node in the ack
 // if no, then we drop the bootstrap acknowledgement without doing anything
 func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
-	source := ack.response.label.key
+	source := ack.response.dest.key
 	next := t._treeLookup(&ack.bootstrap.label)
 	switch {
 	case next != nil:
 		next.sendBootstrapAck(t, ack)
 		return
-	case false && !t.core.crypto.publicKey.equal(ack.bootstrap.label.key):
-		// This isn't an ack of our own bootstrap
-		return
 	case t.core.crypto.publicKey.equal(source):
 		// This is our own ack, but we failed to find a next hop
 		return
-	case !ack.response.label.root.equal(t.self.root):
+	case !t.core.crypto.publicKey.equal(ack.bootstrap.label.key):
+		// This isn't an ack of our own bootstrap
+		return
+	case !t.core.crypto.publicKey.equal(ack.response.source):
+		// This is an ack of or own bootstrap, but the token isn't for us
+		return
+	case !ack.response.dest.root.equal(t.self.root):
 		// We have a different root, so tree lookups would fail
 		return
-	case ack.response.label.seq != t.self.seq:
+	case ack.response.dest.seq != t.self.seq:
 		// This response is too old, so path setup would fail
 		return
 	case t.pred == nil:
+		// We have no predecessor, so anything matching the above is good enough
 	case dhtOrdered(t.dkeys[t.pred], source, t.core.crypto.publicKey):
-		// This bootstrap is from a better predecessor than our current one
+		// This is from a better predecessor than our current one
 	case !source.equal(t.dkeys[t.pred]):
 		// This isn't from the current predecessor or better, so ignore it
 		return
@@ -518,12 +481,11 @@ func (t *dhtree) handleBootstrapAck(from phony.Actor, ack *dhtBootstrapAck) {
 }
 
 // _newSetup returns a *dhtSetup for this node, with a new sequence number and signature
-func (t *dhtree) _newSetup(dest *dhtBootstrap) *dhtSetup {
+func (t *dhtree) _newSetup(token *dhtSetupToken) *dhtSetup {
 	t.seq++
 	setup := new(dhtSetup)
 	setup.seq = t.seq
-	setup.source = t.core.crypto.publicKey
-	setup.dest = *dest
+	setup.token = *token
 	setup.sig = t.core.crypto.privateKey.sign(setup.bytesForSig())
 	return setup
 }
@@ -532,8 +494,8 @@ func (t *dhtree) _newSetup(dest *dhtBootstrap) *dhtSetup {
 // if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better successor, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
 // otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our successor path (if we are, tearing down our existing successor if one exists)
 func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
-	next := t._treeLookup(&setup.dest.label)
-	dest := setup.dest.label.key
+	next := t._treeLookup(&setup.token.dest)
+	dest := setup.token.dest.key
 	if next == nil && !dest.equal(t.core.crypto.publicKey) {
 		// FIXME? this has problems if prev is self (from changes to tree state?)
 		if prev != nil {
@@ -543,11 +505,11 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	}
 	dinfo := new(dhtInfo)
 	dinfo.seq = setup.seq
-	dinfo.source = setup.source
+	dinfo.source = setup.token.source
 	dinfo.prev = prev
 	dinfo.next = next
-	dinfo.root = setup.dest.label.root
-	dinfo.rootSeq = setup.dest.label.seq
+	dinfo.root = setup.token.dest.root
+	dinfo.rootSeq = setup.token.dest.seq
 	if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
 		// Wrong root or mismatched seq
 		if prev != nil {
@@ -570,7 +532,6 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
-			// TODO save this timer, cancel if removing the path prior to this
 			if info, isIn := t.dinfos[dinfo.getKey()]; isIn {
 				if info.prev != nil {
 					info.prev.sendTeardown(t, info.getTeardown())
@@ -581,7 +542,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	})
 	if prev == nil {
 		// sanity checks, this should only happen when setting up our predecessor
-		if !setup.source.equal(t.core.crypto.publicKey) {
+		if !setup.token.source.equal(t.core.crypto.publicKey) {
 			panic("wrong source")
 		} else if setup.seq != t.seq {
 			panic("wrong seq")
@@ -724,15 +685,16 @@ func (t *dhtree) _getLabel() *treeLabel {
 	for _, hop := range t.self.hops {
 		label.path = append(label.path, hop.port)
 	}
-	// Now prepare sig
-	var bs []byte
-	bs = append(bs, label.root[:]...)
-	seq := make([]byte, 8)
-	binary.BigEndian.PutUint64(seq, label.seq)
-	bs = append(bs, seq...)
-	bs = wireEncodePath(bs, label.path)
-	label.sig = t.core.crypto.privateKey.sign(bs)
+	label.sig = t.core.crypto.privateKey.sign(label.bytesForSig())
 	return label
+}
+
+func (t *dhtree) _getToken(source publicKey) *dhtSetupToken {
+	token := new(dhtSetupToken)
+	token.source = source
+	token.dest = *t._getLabel()
+	token.sig = t.core.crypto.privateKey.sign(token.bytesForSig())
+	return token
 }
 
 /************
@@ -896,13 +858,18 @@ type treeLabel struct {
 	path []peerPort
 }
 
-func (l *treeLabel) check() bool {
+func (l *treeLabel) bytesForSig() []byte {
 	var bs []byte
 	bs = append(bs, l.root[:]...)
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, l.seq)
 	bs = append(bs, seq...)
 	bs = wireEncodePath(bs, l.path)
+	return bs
+}
+
+func (l *treeLabel) check() bool {
+	bs := l.bytesForSig()
 	return l.key.verify(bs, &l.sig)
 }
 
@@ -993,16 +960,62 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 	return nil
 }
 
+/*****************
+ * dhtSetupToken *
+ *****************/
+
+// When you send a bootstrap, this is the thing you're trying to get back in a response.
+// It's what lets you open a path to a keyspace neighbor.
+
+// TODO? change the token format? The dest part contains a redundant sig inside of the treeLabel... technically we could reuse it, but that seems weird?
+// Maybe remove the sig from treeLabel, put that in a signedTreeLabel?
+
+type dhtSetupToken struct {
+	sig    signature // Signed by dest
+	source publicKey // Who the dest permits a path from
+	dest   treeLabel // Path to dest
+}
+
+func (st *dhtSetupToken) bytesForSig() []byte {
+	var bs []byte
+	bs = append(bs, st.source[:]...)
+	var err error
+	if bs, err = st.dest.encode(bs); err != nil {
+		panic("this should never happen")
+	}
+	return bs
+}
+
+// TODO? remove the redundant sig and check? both from same node, one should be a superset of the other...
+
+func (st *dhtSetupToken) check() bool {
+	bs := st.bytesForSig()
+	return st.dest.key.verify(bs, &st.sig) && st.dest.check()
+}
+
+func (st *dhtSetupToken) encode(out []byte) ([]byte, error) {
+	out = append(out, st.sig[:]...)
+	out = append(out, st.source[:]...)
+	return st.dest.encode(out)
+}
+
+func (st *dhtSetupToken) decode(data []byte) error {
+	if !wireChopSlice(st.sig[:], &data) {
+		return wireDecodeError
+	} else if !wireChopSlice(st.source[:], &data) {
+		return wireDecodeError
+	}
+	return st.dest.decode(data)
+}
+
 /*******************
  * dhtBootstrapAck *
  *******************/
 
 type dhtBootstrapAck struct {
 	bootstrap dhtBootstrap
-	response  dhtBootstrap
+	response  dhtSetupToken
 }
-
-// TODO change the response format, include the key we're responding to in the signature. Then 3rd parties can't use it to try to spoof a setup to this node (which we'd have to tear down, that's just annoying)
 
 func (ack *dhtBootstrapAck) check() bool {
 	return ack.bootstrap.check() && ack.response.check()
@@ -1042,68 +1055,56 @@ func (ack *dhtBootstrapAck) decode(data []byte) error {
  ************/
 
 type dhtSetup struct {
-	sig    signature
-	source publicKey
-	seq    uint64
-	dest   dhtBootstrap
+	sig   signature
+	seq   uint64
+	token dhtSetupToken
 }
 
 func (s *dhtSetup) bytesForSig() []byte {
 	bs := make([]byte, 8)
 	binary.BigEndian.PutUint64(bs, s.seq)
-	bs = append(bs, s.source[:]...)
-	m, err := s.dest.encode(nil) // TODO non-nil here
-	if err != nil {
+	var err error
+	if bs, err = s.token.encode(bs); err != nil {
 		panic("this should never happen")
 	}
-	bs = append(bs, m...)
 	return bs
 }
 
 func (s *dhtSetup) check() bool {
-	if !s.dest.check() {
+	if !s.token.check() {
 		return false
 	}
-	bfs := s.bytesForSig()
-	return s.source.verify(bfs, &s.sig)
+	bs := s.bytesForSig()
+	return s.token.source.verify(bs, &s.sig)
 }
 
 func (s *dhtSetup) getTeardown() *dhtTeardown {
 	return &dhtTeardown{
 		seq:     s.seq,
-		source:  s.source,
-		root:    s.dest.label.root,
-		rootSeq: s.dest.label.seq,
+		source:  s.token.source,
+		root:    s.token.dest.root,
+		rootSeq: s.token.dest.seq,
 	}
 }
 
 func (s *dhtSetup) encode(out []byte) ([]byte, error) {
-	var tmp []byte // TODO get rid of this
-	var err error
-	if tmp, err = s.dest.encode(tmp); err != nil {
-		return nil, err
-	}
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, s.seq)
 	out = append(out, s.sig[:]...)
-	out = append(out, s.source[:]...)
 	out = append(out, seq...)
-	out = append(out, tmp...)
-	return out, nil
+	return s.token.encode(out)
 }
 
 func (s *dhtSetup) decode(data []byte) error {
 	var tmp dhtSetup
 	if !wireChopSlice(tmp.sig[:], &data) {
 		return wireDecodeError
-	} else if !wireChopSlice(tmp.source[:], &data) {
-		return wireDecodeError
 	}
 	if len(data) < 8 {
 		return wireDecodeError
 	}
 	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	if err := tmp.dest.decode(data); err != nil {
+	if err := tmp.token.decode(data); err != nil {
 		return err
 	}
 	*s = tmp
