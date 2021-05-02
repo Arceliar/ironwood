@@ -49,7 +49,6 @@ func (m *netManager) read() {
 		rl = func() {
 			n, from, err := m.pc.PacketConn.ReadFrom(buf)
 			if err != nil {
-				panic("DEBUG")
 				// Exit the loop
 				m.running = false
 				if m.pc.IsClosed() {
@@ -59,6 +58,10 @@ func (m *netManager) read() {
 						close(m.closed)
 					}
 				}
+				// FIXME we need something better here
+				//  A read deadline could return an error
+				//  That would get passed to the next read call
+				//  This would happen even if the reader resets the deadline before calling ReadFrom
 				select {
 				case m.readCh <- netReadInfo{err: err}:
 				default:

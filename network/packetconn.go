@@ -211,13 +211,15 @@ func (pc *PacketConn) IsClosed() bool {
 
 func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
 	pc.actor.Act(nil, func() {
-		var doRecv bool
 		switch tr.kind {
 		case wireTrafficDummy:
-			panic("DEBUG")
+			// Drop the traffic
 		case wireTrafficStandard:
 			if tr.dest.equal(pc.core.crypto.publicKey) {
-				doRecv = true
+				select {
+				case pc.recv <- tr:
+				case <-pc.closed:
+				}
 			}
 		case wireTrafficOutOfBand:
 			if pc.oobHandler != nil {
@@ -228,14 +230,7 @@ func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
 				go pc.oobHandler(source, dest, msg)
 			}
 		default:
-			panic("DEBUG")
 			// Drop the traffic
-		}
-		if doRecv {
-			select {
-			case pc.recv <- tr:
-			case <-pc.closed:
-			}
 		}
 	})
 }

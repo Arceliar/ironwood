@@ -636,8 +636,7 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 		if teardown.seq != dinfo.seq {
 			return
 		} else if !teardown.source.equal(dinfo.source) {
-			panic("DEBUG this should never happen")
-			// return
+			panic("this should never happen")
 		}
 		var next *peer
 		if from == dinfo.prev {
@@ -645,7 +644,7 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 		} else if from == dinfo.next {
 			next = dinfo.prev
 		} else {
-			panic("DEBUG teardown of path from wrong node")
+			return //panic("DEBUG teardown of path from wrong node")
 		}
 		dinfo.timer.Stop()
 		delete(t.dkeys, dinfo)
@@ -660,8 +659,6 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 			t.pred = nil
 			t._doBootstrap()
 		}
-	} else {
-		//panic("DEBUG teardown of nonexistant path")
 	}
 }
 

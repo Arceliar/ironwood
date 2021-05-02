@@ -130,7 +130,6 @@ func newRandomNonce() (*boxNonce, error) {
 //  To that end, maybe we can use a smaller nonce size? or a vuint and reset on uint64 max?
 
 func (n *boxNonce) inc() {
-	//panic("TODO test this")
 	for idx := boxNonceSize - 1; idx >= 0; idx-- {
 		n[idx]++
 		if n[idx] != 0 {

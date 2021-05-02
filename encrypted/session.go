@@ -2,7 +2,6 @@ package encrypted
 
 import (
 	"encoding/binary"
-	"fmt"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -82,7 +81,6 @@ func (mgr *sessionManager) handleData(from phony.Actor, pub *edPub, data []byte)
 		}
 		switch data[0] {
 		case sessionTypeDummy:
-			panic("DEBUG")
 		case sessionTypeInit:
 			init := new(sessionInit)
 			if init.decrypt(&mgr.pc.secret, pub, data) {
@@ -96,7 +94,6 @@ func (mgr *sessionManager) handleData(from phony.Actor, pub *edPub, data []byte)
 		case sessionTypeTraffic:
 			mgr._handleTraffic(pub, data)
 		default:
-			panic("DEBUG")
 		}
 	})
 }
@@ -132,7 +129,6 @@ func (mgr *sessionManager) _handleTraffic(pub *edPub, msg []byte) {
 		// So we don't want to save session or a buffer based on this node
 		// So we send an init with keys we'll forget
 		// If they ack, we'll set up a session and let it self-heal...
-		//panic("DEBUG") // TODO test this
 		currentPub, _ := newBoxKeys()
 		nextPub, _ := newBoxKeys()
 		init := newSessionInit(&currentPub, &nextPub)
@@ -307,7 +303,6 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 	// TODO? some worker pool to multi-thread this
 	info.Act(from, func() {
 		if len(msg) < sessionTrafficOverhead || msg[0] != sessionTypeTraffic {
-			panic("DEBUG")
 			return
 		}
 		var theirKey, myKey boxPub
@@ -327,7 +322,6 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		case fromCurrent && toRecv:
 			// The boring case, nothing to ratchet, just update nonce
 			if !info.recvNonce.lessThan(&nonce) {
-				panic("DEBUG")
 				return
 			}
 			sharedKey = &info.recvShared
@@ -353,7 +347,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		case fromNext && toRecv:
 			// The remote side appears to have ratcheted forward early
 			// Technically there's no reason we can't handle this
-			panic("DEBUG") // TODO test this
+			//panic("DEBUG") // TODO test this
 			sharedKey = new(boxShared)
 			getShared(sharedKey, &theirKey, &info.recvPriv)
 			onSuccess = func(innerKey boxPub) {
@@ -370,11 +364,8 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			}
 		default:
 			// We can't make sense of their message
-			// Send a sessionInit and hope they fix it
-			fmt.Println("DEBUG:", fromCurrent, fromNext, toRecv, toSend)
-			panic("FIXME") // FIXME shouldn't happen in testing? Maybe a race between inits/acks?
-			panic("TODO")  // TODO sanity check that these are the right keys to send... (what if we don't get an ack? should we reset any keys here just to be safe?)
-			init := newSessionInit(&info.recvPub, &info.sendPub)
+			// Send a sessionInit and hope they ack so we can fix things
+			init := newSessionInit(&info.sendPub, &info.nextPub)
 			info._sendInit(&init)
 			return
 		}
@@ -388,10 +379,8 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			onSuccess(key)
 			info._resetTimer()
 		} else {
-			// FIXME shouldn't happen in testing
+			// This shouldn't happen during testing
 			// Not sure if we should do anything outside of testing...
-			fmt.Println("DEBUG:", fromCurrent, fromNext, toRecv, toSend)
-			panic("DEBUG")
 		}
 	})
 }
@@ -453,7 +442,6 @@ func (init *sessionInit) encrypt(from *boxPriv, to *edPub) ([]byte, error) {
 
 func (init *sessionInit) decrypt(priv *boxPriv, from *edPub, data []byte) bool {
 	if len(data) != sessionInitSize {
-		panic("DEBUG")
 		return false
 	}
 	fromBox, err := from.toBox()
@@ -469,7 +457,6 @@ func (init *sessionInit) decrypt(priv *boxPriv, from *edPub, data []byte) bool {
 	payload := make([]byte, 0, sessionInitSize) // TODO correct size
 	var ok bool
 	if payload, ok = boxOpen(payload, bs, &nonce, &shared); !ok {
-		panic("DEBUG")
 		return false
 	}
 	offset = 0
