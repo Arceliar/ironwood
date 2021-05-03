@@ -13,6 +13,7 @@ import (
 const (
 	peerKEEPALIVE = time.Second
 	peerTIMEOUT   = time.Second * 5 / 2
+	peerMINQUEUE  = 1048576 // 1 MB, TODO something sensible
 )
 
 type peerPort uint64
@@ -52,7 +53,6 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		p.conn = conn
 		p.key = key
 		p.port = port
-		p.queueMax = ^uint64(0)
 		p.writer.peer = p
 		p.writer.timer = time.AfterFunc(0, func() {})
 		ps.peers[port] = p
@@ -83,7 +83,6 @@ type peer struct {
 	queueMax    uint64
 	queueSeq    uint64
 	blocked     bool // is the writer (seemingly) blocked on a send?
-	waiting     bool // are we waiting for the writer to ask for queued traffic?
 	writer      peerWriter
 }
 
@@ -92,14 +91,23 @@ type peerWriter struct {
 	peer      *peer
 	keepAlive func()
 	writeBuf  []byte
+	seq       uint64
 	timer     *time.Timer
 }
 
 func (w *peerWriter) _write(bs []byte) {
 	w.timer.Stop()
+	w.peer.notifySending()
 	_, _ = w.peer.conn.Write(bs)
 	w.peer.notifySent()
 	w.timer = time.AfterFunc(peerKEEPALIVE, w.keepAlive)
+	w.seq++
+	seq := w.seq
+	w.Act(nil, func() {
+		if seq == w.seq {
+			w.peer.pop() // Ask for more traffic to send
+		}
+	})
 }
 
 func (w *peerWriter) sendPacket(pType byte, data wireEncodeable) {
@@ -361,13 +369,6 @@ func (p *peer) handleDHTTraffic(bs []byte) error {
 func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 	p.Act(from, func() {
 		p._push(tr)
-		return
-		id := pqStreamID{
-			source: tr.source,
-			dest:   tr.dest,
-		}
-		p.queue.push(id, tr, len(tr.payload))
-		p.pop()
 	})
 }
 
@@ -400,18 +401,11 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	p.Act(from, func() {
 		p._push(tr)
-		return
-		id := pqStreamID{
-			source: tr.dt.source,
-			dest:   tr.dt.dest,
-		}
-		p.queue.push(id, tr, len(tr.dt.payload))
-		p.pop()
 	})
 }
 
 func (p *peer) _push(packet wireEncodeable) {
-	if !p.waiting {
+	if !p.blocked {
 		var pType byte
 		switch packet.(type) {
 		case *dhtTraffic:
@@ -421,19 +415,10 @@ func (p *peer) _push(packet wireEncodeable) {
 		default:
 			panic("this should never happen")
 		}
-		p.waiting = true
 		p.writer.sendPacket(pType, packet)
-		p.writer.Act(nil, func() {
-			p.pop()
-		})
 		return
 	}
 	// We're waiting, so queue the packet up for later
-	for p.blocked && p.queue.size > p.queueMax {
-		// Make room for the packet
-		break // FIXME even with dropping disabled, the queue is way too slow
-		p.queue.pop()
-	}
 	var id pqStreamID
 	var size int
 	switch tr := packet.(type) {
@@ -453,46 +438,46 @@ func (p *peer) _push(packet wireEncodeable) {
 		panic("this should never happen")
 	}
 	p.queue.push(id, packet, size)
-	if !p.blocked {
-		// Process packets in the inbox and then set the queue size
-		seq := p.queueSeq
-		p.Act(nil, func() {
-			if !p.blocked && p.queueSeq == seq {
-				p.blocked = true
-				p.queueMax = p.queue.size
-			}
-		})
+	for p.queue.size > p.queueMax {
+		p.queue.pop()
 	}
 }
 
 func (p *peer) pop() {
 	p.Act(nil, func() {
-		if packet, ok := p.queue.pop(); ok {
-			switch packet.(type) {
+		if info, ok := p.queue.pop(); ok {
+			switch info.packet.(type) {
 			case *dhtTraffic:
-				p.writer.sendPacket(wireDHTTraffic, packet)
+				p.writer.sendPacket(wireDHTTraffic, info.packet)
 			case *pathTraffic:
-				p.writer.sendPacket(wirePathTraffic, packet)
+				p.writer.sendPacket(wirePathTraffic, info.packet)
 			default:
 				panic("this should never happen")
 			}
-			p.waiting = true
-			p.writer.Act(nil, func() {
-				p.Act(nil, func() {
-					p.waiting = false
-				})
-				p.pop()
-			})
-			if p.blocked {
-				p.queueMax = p.queue.size
-			}
-		} else {
-			p.waiting = false
+			// Adjust queueMax, to make sure the queue eventually drains
+			p.queueMax -= info.size
 		}
 		if p.queue.size == 0 {
 			p.blocked = false
-			p.queueMax = ^uint64(0)
 		}
+	})
+}
+
+func (p *peer) notifySending() {
+	p.Act(nil, func() {
+		p.queueSeq++
+		seq := p.queueSeq
+		p.Act(nil, func() {
+			if !p.blocked && seq == p.queueSeq {
+				p.blocked = true
+				p.queueMax = ^uint64(0)
+				p.Act(nil, func() {
+					// Queue the packets already in memory somewhere
+					// Then set the max size of the queue
+					p.queueMax = p.queue.size + peerMINQUEUE
+				})
+			}
+		})
 	})
 }
 
