@@ -3,7 +3,6 @@ package network
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"time"
@@ -98,7 +97,6 @@ type peerWriter struct {
 
 func (w *peerWriter) _write(bs []byte) {
 	w.timer.Stop()
-	w.peer.notifySending()
 	_, _ = w.peer.conn.Write(bs)
 	w.peer.notifySent()
 	w.timer = time.AfterFunc(peerKEEPALIVE, w.keepAlive)
@@ -362,6 +360,8 @@ func (p *peer) handleDHTTraffic(bs []byte) error {
 
 func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 	p.Act(from, func() {
+		p._push(tr)
+		return
 		id := pqStreamID{
 			source: tr.source,
 			dest:   tr.dest,
@@ -399,6 +399,8 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 
 func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	p.Act(from, func() {
+		p._push(tr)
+		return
 		id := pqStreamID{
 			source: tr.dt.source,
 			dest:   tr.dt.dest,
@@ -408,24 +410,63 @@ func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	})
 }
 
+func (p *peer) _push(packet wireEncodeable) {
+	if !p.waiting {
+		var pType byte
+		switch packet.(type) {
+		case *dhtTraffic:
+			pType = wireDHTTraffic
+		case *pathTraffic:
+			pType = wirePathTraffic
+		default:
+			panic("this should never happen")
+		}
+		p.waiting = true
+		p.writer.sendPacket(pType, packet)
+		p.writer.Act(nil, func() {
+			p.pop()
+		})
+		return
+	}
+	// We're waiting, so queue the packet up for later
+	for p.blocked && p.queue.size > p.queueMax {
+		// Make room for the packet
+		break // FIXME even with dropping disabled, the queue is way too slow
+		p.queue.pop()
+	}
+	var id pqStreamID
+	var size int
+	switch tr := packet.(type) {
+	case *dhtTraffic:
+		id = pqStreamID{
+			source: tr.source,
+			dest:   tr.dest,
+		}
+		size = len(tr.payload)
+	case *pathTraffic:
+		id = pqStreamID{
+			source: tr.dt.source,
+			dest:   tr.dt.dest,
+		}
+		size = len(tr.dt.payload)
+	default:
+		panic("this should never happen")
+	}
+	p.queue.push(id, packet, size)
+	if !p.blocked {
+		// Process packets in the inbox and then set the queue size
+		seq := p.queueSeq
+		p.Act(nil, func() {
+			if !p.blocked && p.queueSeq == seq {
+				p.blocked = true
+				p.queueMax = p.queue.size
+			}
+		})
+	}
+}
+
 func (p *peer) pop() {
 	p.Act(nil, func() {
-		if p.blocked {
-			seq := p.queueSeq
-			p.Act(nil, func() {
-				if p.queueSeq == seq {
-					p.queueMax = p.queue.size
-				}
-			})
-		}
-		for p.blocked && p.queue.size > p.queueMax {
-			break // FIXME even with dropping disabled, the queue is way too slow
-			p.queue.pop()
-		}
-		fmt.Println("DEBUG:", p.blocked, p.queue.size, p.queueMax)
-		if p.waiting {
-			return
-		}
 		if packet, ok := p.queue.pop(); ok {
 			switch packet.(type) {
 			case *dhtTraffic:
@@ -445,23 +486,13 @@ func (p *peer) pop() {
 			if p.blocked {
 				p.queueMax = p.queue.size
 			}
+		} else {
+			p.waiting = false
 		}
 		if p.queue.size == 0 {
 			p.blocked = false
 			p.queueMax = ^uint64(0)
 		}
-	})
-}
-
-func (p *peer) notifySending() {
-	p.Act(nil, func() {
-		seq := p.queueSeq
-		p.Act(nil, func() {
-			if !p.blocked && p.queueSeq == seq {
-				p.blocked = true
-				p.queueMax = ^uint64(0)
-			}
-		})
 	})
 }
 
