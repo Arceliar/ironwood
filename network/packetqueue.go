@@ -72,10 +72,10 @@ func (q *packetQueue) push(id pqStreamID, packet wireEncodeable, size int) {
 }
 
 // pop removes the oldest packet (across all streams) from the queue
-func (q *packetQueue) pop() (*pqPacketInfo, bool) {
+func (q *packetQueue) pop() (info pqPacketInfo, ok bool) {
 	if q.size > 0 {
 		stream := q.streams[0]
-		info := stream.infos[0]
+		info = stream.infos[0]
 		if len(stream.infos) > 1 {
 			stream.infos = stream.infos[1:]
 			stream.size -= info.size
@@ -85,9 +85,18 @@ func (q *packetQueue) pop() (*pqPacketInfo, bool) {
 		} else {
 			heap.Remove(q, 0)
 		}
-		return &info, true
+		return info, true
 	}
-	return nil, false
+	return
+}
+
+func (q *packetQueue) peek() (info pqPacketInfo, ok bool) {
+	if len(q.streams) > 0 {
+		stream := q.streams[0]
+		info = stream.infos[0]
+		return info, true
+	}
+	return
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -13,7 +13,6 @@ import (
 const (
 	peerKEEPALIVE = time.Second
 	peerTIMEOUT   = time.Second * 5 / 2
-	peerMINQUEUE  = 1048576 // 1 MB, TODO something sensible
 )
 
 type peerPort uint64
@@ -80,9 +79,7 @@ type peer struct {
 	info        *treeInfo
 	port        peerPort
 	queue       packetQueue
-	queueMax    uint64
-	queueSeq    uint64
-	blocked     bool // is the writer (seemingly) blocked on a send?
+	ready       bool // is the writer ready for traffic?
 	writer      peerWriter
 }
 
@@ -97,9 +94,7 @@ type peerWriter struct {
 
 func (w *peerWriter) _write(bs []byte) {
 	w.timer.Stop()
-	w.peer.notifySending()
 	_, _ = w.peer.conn.Write(bs)
-	w.peer.notifySent()
 	w.timer = time.AfterFunc(peerKEEPALIVE, w.keepAlive)
 	w.seq++
 	seq := w.seq
@@ -405,7 +400,7 @@ func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 }
 
 func (p *peer) _push(packet wireEncodeable) {
-	if !p.blocked {
+	if p.ready {
 		var pType byte
 		switch packet.(type) {
 		case *dhtTraffic:
@@ -416,6 +411,7 @@ func (p *peer) _push(packet wireEncodeable) {
 			panic("this should never happen")
 		}
 		p.writer.sendPacket(pType, packet)
+		p.ready = false
 		return
 	}
 	// We're waiting, so queue the packet up for later
@@ -437,10 +433,13 @@ func (p *peer) _push(packet wireEncodeable) {
 	default:
 		panic("this should never happen")
 	}
-	p.queue.push(id, packet, size)
-	for p.queue.size > p.queueMax {
-		p.queue.pop()
+	if info, ok := p.queue.peek(); ok && time.Since(info.time) > 25*time.Millisecond {
+		// The queue already has a significant delay
+		// Drop the oldest packet from the larget queue to make room
+		p.queue.drop()
 	}
+	// Add the packet to the queue
+	p.queue.push(id, packet, size)
 }
 
 func (p *peer) pop() {
@@ -454,35 +453,8 @@ func (p *peer) pop() {
 			default:
 				panic("this should never happen")
 			}
-			// Adjust queueMax, to make sure the queue eventually drains
-			p.queueMax -= info.size
+		} else {
+			p.ready = true
 		}
-		if p.queue.size == 0 {
-			p.blocked = false
-		}
-	})
-}
-
-func (p *peer) notifySending() {
-	p.Act(nil, func() {
-		p.queueSeq++
-		seq := p.queueSeq
-		p.Act(nil, func() {
-			if !p.blocked && seq == p.queueSeq {
-				p.blocked = true
-				p.queueMax = ^uint64(0)
-				p.Act(nil, func() {
-					// Queue the packets already in memory somewhere
-					// Then set the max size of the queue
-					p.queueMax = p.queue.size + peerMINQUEUE
-				})
-			}
-		})
-	})
-}
-
-func (p *peer) notifySent() {
-	p.Act(nil, func() {
-		p.queueSeq++
 	})
 }
