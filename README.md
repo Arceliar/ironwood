@@ -1,17 +1,10 @@
 # Ironwood
 
-A project description will come later. Ironwood is pre-alpha work-in-progress and is not expected to be fit for purpose for any use case.
+A project description will come later. Ironwood is pre-alpha work-in-progress. That means the API is unstable, and it's not expected to be fit for use for any purpose. Use at your own risk.
 
 ## TODO
 
 The following is a very rough TODO of what still needs to be implemented before this project is feature complete enough that it's worth testing (as are replacement to ygg's core or as a stand-alone network or something).
-
-### Drop packets
-
-Currently there's no way to drop any packets when under congestion. Things just buffer in actor message queues forever.
-That's *intended* for a few kinds of protocol traffic, where dropping anything could lead to inconsistency and routing loops.
-It's a problem for ordinary traffic being forwarded through the network (and arguably certain non-local protocol traffic).
-We've implemented variations of this before in Ygg, we just need to pick something and go with it.
 
 ### Misc optimizations
 
@@ -26,3 +19,19 @@ In the interest of clarity, it would *probably* make sense to just pick some wel
 There are a lot of options here, but all else being equal, clarity probably matters more than efficiency of the default implementation (since we could hand-write a parser to cover the special cases where we need to peek at something in-place for efficiency reasons).
 All else being equal, it's probably preferable to use something well-known rather than something that wins in benchmarks, so protocol buffers are probably a good default option for lack of better ideas.
 But it warrants further investigation.
+
+### Expand DHT functionality
+
+Currently the out-of-band code lets you notify the node that own an arbitrary key (and they can choose whether or not to respond, based on if/how they've set their handler).
+To make it easier to implement a generic DHT, a node needs to be able to tell the PacketConn that it thinks it owns a key, and provide a handler for the PC to call if/when it no longer owns it (when we get a connection to a better owner).
+This isn't high priority from a ygg-replacement standpoint (it's not needed for that use case), but it would be relatively easy to do and it could be generally nice to have.
+
+### Protocol update(s)
+
+1. Investigate keeping a second keyspace neighbor in each direction, so the chain isn't momentarily broken when a node joins.
+2. The encrypted package could use some work... either switch to the noise protocol framework, or improve what's already there (to e.g. not send ephemeral pubkeys in plaintext).
+
+### DEBUG interface
+
+Some sort of debug interface is needed, to get read access to the low level internals. This (probably) doesn't need to be a stable API endpoint. It would be useful (in the ygg context) to e.g. check a node's coords, get a list of peers (with ports), dump out the full set of DHT info, etc.
+
