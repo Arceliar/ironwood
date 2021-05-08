@@ -22,7 +22,7 @@ type dhtree struct {
 	phony.Inbox
 	core       *core
 	pathfinder pathfinder
-	expired    map[publicKey]uint64 // map[root publicKey](treeInfo.seq) of expired infos per root pubkey (highest seq)
+	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
 	dinfos     map[dhtInfoKey]*dhtInfo
 	self       *treeInfo              // self info
@@ -31,17 +31,22 @@ type dhtree struct {
 	succ       *dhtInfo               // successor in dht, they maintain a path to us
 	dkeys      map[*dhtInfo]publicKey // map of *dhtInfo->destKey for current and past predecessors
 	seq        uint64                 // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
-	timer      *time.Timer            // time.AfterFunc to send bootstrap packets
+	btimer     *time.Timer            // time.AfterFunc to send bootstrap packets
+	stimer     *time.Timer            // time.AfterFunc for self/parent expiration
 	wait       bool                   // FIXME this is a hack to let bad news spread before changing parents
+}
+
+type treeExpiredInfo struct {
+	seq  uint64    // sequence number that expires
+	time time.Time // Time when it expires
 }
 
 func (t *dhtree) init(c *core) {
 	t.core = c
-	t.expired = make(map[publicKey]uint64)
+	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
 	t.dinfos = make(map[dhtInfoKey]*dhtInfo)
 	t.dkeys = make(map[*dhtInfo]publicKey)
-	t._fix() // Initialize t.self and start announce and timeout timers
 	t.seq = uint64(time.Now().UnixNano())
 	r := make([]byte, 8)
 	if _, err := rand.Read(r); err != nil {
@@ -50,7 +55,9 @@ func (t *dhtree) init(c *core) {
 	for idx := range r {
 		t.seq |= uint64(r[idx]) << 8 * uint64(idx)
 	}
-	t.timer = time.AfterFunc(0, func() { t.Act(nil, t._doBootstrap) })
+	t.btimer = time.AfterFunc(0, func() { t.Act(nil, t._doBootstrap) })
+	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
+	t._fix()                                // Initialize t.self and start announce and timeout timers
 	t.pathfinder.init(t)
 }
 
@@ -69,6 +76,9 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 	t.Act(from, func() {
 		// The tree info should have been checked before this point
 		info.time = time.Now() // Order by processing time, not receiving time...
+		if exp, isIn := t.expired[info.root]; !isIn || exp.seq < info.seq {
+			t.expired[info.root] = treeExpiredInfo{seq: info.seq, time: info.time}
+		}
 		oldInfo := t.tinfos[p]
 		t.tinfos[p] = info
 		var doWait bool
@@ -140,6 +150,9 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 // _fix selects the best parent (and is called in response to receiving a tree update)
 // if this is not the same as our current parent, then it sends a tree update to our peers and resets our successor/predecessor in the dht
 func (t *dhtree) _fix() {
+	if t.stimer == nil {
+		return // closed
+	}
 	oldSelf := t.self
 	if t.self == nil || treeLess(t.core.crypto.publicKey, t.self.root) {
 		// Note that seq needs to be non-decreasing for the node to function as a root
@@ -151,9 +164,18 @@ func (t *dhtree) _fix() {
 		}
 		t.parent = nil
 	}
+	for _, info := range t.tinfos {
+		// Refill expired to include non-root nodes (in case we're replacing an expired
+		if exp, isIn := t.expired[info.root]; !isIn || exp.seq < info.seq || exp.seq == info.seq && info.time.Before(exp.time) {
+			// Fill expired as we
+			t.expired[info.root] = treeExpiredInfo{seq: info.seq, time: info.time}
+		}
+	}
 	for p, info := range t.tinfos {
-		if oldSeq, isIn := t.expired[info.root]; isIn {
-			if info.seq <= oldSeq {
+		if exp, isIn := t.expired[info.root]; isIn {
+			if info.seq < exp.seq {
+				continue // skip old sequence numbers
+			} else if info.seq == exp.seq && time.Since(exp.time) > treeTIMEOUT {
 				continue // skip expired sequence numbers
 			}
 		}
@@ -187,47 +209,35 @@ func (t *dhtree) _fix() {
 		}
 	}
 	if t.self != oldSelf {
-		if oldSelf != nil && oldSelf.root.equal(t.self.root) && oldSelf.seq == t.self.seq {
-			// We've used an announcement from this root/seq before, so no need to start a timer
-		} else {
-			// Start a timer to make t.self.seq expire at some point
-			self := t.self
-			time.AfterFunc(treeTIMEOUT, func() {
-				t.Act(nil, func() {
-					if oldSeq, isIn := t.expired[self.root]; !isIn || oldSeq < self.seq {
-						t.expired[self.root] = self.seq
-						if t.self.root.equal(self.root) && t.self.seq <= self.seq {
-							t.self = nil
-							t.parent = nil
-							t._fix()
-							t._doBootstrap()
-						}
-					}
-				})
-			})
-		}
-		t._sendTree() //t.core.peers.sendTree(t, t.self)
+		// Reset a timer to make t.self expire at some point
+		t.stimer.Stop()
+		self := t.self
+		var delay time.Duration
 		if t.self.root.equal(t.core.crypto.publicKey) {
-			// We're the root, so schedule a timestamp update to happen later
-			self := t.self
-			time.AfterFunc(treeANNOUNCE, func() {
-				// TODO? save this timer and cancel it if needed?
-				t.Act(nil, func() {
-					if t.self == self {
-						t.self = nil
-						t.parent = nil
-						t._fix()
-						t._doBootstrap()
-					}
-				})
-			})
+			// We are the root, so we need to expire after treeANNOUNCE to update seq
+			delay = treeANNOUNCE
+		} else {
+			// Figure out when the root needs to time out
+			stopTime := t.expired[t.self.root].time.Add(treeTIMEOUT)
+			delay = time.Until(stopTime)
 		}
-		// Clean up t.expired
-		for skey := range t.expired {
-			key := publicKey(skey)
-			if key.equal(t.self.root) || treeLess(t.self.root, key) {
-				delete(t.expired, skey)
-			}
+		t.stimer = time.AfterFunc(delay, func() {
+			t.Act(nil, func() {
+				if t.self == self {
+					t.self = nil
+					t.parent = nil
+					t._fix()
+					t._doBootstrap()
+				}
+			})
+		})
+		t._sendTree() // Send the tree update to our peers
+	}
+	// Clean up t.expired (remove anything worse than the current root)
+	for skey := range t.expired {
+		key := publicKey(skey)
+		if key.equal(t.self.root) || treeLess(t.self.root, key) {
+			delete(t.expired, skey)
 		}
 	}
 }
@@ -646,13 +656,13 @@ func (t *dhtree) teardown(from phony.Actor, p *peer, teardown *dhtTeardown) {
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
 	//return // FIXME debug tree (root offline -> too much traffic to fix)
-	if t.timer != nil {
+	if t.btimer != nil {
 		if t.pred != nil && t.pred.root.equal(t.self.root) && t.pred.rootSeq == t.self.seq {
 			return
 		}
 		t._handleBootstrap(t._newBootstrap())
-		t.timer.Stop()
-		t.timer = time.AfterFunc(time.Second, func() { t.Act(nil, t._doBootstrap) })
+		t.btimer.Stop()
+		t.btimer = time.AfterFunc(time.Second, func() { t.Act(nil, t._doBootstrap) })
 	}
 }
 

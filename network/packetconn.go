@@ -101,9 +101,13 @@ func (pc *PacketConn) Close() error {
 		}
 	})
 	phony.Block(&pc.core.dhtree, func() {
-		if pc.core.dhtree.timer != nil {
-			pc.core.dhtree.timer.Stop()
-			pc.core.dhtree.timer = nil
+		if pc.core.dhtree.btimer != nil {
+			pc.core.dhtree.btimer.Stop()
+			pc.core.dhtree.btimer = nil
+		}
+		if pc.core.dhtree.stimer != nil {
+			pc.core.dhtree.stimer.Stop()
+			pc.core.dhtree.stimer = nil
 		}
 	})
 	return nil
