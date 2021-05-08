@@ -140,12 +140,10 @@ func (p *peer) handler() error {
 			p.writer._write([]byte{0x00, 0x01, wireDummy})
 		})
 	}
-	p.peers.core.dhtree.Act(nil, func() {
-		info := p.peers.core.dhtree.self
-		p.peers.Act(&p.peers.core.dhtree, func() {
-			p.sendTree(p.peers, info)
-		})
-	})
+	// Hack to get ourself into the remote node's dhtree
+	// They send a similar message and we'll respond with correct info
+	p.sendTree(nil, &treeInfo{root: p.peers.core.crypto.publicKey})
+	// Now allocate buffers and start reading / handling packets...
 	var lenBuf [2]byte // packet length is a uint16
 	bs := make([]byte, 65535)
 	for {

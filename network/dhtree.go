@@ -14,9 +14,9 @@ const (
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
 )
 
-/********
- * tree *
- ********/
+/**********
+ * dhtree *
+ **********/
 
 type dhtree struct {
 	phony.Inbox
@@ -68,26 +68,33 @@ func (t *dhtree) _sendTree() {
 func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 	t.Act(from, func() {
 		// The tree info should have been checked before this point
+		info.time = time.Now() // Order by processing time, not receiving time...
 		oldInfo := t.tinfos[p]
 		t.tinfos[p] = info
-		doWait := true
+		var doWait bool
 		if t.self != oldInfo {
-			doWait = false
-		} else {
-			if info.root.equal(oldInfo.root) && info.seq != oldInfo.seq {
-				doWait = false
-			}
+			// Not our parent, don't update
+		} else if !info.root.equal(t.self.root) {
+			doWait = true // FIXME make this safe if the new root is better
+		} else if info.seq == t.self.seq {
+			// Same root and same seq, so something changed -> unstable path
+			doWait = true
 		}
 		if doWait {
-			// FIXME? This next line is bad!
-			//  We set t.self without calling _fix(), so it doesn't start a timer for announce or timeout
-			//  The hack to fix it is to set t.self = nil after the wait timer fires below
-			t.self = &treeInfo{root: t.core.crypto.publicKey}
+			// This is bad news about our path to the root
+			// We don't want to switch to a new path to aggressively, since our other
+			//  peers could also be handling bad news right now, and that tends to
+			//  busyloop until all possible paths to the root have been exhausted.
+			// So send some bad news and wait before trying to select a new parent
+			t.self = &treeInfo{root: t.core.crypto.publicKey} // WARNING: no timer was set
 			t.parent = nil
 			t._sendTree() //t.core.peers.sendTree(t, t.self)
 			if !t.wait {
 				t.wait = true
 				time.AfterFunc(time.Second, func() {
+					// FIXME until this timer fires, we potentially have no path to the root
+					// That messes with the DHT
+					// Adjust DHT lookups to tolerate this (if peers are OK...)
 					t.Act(nil, func() {
 						t.wait = false
 						t.self = nil // So fix can reset things / start a proper timer
@@ -106,7 +113,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 		}
 		if oldInfo == nil {
 			// The peer may have missed an update due to a race between creating the peer and now
-			// Easiest way to fix the problem is to just send it another update right now
+			// The easiest way to fix the problem is to just send it another update right now
 			p.sendTree(t, t.self)
 		}
 	})
@@ -137,7 +144,11 @@ func (t *dhtree) _fix() {
 	if t.self == nil || treeLess(t.core.crypto.publicKey, t.self.root) {
 		// Note that seq needs to be non-decreasing for the node to function as a root
 		//  a timestamp it used to partly mitigate rollbacks from restarting
-		t.self = &treeInfo{root: t.core.crypto.publicKey, seq: uint64(time.Now().Unix())}
+		t.self = &treeInfo{
+			root: t.core.crypto.publicKey,
+			seq:  uint64(time.Now().Unix()),
+			time: time.Now(),
+		}
 		t.parent = nil
 	}
 	for p, info := range t.tinfos {
@@ -563,14 +574,15 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 			//    2. The dinfo matches, but so does t.succ, and t.succ is better
 			//  What happens when the dinfo matches, t.succ does not, but t.succ is still better?...
 			//  Just doing something for now (replace succ) but not sure that's right...
-			doUpdate := true
+			var doUpdate bool
 			if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
-				doUpdate = false
-			} else if !t.succ.root.equal(t.self.root) || t.succ.rootSeq != t.self.seq {
-				// The old succ is old enough to be replaced
-			} else if dhtOrdered(t.core.crypto.publicKey, t.succ.source, dinfo.source) {
-				// Both dinfo and t.succ match our root/seq, but dinfo is actually worse as a successor
-				doUpdate = false
+				// The root/seq is bad, so don't update
+			} else if dinfo.source.equal(t.succ.source) {
+				// It's an update from the current successor
+				doUpdate = true
+			} else if dhtOrdered(t.core.crypto.publicKey, dinfo.source, t.succ.source) {
+				// It's an update from a better successor
+				doUpdate = true
 			}
 			if doUpdate {
 				t._teardown(nil, t.succ.getTeardown())
@@ -841,7 +853,7 @@ func (info *treeInfo) decode(data []byte) error {
 		}
 		nfo.hops = append(nfo.hops, hop)
 	}
-	nfo.time = time.Now()
+	//nfo.time = time.Now() // Set by the dhtree in update
 	*info = nfo
 	return nil
 }
