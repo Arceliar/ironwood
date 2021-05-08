@@ -26,4 +26,7 @@ type PacketConn interface {
 	// IsClosed returns true if and only if the connection is closed.
 	// This is to check if the PacketConn is closed without potentially being stuck on a blocking operation (e.g. a read or write).
 	IsClosed() bool
+
+	// PrivateKey() returns the ed25519.PrivateKey used to initialize the PacketConn.
+	PrivateKey() ed25519.PrivateKey
 }

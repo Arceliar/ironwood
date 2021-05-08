@@ -213,6 +213,12 @@ func (pc *PacketConn) IsClosed() bool {
 	return false
 }
 
+// PrivateKey() returns the ed25519.PrivateKey used to initialize the PacketConn.
+func (pc *PacketConn) PrivateKey() ed25519.PrivateKey {
+	sk := pc.core.crypto.privateKey
+	return ed25519.PrivateKey(sk[:])
+}
+
 func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
 	pc.actor.Act(nil, func() {
 		switch tr.kind {
