@@ -51,14 +51,17 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 }
 
 func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	destKey, ok := addr.(types.Addr)
-	if !ok || len(destKey) != edPubSize {
-		return 0, errors.New("bad destination address")
-	}
 	select {
 	case <-pc.network.closed:
 		return 0, errors.New("closed")
 	default:
+	}
+	destKey, ok := addr.(types.Addr)
+	if !ok || len(destKey) != edPubSize {
+		return 0, errors.New("bad destination address")
+	}
+	if uint64(len(p)) > pc.MTU() {
+		return 0, errors.New("oversized message")
 	}
 	n = len(p)
 	var dest edPub
