@@ -66,3 +66,8 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	pc.sessions.writeTo(dest, append([]byte(nil), p...))
 	return
 }
+
+// MTU returns the maximum transmission unit of the PacketConn, i.e. maximum safe message size to send over the network.
+func (pc *PacketConn) MTU() uint64 {
+	return pc.PacketConn.MTU() - sessionTrafficOverhead
+}

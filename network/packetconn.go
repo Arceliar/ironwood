@@ -76,6 +76,9 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if len(dest) != publicKeySize {
 		return 0, errors.New("incorrect address length")
 	}
+	if uint64(len(p)) > pc.MTU() {
+		return 0, errors.New("oversized message")
+	}
 	var tr dhtTraffic
 	tr.source = pc.core.crypto.publicKey
 	copy(tr.dest[:], dest)
@@ -217,6 +220,21 @@ func (pc *PacketConn) IsClosed() bool {
 func (pc *PacketConn) PrivateKey() ed25519.PrivateKey {
 	sk := pc.core.crypto.privateKey
 	return ed25519.PrivateKey(sk[:])
+}
+
+// MTU returns the maximum transmission unit of the PacketConn, i.e. maximum safe message size to send over the network.
+func (pc *PacketConn) MTU() uint64 {
+	const maxPeerMessageSize = 65535
+	const messageTypeSize = 1
+	const rootSeqSize = 8
+	const treeUpdateOverhead = messageTypeSize + publicKeySize + rootSeqSize
+	const maxPortSize = 10 // maximum vuint size in bytes
+	const treeHopSize = publicKeySize + maxPortSize + signatureSize
+	const maxHops = (maxPeerMessageSize - treeUpdateOverhead) / treeHopSize
+	const maxPathBytes = 2 * maxPortSize * maxHops // to the root and back
+	const pathTrafficOverhead = messageTypeSize + maxPathBytes + publicKeySize + publicKeySize + messageTypeSize
+	const MTU = maxPeerMessageSize - pathTrafficOverhead
+	return MTU
 }
 
 func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {

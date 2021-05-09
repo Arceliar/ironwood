@@ -27,6 +27,9 @@ type PacketConn interface {
 	// This is to check if the PacketConn is closed without potentially being stuck on a blocking operation (e.g. a read or write).
 	IsClosed() bool
 
-	// PrivateKey() returns the ed25519.PrivateKey used to initialize the PacketConn.
+	// PrivateKey returns the ed25519.PrivateKey used to initialize the PacketConn.
 	PrivateKey() ed25519.PrivateKey
+
+	// MTU returns the maximum transmission unit of the PacketConn, i.e. maximum safe message size to send over the network.
+	MTU() uint64
 }
