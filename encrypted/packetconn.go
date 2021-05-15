@@ -17,6 +17,7 @@ type PacketConn struct {
 	secret   boxPriv
 	sessions sessionManager
 	network  netManager
+	Debug    Debug
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
@@ -31,7 +32,7 @@ func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 	pc.secret = *priv.toBox()
 	pc.sessions.init(pc)
 	pc.network.init(pc)
-	pc.SetOutOfBandHandler(nil)
+	pc.Debug.init(pc)
 	return pc, nil
 }
 

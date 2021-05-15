@@ -24,6 +24,7 @@ type PacketConn struct {
 	readDeadline *deadline
 	closeMutex   sync.Mutex
 	closed       chan struct{}
+	Debug        Debug
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
@@ -40,6 +41,7 @@ func (pc *PacketConn) init(c *core) {
 	pc.recv = make(chan *dhtTraffic, 1)
 	pc.readDeadline = newDeadline()
 	pc.closed = make(chan struct{})
+	pc.Debug.init(c)
 }
 
 // ReadFrom fulfills the net.PacketConn interface, with a types.Addr returned as the from address.
