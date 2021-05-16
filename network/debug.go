@@ -45,6 +45,7 @@ func (d *Debug) GetSelf() (info DebugSelfInfo) {
 	phony.Block(&d.c.dhtree, func() {
 		info.Key = append(info.Key, d.c.crypto.publicKey[:]...)
 		info.Root = append(info.Root, d.c.dhtree.self.root[:]...)
+		info.Coords = make([]uint64, 0)
 		for _, hop := range d.c.dhtree.self.hops {
 			info.Coords = append(info.Coords, uint64(hop.port))
 		}
@@ -59,6 +60,7 @@ func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 			var info DebugPeerInfo
 			info.Key = append(info.Key, p.key[:]...)
 			info.Root = append(info.Root, tinfo.root[:]...)
+			info.Coords = make([]uint64, 0)
 			for _, hop := range tinfo.hops {
 				info.Coords = append(info.Coords, uint64(hop.port))
 			}
@@ -93,6 +95,7 @@ func (d *Debug) GetPaths() (infos []DebugPathInfo) {
 		for key, pinfo := range d.c.dhtree.pathfinder.paths {
 			var info DebugPathInfo
 			info.Key = append(info.Key, key[:]...)
+			info.Path = make([]uint64, 0)
 			for _, port := range pinfo.path {
 				info.Path = append(info.Path, uint64(port))
 			}
