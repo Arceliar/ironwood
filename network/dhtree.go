@@ -280,7 +280,7 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 
 // _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
 // this only uses the source direction of paths through the dht
-func (t *dhtree) _dhtLookup(dest publicKey) *peer {
+func (t *dhtree) old_dhtLookup(dest publicKey) *peer {
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
 	if treeLess(dest, best) && !treeLess(dest, t.self.root) {
@@ -335,7 +335,7 @@ func (t *dhtree) _dhtLookup(dest publicKey) *peer {
 // this uses the destination direction of paths through the dht, so the node at the end of the line is the right one to repair a gap in the dht
 // note that this also considers peers (this is what bootstraps the whole process)
 // it also considers the root, to make sure that multiple split rings will converge back to one
-func (t *dhtree) _dhtBootstrapLookup(dest publicKey) *peer {
+func (t *dhtree) old_dhtBootstrapLookup(dest publicKey) *peer {
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
 	if !treeLess(best, dest) && treeLess(t.self.root, dest) {
@@ -408,7 +408,7 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	source := bootstrap.label.key
-	if next := t._dhtBootstrapLookup(source); next != nil {
+	if next := t.old_dhtBootstrapLookup(source); next != nil {
 		next.sendBootstrap(t, bootstrap)
 		return
 	} else if source.equal(t.core.crypto.publicKey) {
@@ -670,7 +670,7 @@ func (t *dhtree) _doBootstrap() {
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
 func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
 	t.Act(from, func() {
-		next := t._dhtLookup(tr.dest)
+		next := t.old_dhtLookup(tr.dest)
 		if next == nil {
 			if tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
