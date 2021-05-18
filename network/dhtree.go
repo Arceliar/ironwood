@@ -55,7 +55,7 @@ func (t *dhtree) init(c *core) {
 	for idx := range r {
 		t.seq |= uint64(r[idx]) << 8 * uint64(idx)
 	}
-	t.btimer = time.AfterFunc(0, func() { t.Act(nil, t._doBootstrap) })
+	t.btimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t._fix()                                // Initialize t.self and start announce and timeout timers
 	t.pathfinder.init(t)
