@@ -322,20 +322,24 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 		}
 	}
 	// Update the best key and peer
+	// First check if the current best (ourself) is an invalid next hop
 	if (isBootstrap && best.equal(dest)) || dhtOrdered(t.self.root, dest, best) {
 		// We're the current best, and we're already too far through keyspace
 		// That means we need to default to heading towards the root
 		doUpdate(t.self.root, t.parent, nil)
 	}
-	// Update based on our root
+	// Update based on the ancestry of our own treeInfo
 	doAncestry(t.self, t.parent)
-	// Update based on our peers
+	// Update based on the ancestry of our peers
 	for p, info := range t.tinfos {
 		doAncestry(info, p)
 	}
-	// Replace best (from an ancestor) if it happens to be a direct peer
+	// Check peers
 	for p := range t.tinfos {
 		if best.equal(p.key) {
+			// The best next hop is one of our peers
+			// We may have stumbled upon them too early, as the ancestor of another peer
+			// Switch to using the direct route to this peer, just in case
 			doUpdate(p.key, p, nil)
 		}
 	}
