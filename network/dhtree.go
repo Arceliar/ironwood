@@ -280,6 +280,74 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 
 // _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
 // this only uses the source direction of paths through the dht
+// bootstraps use slightly different logic, since they need to stop short of the destination key
+func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
+	// Start by defining variables and helper functions
+	best := t.core.crypto.publicKey
+	var bestPeer *peer
+	var bestInfo *dhtInfo
+	// doUpdate is just to make sure we don't forget to update something
+	doUpdate := func(key publicKey, p *peer, d *dhtInfo) {
+		best, bestPeer, bestInfo = key, p, d
+	}
+	// doCheckedUpdate checks if the provided key is better than the current best, and updates if so
+	doCheckedUpdate := func(key publicKey, p *peer, d *dhtInfo) {
+		switch {
+		case !isBootstrap && key.equal(dest) && !best.equal(dest):
+			fallthrough
+		case dhtOrdered(best, key, dest):
+			doUpdate(key, p, nil)
+		}
+	}
+	// doAncestry updates based on the ancestry information in a treeInfo
+	doAncestry := func(info *treeInfo, p *peer) {
+		doCheckedUpdate(info.root, p, nil) // updates if the root is better
+		for _, hop := range info.hops {
+			doCheckedUpdate(hop.next, p, nil) // updates if this hop is better
+			if bestPeer != nil && best.equal(hop.next) && info.time.Before(t.tinfos[bestPeer].time) {
+				// This ancestor matches our current next hop, but this peer's treeInfo is better, so switch to it
+				doUpdate(hop.next, p, nil)
+			}
+		}
+	}
+	// doDHT updates best based on a DHT path
+	doDHT := func(info *dhtInfo) {
+		doCheckedUpdate(info.source, info.prev, info) // updates if the source is better
+		if bestInfo != nil && info.source.equal(bestInfo.source) {
+			if treeLess(info.root, bestInfo.root) {
+				doUpdate(info.source, info.prev, info) // same source, but the root is better
+			} else if info.root.equal(bestInfo.root) && info.rootSeq > bestInfo.rootSeq {
+				doUpdate(info.source, info.prev, info) // same source, same root, but the rootSeq is newer
+			}
+		}
+	}
+	// Update the best key and peer
+	if (isBootstrap && best.equal(dest)) || dhtOrdered(t.self.root, dest, best) {
+		// We're the current best, and we're already too far through keyspace
+		// That means we need to default to heading towards the root
+		doUpdate(t.self.root, t.parent, nil)
+	}
+	// Update based on our root
+	doAncestry(t.self, t.parent)
+	// Update based on our peers
+	for p, info := range t.tinfos {
+		doAncestry(info, p)
+	}
+	// Replace best (from an ancestor) if it happens to be a direct peer
+	for p := range t.tinfos {
+		if best.equal(p.key) {
+			doUpdate(p.key, p, nil)
+		}
+	}
+	// Update based on our DHT infos
+	for _, info := range t.dinfos {
+		doDHT(info)
+	}
+	return bestPeer
+}
+
+// _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
+// this only uses the source direction of paths through the dht
 func (t *dhtree) old_dhtLookup(dest publicKey) *peer {
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
@@ -408,7 +476,7 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 	source := bootstrap.label.key
-	if next := t.old_dhtBootstrapLookup(source); next != nil {
+	if next := t._dhtLookup(source, true); next != nil {
 		next.sendBootstrap(t, bootstrap)
 		return
 	} else if source.equal(t.core.crypto.publicKey) {
@@ -670,7 +738,7 @@ func (t *dhtree) _doBootstrap() {
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
 func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
 	t.Act(from, func() {
-		next := t.old_dhtLookup(tr.dest)
+		next := t._dhtLookup(tr.dest, false)
 		if next == nil {
 			if tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
