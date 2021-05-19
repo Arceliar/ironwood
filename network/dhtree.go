@@ -148,7 +148,7 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 }
 
 // _fix selects the best parent (and is called in response to receiving a tree update)
-// if this is not the same as our current parent, then it sends a tree update to our peers and resets our prev/successor in the dht
+// if this is not the same as our current parent, then it sends a tree update to our peers and resets our prev/next in the dht
 func (t *dhtree) _fix() {
 	if t.stimer == nil {
 		return // closed
@@ -348,7 +348,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 
 // _dhtAdd adds a dhtInfo to the dht and returns true
 // it may return false if the path associated with the dhtInfo isn't allowed for some reason
-//  e.g. we know a better prev/successor for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
+//  e.g. we know a better prev/next for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
@@ -472,8 +472,8 @@ func (t *dhtree) _newSetup(token *dhtSetupToken) *dhtSetup {
 }
 
 // _handleSetup checks if it's safe to add a path from the setup source to the setup destination
-// if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better successor, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
-// otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our successor path (if we are, tearing down our existing successor if one exists)
+// if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better next, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
+// otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our next path (if we are, tearing down our existing next if one exists)
 func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	next := t._treeLookup(&setup.token.dest)
 	dest := setup.token.dest.key
@@ -542,7 +542,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 			//  The exceptions are when:
 			//    1. The dinfo's root/seq don't match our current root/seq
 			//    2. The dinfo matches, but so does t.next, and t.next is better
-			//  What happens when the dinfo matches, t.next does not, but t.succ is still better?...
+			//  What happens when the dinfo matches, t.next does not, but t.next is still better?...
 			//  Just doing something for now (replace next) but not sure that's right...
 			var doUpdate bool
 			if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
