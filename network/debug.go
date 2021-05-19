@@ -33,7 +33,7 @@ type DebugPeerInfo struct {
 type DebugDHTInfo struct {
 	Key  ed25519.PublicKey
 	Port uint64
-	Next uint64
+	Rest uint64
 }
 
 type DebugPathInfo struct {
@@ -78,11 +78,11 @@ func (d *Debug) GetDHT() (infos []DebugDHTInfo) {
 		for _, dinfo := range d.c.dhtree.dinfos {
 			var info DebugDHTInfo
 			info.Key = append(info.Key, dinfo.key[:]...)
-			if dinfo.prev != nil {
-				info.Port = uint64(dinfo.prev.port)
+			if dinfo.peer != nil {
+				info.Port = uint64(dinfo.peer.port)
 			}
-			if dinfo.next != nil {
-				info.Next = uint64(dinfo.next.port)
+			if dinfo.rest != nil {
+				info.Rest = uint64(dinfo.rest.port)
 			}
 			infos = append(infos, info)
 		}

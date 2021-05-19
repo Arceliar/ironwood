@@ -140,7 +140,7 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 			t._fix()
 		}
 		for _, dinfo := range t.dinfos {
-			if dinfo.prev == p || dinfo.next == p {
+			if dinfo.peer == p || dinfo.rest == p {
 				t._teardown(p, dinfo.getTeardown())
 			}
 		}
@@ -312,12 +312,12 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 	}
 	// doDHT updates best based on a DHT path
 	doDHT := func(info *dhtInfo) {
-		doCheckedUpdate(info.key, info.prev, info) // updates if the source is better
+		doCheckedUpdate(info.key, info.peer, info) // updates if the source is better
 		if bestInfo != nil && info.key.equal(bestInfo.key) {
 			if treeLess(info.root, bestInfo.root) {
-				doUpdate(info.key, info.prev, info) // same source, but the root is better
+				doUpdate(info.key, info.peer, info) // same source, but the root is better
 			} else if info.root.equal(bestInfo.root) && info.rootSeq > bestInfo.rootSeq {
-				doUpdate(info.key, info.prev, info) // same source, same root, but the rootSeq is newer
+				doUpdate(info.key, info.peer, info) // same source, same root, but the rootSeq is newer
 			}
 		}
 	}
@@ -487,8 +487,8 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	dinfo := new(dhtInfo)
 	dinfo.seq = setup.seq
 	dinfo.key = setup.token.source
-	dinfo.prev = prev
-	dinfo.next = next
+	dinfo.peer = prev
+	dinfo.rest = next
 	dinfo.root = setup.token.dest.root
 	dinfo.rootSeq = setup.token.dest.seq
 	if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
@@ -514,10 +514,10 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
 			if info, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-				if info.prev != nil {
-					info.prev.sendTeardown(t, info.getTeardown())
+				if info.peer != nil {
+					info.peer.sendTeardown(t, info.getTeardown())
 				}
-				t._teardown(info.prev, info.getTeardown())
+				t._teardown(info.peer, info.getTeardown())
 			}
 		})
 	})
@@ -582,10 +582,10 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 			panic("this should never happen")
 		}
 		var next *peer
-		if from == dinfo.prev {
-			next = dinfo.next
-		} else if from == dinfo.next {
-			next = dinfo.prev
+		if from == dinfo.peer {
+			next = dinfo.rest
+		} else if from == dinfo.rest {
+			next = dinfo.peer
 		} else {
 			return //panic("DEBUG teardown of path from wrong node")
 		}
@@ -896,8 +896,8 @@ func (l *treeLabel) decode(data []byte) error {
 type dhtInfo struct {
 	seq     uint64
 	key     publicKey
-	prev    *peer
-	next    *peer
+	peer    *peer
+	rest    *peer
 	root    publicKey
 	rootSeq uint64
 	timer   *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
