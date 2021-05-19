@@ -77,7 +77,7 @@ func (d *Debug) GetDHT() (infos []DebugDHTInfo) {
 	phony.Block(&d.c.dhtree, func() {
 		for _, dinfo := range d.c.dhtree.dinfos {
 			var info DebugDHTInfo
-			info.Key = append(info.Key, dinfo.source[:]...)
+			info.Key = append(info.Key, dinfo.key[:]...)
 			if dinfo.prev != nil {
 				info.Port = uint64(dinfo.prev.port)
 			}

@@ -24,7 +24,7 @@ type dhtree struct {
 	pathfinder pathfinder
 	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
-	dinfos     map[dhtInfoKey]*dhtInfo
+	dinfos     map[dhtMapKey]*dhtInfo
 	self       *treeInfo              // self info
 	parent     *peer                  // peer that sent t.self to us
 	pred       *dhtInfo               // predecessor in dht, who we maintain a path to
@@ -45,7 +45,7 @@ func (t *dhtree) init(c *core) {
 	t.core = c
 	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
-	t.dinfos = make(map[dhtInfoKey]*dhtInfo)
+	t.dinfos = make(map[dhtMapKey]*dhtInfo)
 	t.dkeys = make(map[*dhtInfo]publicKey)
 	t.seq = uint64(time.Now().UnixNano())
 	r := make([]byte, 8)
@@ -312,12 +312,12 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 	}
 	// doDHT updates best based on a DHT path
 	doDHT := func(info *dhtInfo) {
-		doCheckedUpdate(info.source, info.prev, info) // updates if the source is better
-		if bestInfo != nil && info.source.equal(bestInfo.source) {
+		doCheckedUpdate(info.key, info.prev, info) // updates if the source is better
+		if bestInfo != nil && info.key.equal(bestInfo.key) {
 			if treeLess(info.root, bestInfo.root) {
-				doUpdate(info.source, info.prev, info) // same source, but the root is better
+				doUpdate(info.key, info.prev, info) // same source, but the root is better
 			} else if info.root.equal(bestInfo.root) && info.rootSeq > bestInfo.rootSeq {
-				doUpdate(info.source, info.prev, info) // same source, same root, but the rootSeq is newer
+				doUpdate(info.key, info.prev, info) // same source, same root, but the rootSeq is newer
 			}
 		}
 	}
@@ -352,7 +352,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
-	t.dinfos[info.getKey()] = info
+	t.dinfos[info.getMapKey()] = info
 	return true
 }
 
@@ -486,7 +486,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	}
 	dinfo := new(dhtInfo)
 	dinfo.seq = setup.seq
-	dinfo.source = setup.token.source
+	dinfo.key = setup.token.source
 	dinfo.prev = prev
 	dinfo.next = next
 	dinfo.root = setup.token.dest.root
@@ -498,7 +498,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 		}
 		return
 	}
-	if _, isIn := t.dinfos[dinfo.getKey()]; isIn {
+	if _, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
 		// Already have a path from this source
 		if prev != nil {
 			prev.sendTeardown(t, setup.getTeardown())
@@ -513,7 +513,7 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
-			if info, isIn := t.dinfos[dinfo.getKey()]; isIn {
+			if info, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
 				if info.prev != nil {
 					info.prev.sendTeardown(t, info.getTeardown())
 				}
@@ -547,10 +547,10 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 			var doUpdate bool
 			if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
 				// The root/seq is bad, so don't update
-			} else if dinfo.source.equal(t.succ.source) {
+			} else if dinfo.key.equal(t.succ.key) {
 				// It's an update from the current successor
 				doUpdate = true
-			} else if dhtOrdered(t.core.crypto.publicKey, dinfo.source, t.succ.source) {
+			} else if dhtOrdered(t.core.crypto.publicKey, dinfo.key, t.succ.key) {
 				// It's an update from a better successor
 				doUpdate = true
 			}
@@ -575,10 +575,10 @@ func (t *dhtree) handleSetup(from phony.Actor, prev *peer, setup *dhtSetup) {
 
 // _teardown removes the path associated with the teardown from our dht and forwards it to the next hop along that path (or does nothing if the teardown doesn't match a known path)
 func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
-	if dinfo, isIn := t.dinfos[teardown.getKey()]; isIn {
+	if dinfo, isIn := t.dinfos[teardown.getMapKey()]; isIn {
 		if teardown.seq != dinfo.seq {
 			return
-		} else if !teardown.source.equal(dinfo.source) {
+		} else if !teardown.key.equal(dinfo.key) {
 			panic("this should never happen")
 		}
 		var next *peer
@@ -591,7 +591,7 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 		}
 		dinfo.timer.Stop()
 		delete(t.dkeys, dinfo)
-		delete(t.dinfos, teardown.getKey())
+		delete(t.dinfos, teardown.getMapKey())
 		if next != nil {
 			next.sendTeardown(t, teardown)
 		}
@@ -895,7 +895,7 @@ func (l *treeLabel) decode(data []byte) error {
 
 type dhtInfo struct {
 	seq     uint64
-	source  publicKey
+	key     publicKey
 	prev    *peer
 	next    *peer
 	root    publicKey
@@ -904,17 +904,17 @@ type dhtInfo struct {
 }
 
 func (info *dhtInfo) getTeardown() *dhtTeardown {
-	return &dhtTeardown{seq: info.seq, source: info.source, root: info.root, rootSeq: info.rootSeq}
+	return &dhtTeardown{seq: info.seq, key: info.key, root: info.root, rootSeq: info.rootSeq}
 }
 
-type dhtInfoKey struct {
-	source  publicKey
+type dhtMapKey struct {
+	key     publicKey
 	root    publicKey
 	rootSeq uint64
 }
 
-func (info *dhtInfo) getKey() dhtInfoKey {
-	return dhtInfoKey{info.source, info.root, info.rootSeq}
+func (info *dhtInfo) getMapKey() dhtMapKey {
+	return dhtMapKey{info.key, info.root, info.rootSeq}
 }
 
 /****************
@@ -1063,7 +1063,7 @@ func (s *dhtSetup) check() bool {
 func (s *dhtSetup) getTeardown() *dhtTeardown {
 	return &dhtTeardown{
 		seq:     s.seq,
-		source:  s.token.source,
+		key:     s.token.source,
 		root:    s.token.dest.root,
 		rootSeq: s.token.dest.seq,
 	}
@@ -1099,20 +1099,20 @@ func (s *dhtSetup) decode(data []byte) error {
 
 type dhtTeardown struct {
 	seq     uint64
-	source  publicKey
+	key     publicKey
 	root    publicKey
 	rootSeq uint64
 }
 
-func (t *dhtTeardown) getKey() dhtInfoKey {
-	return dhtInfoKey{t.source, t.root, t.rootSeq}
+func (t *dhtTeardown) getMapKey() dhtMapKey {
+	return dhtMapKey{t.key, t.root, t.rootSeq}
 }
 
 func (t *dhtTeardown) encode(out []byte) ([]byte, error) {
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, t.seq)
 	out = append(out, seq...)
-	out = append(out, t.source[:]...)
+	out = append(out, t.key[:]...)
 	out = append(out, t.root[:]...)
 	rseq := make([]byte, 8)
 	binary.BigEndian.PutUint64(rseq, t.rootSeq)
@@ -1126,7 +1126,7 @@ func (t *dhtTeardown) decode(data []byte) error {
 		return wireDecodeError
 	}
 	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	if !wireChopSlice(tmp.source[:], &data) {
+	if !wireChopSlice(tmp.key[:], &data) {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.root[:], &data) {
 		return wireDecodeError
