@@ -28,7 +28,7 @@ type dhtree struct {
 	self       *treeInfo              // self info
 	parent     *peer                  // peer that sent t.self to us
 	prev       *dhtInfo               // previous key in dht, who we maintain a path to
-	succ       *dhtInfo               // successor in dht, they maintain a path to us
+	next       *dhtInfo               // next in dht, they maintain a path to us
 	dkeys      map[*dhtInfo]publicKey // map of *dhtInfo->destKey for current and past prev
 	seq        uint64                 // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
 	btimer     *time.Timer            // time.AfterFunc to send bootstrap packets
@@ -536,32 +536,32 @@ func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
 	if next != nil {
 		next.sendSetup(t, setup)
 	} else {
-		if t.succ != nil {
+		if t.next != nil {
 			// TODO get this right!
-			//  We need to replace the old successor in most cases
+			//  We need to replace the old next in most cases
 			//  The exceptions are when:
 			//    1. The dinfo's root/seq don't match our current root/seq
-			//    2. The dinfo matches, but so does t.succ, and t.succ is better
-			//  What happens when the dinfo matches, t.succ does not, but t.succ is still better?...
-			//  Just doing something for now (replace succ) but not sure that's right...
+			//    2. The dinfo matches, but so does t.next, and t.next is better
+			//  What happens when the dinfo matches, t.next does not, but t.succ is still better?...
+			//  Just doing something for now (replace next) but not sure that's right...
 			var doUpdate bool
 			if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
 				// The root/seq is bad, so don't update
-			} else if dinfo.key.equal(t.succ.key) {
-				// It's an update from the current successor
+			} else if dinfo.key.equal(t.next.key) {
+				// It's an update from the current next
 				doUpdate = true
-			} else if dhtOrdered(t.core.crypto.publicKey, dinfo.key, t.succ.key) {
-				// It's an update from a better successor
+			} else if dhtOrdered(t.core.crypto.publicKey, dinfo.key, t.next.key) {
+				// It's an update from a better next
 				doUpdate = true
 			}
 			if doUpdate {
-				t._teardown(nil, t.succ.getTeardown())
-				t.succ = dinfo
+				t._teardown(nil, t.next.getTeardown())
+				t.next = dinfo
 			} else {
 				t._teardown(nil, dinfo.getTeardown())
 			}
 		} else {
-			t.succ = dinfo
+			t.next = dinfo
 		}
 	}
 }
@@ -595,8 +595,8 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 		if next != nil {
 			next.sendTeardown(t, teardown)
 		}
-		if t.succ == dinfo {
-			t.succ = nil
+		if t.next == dinfo {
+			t.next = nil
 		}
 		if t.prev == dinfo {
 			t.prev = nil
