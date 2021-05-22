@@ -28,7 +28,7 @@ This isn't high priority from a ygg-replacement standpoint (it's not needed for 
 
 ### Protocol update(s)
 
-1. Investigate keeping a second keyspace neighbor in each direction, so the chain isn't momentarily broken when a node joins.
+1. Investigate keeping a second keyspace neighbor in each direction, so the chain isn't momentarily broken when a node joins. NOTE: Investigated, ultimately I think we'll need two neighbors per side + a different path setup order (path from next before path to prev), to prevent momentary disruption to the DHT when a node joins or leaves. Implementing/debugging/etc turns out to be more complicated than initially expected, so this is unlikely to happen until other things are in place and the existing code has been field tested.
 2. The encrypted package could use some work... either switch to the noise protocol framework, or improve what's already there (to e.g. not send ephemeral pubkeys in plaintext).
 
 ### DEBUG interface
