@@ -98,10 +98,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			//  Always delaying *should* be safe, I think, so I need to debug why that happens
 			if !t.wait {
 				t.wait = true
-				// FIXME until this message is handled, we potentially have no path to the root
-				// That messes with the DHT
-				// Adjust DHT lookups to tolerate this (if peers are OK...)
-				t.Act(nil, func() {
+				go t.Act(nil, func() {
 					t.wait = false
 					t.self = nil // So fix can reset things / start a proper timer
 					t.parent = nil

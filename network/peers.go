@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	peerKEEPALIVE = time.Second
-	peerTIMEOUT   = time.Second * 5 / 2
+	peerKEEPALIVE = 4 * time.Second
+	peerTIMEOUT   = 6 * time.Second
 )
 
 type peerPort uint64
