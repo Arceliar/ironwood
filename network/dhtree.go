@@ -33,7 +33,6 @@ type dhtree struct {
 	seq        uint64                 // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
 	btimer     *time.Timer            // time.AfterFunc to send bootstrap packets
 	stimer     *time.Timer            // time.AfterFunc for self/parent expiration
-	wait       bool                   // FIXME this is a hack to let bad news spread before changing parents
 }
 
 type treeExpiredInfo struct {
@@ -79,43 +78,19 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 		if exp, isIn := t.expired[info.root]; !isIn || exp.seq < info.seq {
 			t.expired[info.root] = treeExpiredInfo{seq: info.seq, time: info.time}
 		}
-		oldInfo := t.tinfos[p]
-		t.tinfos[p] = info
-		var doWait bool
-		if t.self != oldInfo {
-			// Not our parent, don't delay the update
-		} else if !info.root.equal(t.self.root) {
-			doWait = true // FIXME make this safe if the new root is better
-		} else if info.seq == t.self.seq {
-			// Same root and same seq, so something changed -> unstable path
-			doWait = true
-		}
-		if doWait {
-			// FIXME
-			//  This is bad news about our path to the root
-			//  In benchmarks, if we don't delay handling it, nodes get stuck in a busyloop
-			//  However, if we *always* delay handling (even for non-parents), then things seem to break
-			//  Always delaying *should* be safe, I think, so I need to debug why that happens
-			if !t.wait {
-				t.wait = true
-				go t.Act(nil, func() {
-					t.wait = false
-					t.self = nil // So fix can reset things / start a proper timer
-					t.parent = nil
-					t._fix()
-					t._doBootstrap()
-				})
-			}
-		}
-		if !t.wait {
-			t._fix()
-			t._doBootstrap()
-		}
-		if oldInfo == nil {
+		if t.tinfos[p] == nil {
 			// The peer may have missed an update due to a race between creating the peer and now
 			// The easiest way to fix the problem is to just send it another update right now
 			p.sendTree(t, t.self)
 		}
+		t.tinfos[p] = info
+		if p == t.parent {
+			// The old t.self/t.parent are now based on invalid info
+			t.self = nil
+			t.parent = nil
+		}
+		t._fix()
+		t._doBootstrap()
 	})
 }
 
