@@ -91,35 +91,28 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			doWait = true
 		}
 		if doWait {
-			// This is bad news about our path to the root
-			// We don't want to switch to a new path to aggressively, since our other
-			//  peers could also be handling bad news right now, and that tends to
-			//  busyloop until all possible paths to the root have been exhausted.
-			// So send some bad news and wait before trying to select a new parent
-			t.self = &treeInfo{root: t.core.crypto.publicKey} // WARNING: no timer was set
-			t.parent = nil
-			t._sendTree() //t.core.peers.sendTree(t, t.self)
+			// FIXME
+			//  This is bad news about our path to the root
+			//  In benchmarks, if we don't delay handling it, nodes get stuck in a busyloop
+			//  However, if we *always* delay handling (even for non-parents), then things seem to break
+			//  Always delaying *should* be safe, I think, so I need to debug why that happens
 			if !t.wait {
 				t.wait = true
-				time.AfterFunc(0*time.Second, func() {
-					// FIXME until this timer fires, we potentially have no path to the root
-					// That messes with the DHT
-					// Adjust DHT lookups to tolerate this (if peers are OK...)
-					t.Act(nil, func() {
-						t.wait = false
-						t.self = nil // So fix can reset things / start a proper timer
-						t.parent = nil
-						t._fix()
-						t._doBootstrap()
-					})
+				// FIXME until this message is handled, we potentially have no path to the root
+				// That messes with the DHT
+				// Adjust DHT lookups to tolerate this (if peers are OK...)
+				t.Act(nil, func() {
+					t.wait = false
+					t.self = nil // So fix can reset things / start a proper timer
+					t.parent = nil
+					t._fix()
+					t._doBootstrap()
 				})
 			}
-			return
 		}
 		if !t.wait {
-			// TODO? something special if we're in the unsafe t.self state with no timer?
 			t._fix()
-			t._doBootstrap() // FIXME don't do this every time, only when we need to...
+			t._doBootstrap()
 		}
 		if oldInfo == nil {
 			// The peer may have missed an update due to a race between creating the peer and now
@@ -304,7 +297,8 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 		doCheckedUpdate(info.root, p, nil) // updates if the root is better
 		for _, hop := range info.hops {
 			doCheckedUpdate(hop.next, p, nil) // updates if this hop is better
-			if bestPeer != nil && best.equal(hop.next) && info.time.Before(t.tinfos[bestPeer].time) {
+			tinfo := t.tinfos[bestPeer]       // may be nil if we're in the middle of a remove
+			if tinfo != nil && best.equal(hop.next) && info.time.Before(tinfo.time) {
 				// This ancestor matches our current next hop, but this peer's treeInfo is better, so switch to it
 				doUpdate(hop.next, p, nil)
 			}
