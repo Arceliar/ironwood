@@ -83,7 +83,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 		t.tinfos[p] = info
 		var doWait bool
 		if t.self != oldInfo {
-			// Not our parent, don't update
+			// Not our parent, don't delay the update
 		} else if !info.root.equal(t.self.root) {
 			doWait = true // FIXME make this safe if the new root is better
 		} else if info.seq == t.self.seq {
@@ -101,7 +101,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			t._sendTree() //t.core.peers.sendTree(t, t.self)
 			if !t.wait {
 				t.wait = true
-				time.AfterFunc(time.Second, func() {
+				time.AfterFunc(0*time.Second, func() {
 					// FIXME until this timer fires, we potentially have no path to the root
 					// That messes with the DHT
 					// Adjust DHT lookups to tolerate this (if peers are OK...)
