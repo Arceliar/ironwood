@@ -33,6 +33,7 @@ type dhtree struct {
 	seq        uint64                 // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
 	btimer     *time.Timer            // time.AfterFunc to send bootstrap packets
 	stimer     *time.Timer            // time.AfterFunc for self/parent expiration
+	wait       bool                   // FIXME this shouldn't be needed
 }
 
 type treeExpiredInfo struct {
@@ -82,15 +83,40 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			// The peer may have missed an update due to a race between creating the peer and now
 			// The easiest way to fix the problem is to just send it another update right now
 			p.sendTree(t, t.self)
+		} else if p == t.parent && !t.wait {
+			oldInfo := t.tinfos[p]
+			var doWait bool
+			if !info.root.equal(oldInfo.root) {
+				doWait = true
+			} else if info.seq == oldInfo.seq {
+				doWait = true
+			}
+			if doWait {
+				// FIXME this is a hack
+				//  We seem to busyloop if we process parent updates immediately
+				//  E.g. we get bad news and immediately switch to a different peer
+				//  Then we get more bad news and switch again, etc...
+				// Set self to root, send, then process things correctly 1 second later
+				t.wait = true
+				t.self = &treeInfo{root: t.core.crypto.publicKey}
+				t.parent = nil
+				t._sendTree() // send bad news immediately
+				time.AfterFunc(time.Second, func() {
+					t.Act(nil, func() {
+						t.wait = false
+						t.self = nil
+						t.parent = nil
+						t._fix()
+						t._doBootstrap()
+					})
+				})
+			}
 		}
 		t.tinfos[p] = info
-		if p == t.parent {
-			// The old t.self/t.parent are now based on invalid info
-			t.self = nil
-			t.parent = nil
+		if !t.wait {
+			t._fix()
+			t._doBootstrap()
 		}
-		t._fix()
-		t._doBootstrap()
 	})
 }
 
