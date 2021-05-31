@@ -86,10 +86,10 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 		} else if p == t.parent && !t.wait {
 			oldInfo := t.tinfos[p]
 			var doWait bool
-			if !info.root.equal(oldInfo.root) {
-				doWait = true
-			} else if info.seq == oldInfo.seq {
-				doWait = true
+			if treeLess(oldInfo.root, info.root) {
+				doWait = true // worse root
+			} else if info.root.equal(oldInfo.root) && info.seq == oldInfo.seq {
+				doWait = true // same root and seq
 			}
 			if doWait {
 				// FIXME this is a hack
