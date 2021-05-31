@@ -83,14 +83,19 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			// The peer may have missed an update due to a race between creating the peer and now
 			// The easiest way to fix the problem is to just send it another update right now
 			p.sendTree(t, t.self)
-		} else if p == t.parent && !t.wait {
-			oldInfo := t.tinfos[p]
+		}
+		t.tinfos[p] = info
+		if p == t.parent {
+			if t.wait {
+				panic("this should never happen")
+			}
 			var doWait bool
-			if treeLess(oldInfo.root, info.root) {
+			if treeLess(t.self.root, info.root) {
 				doWait = true // worse root
-			} else if info.root.equal(oldInfo.root) && info.seq == oldInfo.seq {
+			} else if info.root.equal(t.self.root) && info.seq == t.self.seq {
 				doWait = true // same root and seq
 			}
+			t.self, t.parent = nil, nil // The old self/parent are now invalid
 			if doWait {
 				// FIXME this is a hack
 				//  We seem to busyloop if we process parent updates immediately
@@ -99,20 +104,17 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 				// Set self to root, send, then process things correctly 1 second later
 				t.wait = true
 				t.self = &treeInfo{root: t.core.crypto.publicKey}
-				t.parent = nil
 				t._sendTree() // send bad news immediately
 				time.AfterFunc(time.Second, func() {
 					t.Act(nil, func() {
 						t.wait = false
-						t.self = nil
-						t.parent = nil
+						t.self, t.parent = nil, nil
 						t._fix()
 						t._doBootstrap()
 					})
 				})
 			}
 		}
-		t.tinfos[p] = info
 		if !t.wait {
 			t._fix()
 			t._doBootstrap()
