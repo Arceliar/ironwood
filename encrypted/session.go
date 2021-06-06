@@ -18,7 +18,7 @@ TODO:
 
 const (
 	sessionTimeout         = time.Minute
-	sessionTrafficOverhead = 1 + boxPubSize + boxPubSize + boxNonceSize + boxOverhead + boxPubSize
+	sessionTrafficOverhead = 1 + 8 + 8 + boxPubSize + boxPubSize + boxNonceSize + boxOverhead + boxPubSize
 	sessionInitSize        = 1 + boxNonceSize + boxOverhead + boxPubSize + boxPubSize + 8 + 8
 	sessionAckSize         = sessionInitSize
 )
@@ -288,6 +288,11 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		info.sendNonce.inc() // Advance the nonce before anything else
 		bs := make([]byte, 1, sessionTrafficOverhead+len(msg))
 		bs[0] = sessionTypeTraffic
+		seq := make([]byte, 8)
+		binary.BigEndian.PutUint64(seq, info.localKeySeq)
+		bs = append(bs, seq...)
+		binary.BigEndian.PutUint64(seq, info.remoteKeySeq)
+		bs = append(bs, seq...)
 		bs = append(bs, info.sendPub[:]...)
 		bs = append(bs, info.current[:]...)
 		bs = append(bs, info.sendNonce[:]...)
@@ -312,6 +317,10 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		var theirKey, myKey boxPub
 		var nonce boxNonce
 		offset := 1
+		remoteKeySeq := binary.BigEndian.Uint64(msg[offset : offset+8])
+		offset += 8
+		localKeySeq := binary.BigEndian.Uint64(msg[offset : offset+8])
+		offset += 8
 		offset = bytesPop(theirKey[:], msg, offset)
 		offset = bytesPop(myKey[:], msg, offset)
 		offset = bytesPop(nonce[:], msg, offset)
@@ -325,6 +334,12 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		switch {
 		case fromCurrent && toRecv:
 			// The boring case, nothing to ratchet, just update nonce
+			if remoteKeySeq != info.remoteKeySeq {
+				panic("DEBUG remoteKeySeq mismatch")
+			}
+			if localKeySeq+1 != info.localKeySeq {
+				panic("DEBUG localKeySeq mismatch")
+			}
 			if !info.recvNonce.lessThan(&nonce) {
 				return
 			}
@@ -340,9 +355,11 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				// Rotate their keys
 				info.current = info.next
 				info.next = innerKey
+				info.remoteKeySeq++ // = remoteKeySeq
 				// Rotate our own keys
 				info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
 				info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
+				info.localKeySeq++
 				// Generate new next keys
 				info.nextPub, info.nextPriv = newBoxKeys()
 				// Update nonces
@@ -358,9 +375,11 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				// Rotate their keys
 				info.current = info.next
 				info.next = innerKey
+				info.remoteKeySeq++ // = remoteKeySeq
 				// Rotate our own keys
 				info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
 				info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
+				info.localKeySeq++
 				// Generate new next keys
 				info.nextPub, info.nextPriv = newBoxKeys()
 				// Update nonces
