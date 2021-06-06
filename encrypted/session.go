@@ -314,32 +314,26 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		if len(msg) < sessionTrafficOverhead || msg[0] != sessionTypeTraffic {
 			return
 		}
-		var theirKey, myKey boxPub
+		var xtheirKey, xmyKey boxPub
 		var nonce boxNonce
 		offset := 1
 		remoteKeySeq := binary.BigEndian.Uint64(msg[offset : offset+8])
 		offset += 8
 		localKeySeq := binary.BigEndian.Uint64(msg[offset : offset+8])
 		offset += 8
-		offset = bytesPop(theirKey[:], msg, offset)
-		offset = bytesPop(myKey[:], msg, offset)
+		offset = bytesPop(xtheirKey[:], msg, offset)
+		offset = bytesPop(xmyKey[:], msg, offset)
 		offset = bytesPop(nonce[:], msg, offset)
 		msg := msg[offset:]
-		fromCurrent := bytesEqual(theirKey[:], info.current[:])
-		fromNext := bytesEqual(theirKey[:], info.next[:])
-		toRecv := bytesEqual(myKey[:], info.recvPub[:])
-		toSend := bytesEqual(myKey[:], info.sendPub[:])
+		fromCurrent := remoteKeySeq == info.remoteKeySeq
+		fromNext := remoteKeySeq == info.remoteKeySeq+1
+		toRecv := localKeySeq+1 == info.localKeySeq
+		toSend := localKeySeq == info.localKeySeq
 		var sharedKey *boxShared
 		var onSuccess func(boxPub)
 		switch {
 		case fromCurrent && toRecv:
 			// The boring case, nothing to ratchet, just update nonce
-			if remoteKeySeq != info.remoteKeySeq {
-				panic("DEBUG remoteKeySeq mismatch")
-			}
-			if localKeySeq+1 != info.localKeySeq {
-				panic("DEBUG localKeySeq mismatch")
-			}
 			if !info.recvNonce.lessThan(&nonce) {
 				return
 			}
@@ -350,7 +344,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		case fromNext && toSend:
 			// The remote side appears to have ratcheted forward
 			sharedKey = new(boxShared)
-			getShared(sharedKey, &theirKey, &info.sendPriv)
+			getShared(sharedKey, &info.next, &info.sendPriv)
 			onSuccess = func(innerKey boxPub) {
 				// Rotate their keys
 				info.current = info.next
@@ -370,7 +364,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			// Technically there's no reason we can't handle this
 			//panic("DEBUG") // TODO test this
 			sharedKey = new(boxShared)
-			getShared(sharedKey, &theirKey, &info.recvPriv)
+			getShared(sharedKey, &info.next, &info.recvPriv)
 			onSuccess = func(innerKey boxPub) {
 				// Rotate their keys
 				info.current = info.next
