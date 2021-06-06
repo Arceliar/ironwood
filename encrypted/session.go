@@ -18,7 +18,7 @@ TODO:
 
 const (
 	sessionTimeout         = time.Minute
-	sessionTrafficOverhead = 1 + 8 + 8 + boxPubSize + boxPubSize + boxNonceSize + boxOverhead + boxPubSize
+	sessionTrafficOverhead = 1 + 8 + 8 + boxNonceSize + boxOverhead + boxPubSize
 	sessionInitSize        = 1 + boxNonceSize + boxOverhead + boxPubSize + boxPubSize + 8 + 8
 	sessionAckSize         = sessionInitSize
 )
@@ -251,9 +251,7 @@ func (info *sessionInfo) handleInit(from phony.Actor, init *sessionInit) {
 		}
 		info._handleUpdate(init)
 		// Send a sessionAck
-		init := newSessionInit(&info.sendPub, &info.nextPub, info.localKeySeq)
-		ack := sessionAck{init}
-		info._sendAck(&ack)
+		info._sendAck()
 	})
 }
 
@@ -293,8 +291,6 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		bs = append(bs, seq...)
 		binary.BigEndian.PutUint64(seq, info.remoteKeySeq)
 		bs = append(bs, seq...)
-		bs = append(bs, info.sendPub[:]...)
-		bs = append(bs, info.current[:]...)
 		bs = append(bs, info.sendNonce[:]...)
 		// We need to include info.nextPub below the layer of encryption
 		// That way the remote side knows it's us when we send from it later...
@@ -314,15 +310,12 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		if len(msg) < sessionTrafficOverhead || msg[0] != sessionTypeTraffic {
 			return
 		}
-		var xtheirKey, xmyKey boxPub
 		var nonce boxNonce
 		offset := 1
 		remoteKeySeq := binary.BigEndian.Uint64(msg[offset : offset+8])
 		offset += 8
 		localKeySeq := binary.BigEndian.Uint64(msg[offset : offset+8])
 		offset += 8
-		offset = bytesPop(xtheirKey[:], msg, offset)
-		offset = bytesPop(xmyKey[:], msg, offset)
 		offset = bytesPop(nonce[:], msg, offset)
 		msg := msg[offset:]
 		fromCurrent := remoteKeySeq == info.remoteKeySeq
@@ -382,8 +375,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		default:
 			// We can't make sense of their message
 			// Send a sessionInit and hope they ack so we can fix things
-			init := newSessionInit(&info.sendPub, &info.nextPub, info.localKeySeq)
-			info._sendInit(&init)
+			info._sendInit()
 			return
 		}
 		// Decrypt and handle packet
@@ -402,12 +394,15 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 	})
 }
 
-func (info *sessionInfo) _sendInit(init *sessionInit) {
-	info.mgr.sendInit(&info.ed, init)
+func (info *sessionInfo) _sendInit() {
+	init := newSessionInit(&info.sendPub, &info.nextPub, info.localKeySeq)
+	info.mgr.sendInit(&info.ed, &init)
 }
 
-func (info sessionInfo) _sendAck(ack *sessionAck) {
-	info.mgr.sendAck(&info.ed, ack)
+func (info sessionInfo) _sendAck() {
+	init := newSessionInit(&info.sendPub, &info.nextPub, info.localKeySeq)
+	ack := sessionAck{init}
+	info.mgr.sendAck(&info.ed, &ack)
 }
 
 /***************
