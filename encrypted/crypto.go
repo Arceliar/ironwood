@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
+
 	"golang.org/x/crypto/nacl/box"
 
 	"github.com/Arceliar/ironwood/encrypted/internal/e2c"
@@ -107,17 +109,6 @@ func boxSeal(out, msg []byte, nonce *boxNonce, shared *boxShared) []byte {
 	return box.SealAfterPrecomputation(out, msg, (*[24]byte)(nonce), (*[32]byte)(shared))
 }
 
-func (n *boxNonce) lessThan(o *boxNonce) bool {
-	for idx := range n {
-		if n[idx] < o[idx] {
-			return true
-		} else if n[idx] > o[idx] {
-			return false
-		}
-	}
-	return false
-}
-
 func newRandomNonce() (*boxNonce, error) {
 	var nonce boxNonce
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -129,11 +120,9 @@ func newRandomNonce() (*boxNonce, error) {
 // TODO we need to catch if nonce hits its max value and force a rekey
 //  To that end, maybe we can use a smaller nonce size? or a vuint and reset on uint64 max?
 
-func (n *boxNonce) inc() {
-	for idx := boxNonceSize - 1; idx >= 0; idx-- {
-		n[idx]++
-		if n[idx] != 0 {
-			break // continue only if we roll over
-		}
-	}
+func nonceForUint64(u64 uint64) *boxNonce {
+	nonce := new(boxNonce)
+	slice := nonce[boxNonceSize-8:]
+	binary.BigEndian.PutUint64(slice, u64)
+	return nonce
 }
