@@ -71,6 +71,13 @@ func (priv *edPriv) toBox() *boxPriv {
 	return &c
 }
 
+func (priv *edPriv) pub() *edPub {
+	pk := ed25519.PrivateKey(priv[:]).Public().(ed25519.PublicKey)
+	pub := new(edPub)
+	copy(pub[:], pk[:])
+	return pub
+}
+
 /*******
  * box *
  *******/

@@ -20,7 +20,7 @@ const (
 	sessionTimeout            = time.Minute
 	sessionTrafficOverhead    = 1 + 1 + 1 + 1 + boxOverhead + boxPubSize // header, seq, seq, nonce
 	sessionTrafficOverheadMax = sessionTrafficOverhead + 9 + 9 + 9
-	sessionInitSize           = 1 + boxNonceSize + boxOverhead + boxPubSize + boxPubSize + 8 + 8
+	sessionInitSize           = 1 + boxPubSize + boxOverhead + edSigSize + boxPubSize + boxPubSize + 8 + 8
 	sessionAckSize            = sessionInitSize
 )
 
@@ -84,12 +84,12 @@ func (mgr *sessionManager) handleData(from phony.Actor, pub *edPub, data []byte)
 		case sessionTypeDummy:
 		case sessionTypeInit:
 			init := new(sessionInit)
-			if init.decrypt(&mgr.pc.secret, pub, data) {
+			if init.decrypt(&mgr.pc.secretBox, pub, data) {
 				mgr._handleInit(pub, init)
 			}
 		case sessionTypeAck:
 			ack := new(sessionAck)
-			if ack.decrypt(&mgr.pc.secret, pub, data) {
+			if ack.decrypt(&mgr.pc.secretBox, pub, data) {
 				mgr._handleAck(pub, ack)
 			}
 		case sessionTypeTraffic:
@@ -175,13 +175,13 @@ func (mgr *sessionManager) _bufferAndInit(toKey edPub, msg []byte) {
 }
 
 func (mgr *sessionManager) sendInit(dest *edPub, init *sessionInit) {
-	if bs, err := init.encrypt(&mgr.pc.secret, dest); err == nil {
+	if bs, err := init.encrypt(&mgr.pc.secretEd, dest); err == nil {
 		mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
 	}
 }
 
 func (mgr *sessionManager) sendAck(dest *edPub, ack *sessionAck) {
-	if bs, err := ack.encrypt(&mgr.pc.secret, dest); err == nil {
+	if bs, err := ack.encrypt(&mgr.pc.secretEd, dest); err == nil {
 		mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
 	}
 }
@@ -442,35 +442,42 @@ func newSessionInit(current, next *boxPub, keySeq uint64) sessionInit {
 	return init
 }
 
-func (init *sessionInit) encrypt(from *boxPriv, to *edPub) ([]byte, error) {
+func (init *sessionInit) encrypt(from *edPriv, to *edPub) ([]byte, error) {
+	fromPub, fromPriv := newBoxKeys()
 	var toBox *boxPub
 	var err error
 	if toBox, err = to.toBox(); err != nil {
 		return nil, err
 	}
-	var nonce *boxNonce
-	if nonce, err = newRandomNonce(); err != nil {
-		return nil, err
-	}
+	// Get sig bytes
+	var sigBytes []byte // TODO initialize to correct size
+	sigBytes = append(sigBytes, fromPub[:]...)
+	sigBytes = append(sigBytes, init.current[:]...)
+	sigBytes = append(sigBytes, init.next[:]...)
+	offset := len(sigBytes)
+	sigBytes = sigBytes[:offset+8]
+	binary.BigEndian.PutUint64(sigBytes[offset:offset+8], init.keySeq)
+	offset = len(sigBytes)
+	sigBytes = sigBytes[:offset+8]
+	binary.BigEndian.PutUint64(sigBytes[offset:offset+8], init.seq)
+	// Sign
+	sig := edSign(sigBytes, from)
 	// Prepare the payload (to be encrypted)
-	payload := make([]byte, 0, sessionInitSize) // TODO correct size, this is overkill
-	payload = append(payload, init.current[:]...)
-	payload = append(payload, init.next[:]...)
-	offset := len(payload)
-	payload = payload[:offset+8]
-	binary.BigEndian.PutUint64(payload[offset:offset+8], init.keySeq)
-	offset = len(payload)
-	payload = payload[:offset+8]
-	binary.BigEndian.PutUint64(payload[offset:offset+8], init.seq)
+	var payload []byte // TODO initialize to correct size
+	payload = append(payload, sig[:]...)
+	payload = append(payload, sigBytes[boxPubSize:]...)
 	// Encrypt
 	var shared boxShared
-	getShared(&shared, toBox, from)
-	bs := boxSeal(nil, payload, nonce, &shared)
+	getShared(&shared, toBox, &fromPriv)
+	bs := boxSeal(nil, payload, new(boxNonce), &shared)
 	// Assemble final message
 	data := make([]byte, 1, sessionInitSize)
 	data[0] = sessionTypeInit
-	data = append(data, nonce[:]...)
+	data = append(data, fromPub[:]...)
 	data = append(data, bs...)
+	if len(data) != sessionInitSize {
+		panic("this should never happen")
+	}
 	return data, nil
 }
 
@@ -478,28 +485,31 @@ func (init *sessionInit) decrypt(priv *boxPriv, from *edPub, data []byte) bool {
 	if len(data) != sessionInitSize {
 		return false
 	}
-	fromBox, err := from.toBox()
-	if err != nil {
-		return false
-	}
-	var shared boxShared
-	getShared(&shared, fromBox, priv)
-	var nonce boxNonce
+	var fromBox boxPub
 	offset := 1
-	offset = bytesPop(nonce[:], data, offset)
+	offset = bytesPop(fromBox[:], data, offset)
 	bs := data[offset:]
-	payload := make([]byte, 0, sessionInitSize) // TODO correct size
+	var shared boxShared
+	getShared(&shared, &fromBox, priv)
+	var payload []byte
 	var ok bool
-	if payload, ok = boxOpen(payload, bs, &nonce, &shared); !ok {
+	if payload, ok = boxOpen(nil, bs, new(boxNonce), &shared); !ok {
 		return false
 	}
 	offset = 0
+	var sig edSig
+	offset = bytesPop(sig[:], payload, offset)
+	tmp := payload[offset:] // Used in sigBytes
 	offset = bytesPop(init.current[:], payload, offset)
 	offset = bytesPop(init.next[:], payload, offset)
 	init.keySeq = binary.BigEndian.Uint64(payload[offset : offset+8])
 	offset += 8
 	init.seq = binary.BigEndian.Uint64(payload[offset:])
-	return true
+	// Check signature
+	var sigBytes []byte
+	sigBytes = append(sigBytes, fromBox[:]...)
+	sigBytes = append(sigBytes, tmp...)
+	return edCheck(sigBytes, &sig, from)
 }
 
 /**************
@@ -510,7 +520,7 @@ type sessionAck struct {
 	sessionInit
 }
 
-func (ack *sessionAck) encrypt(from *boxPriv, to *edPub) ([]byte, error) {
+func (ack *sessionAck) encrypt(from *edPriv, to *edPub) ([]byte, error) {
 	data, err := ack.sessionInit.encrypt(from, to)
 	if err == nil {
 		data[0] = sessionTypeAck

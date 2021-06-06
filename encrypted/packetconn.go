@@ -14,10 +14,11 @@ import (
 type PacketConn struct {
 	actor phony.Inbox
 	*network.PacketConn
-	secret   boxPriv
-	sessions sessionManager
-	network  netManager
-	Debug    Debug
+	secretEd  edPriv
+	secretBox boxPriv
+	sessions  sessionManager
+	network   netManager
+	Debug     Debug
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
@@ -27,9 +28,8 @@ func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 		return nil, err
 	}
 	pc := &PacketConn{PacketConn: npc}
-	var priv edPriv
-	copy(priv[:], secret[:])
-	pc.secret = *priv.toBox()
+	copy(pc.secretEd[:], secret[:])
+	pc.secretBox = *pc.secretEd.toBox()
 	pc.sessions.init(pc)
 	pc.network.init(pc)
 	pc.Debug.init(pc)
