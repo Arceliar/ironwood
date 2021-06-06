@@ -19,7 +19,7 @@ TODO:
 const (
 	sessionTimeout         = time.Minute
 	sessionTrafficOverhead = 1 + boxPubSize + boxPubSize + boxNonceSize + boxOverhead + boxPubSize
-	sessionInitSize        = 1 + boxNonceSize + boxOverhead + boxPubSize + boxPubSize + 8
+	sessionInitSize        = 1 + boxNonceSize + boxOverhead + boxPubSize + boxPubSize + 8 + 8
 	sessionAckSize         = sessionInitSize
 )
 
@@ -131,7 +131,7 @@ func (mgr *sessionManager) _handleTraffic(pub *edPub, msg []byte) {
 		// If they ack, we'll set up a session and let it self-heal...
 		currentPub, _ := newBoxKeys()
 		nextPub, _ := newBoxKeys()
-		init := newSessionInit(&currentPub, &nextPub)
+		init := newSessionInit(&currentPub, &nextPub, 0)
 		mgr.sendInit(pub, &init)
 	}
 }
@@ -154,7 +154,7 @@ func (mgr *sessionManager) _bufferAndInit(toKey edPub, msg []byte) {
 		buf = new(sessionBuffer)
 		currentPub, currentPriv := newBoxKeys()
 		nextPub, nextPriv := newBoxKeys()
-		buf.init = newSessionInit(&currentPub, &nextPub)
+		buf.init = newSessionInit(&currentPub, &nextPub, 0)
 		buf.currentPriv = currentPriv
 		buf.nextPriv = nextPriv
 		buf.timer = time.AfterFunc(0, func() {})
@@ -191,23 +191,25 @@ func (mgr *sessionManager) sendAck(dest *edPub, ack *sessionAck) {
 
 type sessionInfo struct {
 	phony.Inbox
-	mgr        *sessionManager
-	seq        uint64 // remote seq
-	ed         edPub  // remote ed key
-	current    boxPub // send to this, expect to receive from it
-	next       boxPub // if we receive from this, then rotate it to current
-	recvPriv   boxPriv
-	recvPub    boxPub
-	recvShared boxShared
-	recvNonce  boxNonce
-	sendPriv   boxPriv // becomes recvPriv when we rachet forward
-	sendPub    boxPub  // becomes recvPub
-	sendShared boxShared
-	sendNonce  boxNonce
-	nextPriv   boxPriv // becomes sendPriv
-	nextPub    boxPub  // becomes sendPub
-	timer      *time.Timer
-	ack        *sessionAck
+	mgr          *sessionManager
+	seq          uint64 // remote seq
+	ed           edPub  // remote ed key
+	remoteKeySeq uint64 // signals rotation of current/next
+	current      boxPub // send to this, expect to receive from it
+	next         boxPub // if we receive from this, then rotate it to current
+	localKeySeq  uint64 // signals rotation of recv/send/next
+	recvPriv     boxPriv
+	recvPub      boxPub
+	recvShared   boxShared
+	recvNonce    boxNonce
+	sendPriv     boxPriv // becomes recvPriv when we rachet forward
+	sendPub      boxPub  // becomes recvPub
+	sendShared   boxShared
+	sendNonce    boxNonce
+	nextPriv     boxPriv // becomes sendPriv
+	nextPub      boxPub  // becomes sendPub
+	timer        *time.Timer
+	ack          *sessionAck
 }
 
 func newSession(ed *edPub, current, next boxPub, seq uint64) *sessionInfo {
@@ -249,7 +251,7 @@ func (info *sessionInfo) handleInit(from phony.Actor, init *sessionInit) {
 		}
 		info._handleUpdate(init)
 		// Send a sessionAck
-		init := newSessionInit(&info.sendPub, &info.nextPub)
+		init := newSessionInit(&info.sendPub, &info.nextPub, info.localKeySeq)
 		ack := sessionAck{init}
 		info._sendAck(&ack)
 	})
@@ -269,10 +271,12 @@ func (info *sessionInfo) _handleUpdate(init *sessionInit) {
 	info.current = init.current
 	info.next = init.next
 	info.seq = init.seq
+	info.remoteKeySeq = init.keySeq
 	// Advance our keys, since this counts as a response
 	info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
 	info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
 	info.nextPub, info.nextPriv = newBoxKeys()
+	info.localKeySeq++
 	// Don't roll back sendNonce, just to be extra safe
 	info._fixShared(&boxNonce{}, &info.sendNonce)
 	info._resetTimer()
@@ -365,7 +369,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		default:
 			// We can't make sense of their message
 			// Send a sessionInit and hope they ack so we can fix things
-			init := newSessionInit(&info.sendPub, &info.nextPub)
+			init := newSessionInit(&info.sendPub, &info.nextPub, info.localKeySeq)
 			info._sendInit(&init)
 			return
 		}
@@ -400,13 +404,15 @@ func (info sessionInfo) _sendAck(ack *sessionAck) {
 type sessionInit struct {
 	current boxPub
 	next    boxPub
+	keySeq  uint64
 	seq     uint64 // timestamp or similar
 }
 
-func newSessionInit(current, next *boxPub) sessionInit {
+func newSessionInit(current, next *boxPub, keySeq uint64) sessionInit {
 	var init sessionInit
 	init.current = *current
 	init.next = *next
+	init.keySeq = keySeq
 	init.seq = uint64(time.Now().Unix())
 	return init
 }
@@ -426,6 +432,9 @@ func (init *sessionInit) encrypt(from *boxPriv, to *edPub) ([]byte, error) {
 	payload = append(payload, init.current[:]...)
 	payload = append(payload, init.next[:]...)
 	offset := len(payload)
+	payload = payload[:offset+8]
+	binary.BigEndian.PutUint64(payload[offset:offset+8], init.keySeq)
+	offset = len(payload)
 	payload = payload[:offset+8]
 	binary.BigEndian.PutUint64(payload[offset:offset+8], init.seq)
 	// Encrypt
@@ -462,6 +471,8 @@ func (init *sessionInit) decrypt(priv *boxPriv, from *edPub, data []byte) bool {
 	offset = 0
 	offset = bytesPop(init.current[:], payload, offset)
 	offset = bytesPop(init.next[:], payload, offset)
+	init.keySeq = binary.BigEndian.Uint64(payload[offset : offset+8])
+	offset += 8
 	init.seq = binary.BigEndian.Uint64(payload[offset:])
 	return true
 }
