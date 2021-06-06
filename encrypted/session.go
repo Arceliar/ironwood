@@ -18,8 +18,8 @@ TODO:
 
 const (
 	sessionTimeout            = time.Minute
-	sessionTrafficOverhead    = 1 + 1 + 1 + 1 + boxOverhead + boxPubSize // header, seq, seq, nonce
-	sessionTrafficOverheadMax = sessionTrafficOverhead + 9 + 9 + 9
+	sessionTrafficOverheadMin = 1 + 1 + 1 + 1 + boxOverhead + boxPubSize // header, seq, seq, nonce
+	sessionTrafficOverhead    = sessionTrafficOverheadMin + 9 + 9 + 9
 	sessionInitSize           = 1 + boxPubSize + boxOverhead + edSigSize + boxPubSize + boxPubSize + 8 + 8
 	sessionAckSize            = sessionInitSize
 )
@@ -293,7 +293,7 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 			info.localKeySeq++
 			info._fixShared(0, 0)
 		}
-		bs := make([]byte, sessionTrafficOverheadMax+len(msg))
+		bs := make([]byte, sessionTrafficOverhead+len(msg))
 		bs[0] = sessionTypeTraffic
 		offset := 1
 		offset += binary.PutUvarint(bs[offset:], info.localKeySeq)
@@ -315,7 +315,7 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 	// TODO? some worker pool to multi-thread this
 	info.Act(from, func() {
-		if len(msg) < sessionTrafficOverhead || msg[0] != sessionTypeTraffic {
+		if len(msg) < sessionTrafficOverheadMin || msg[0] != sessionTypeTraffic {
 			return
 		}
 		offset := 1
