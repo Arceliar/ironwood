@@ -4,7 +4,7 @@ A project description will come later. Ironwood is pre-alpha work-in-progress. T
 
 ## TODO
 
-The following is a very rough TODO of what still needs to be implemented before this project is feature complete enough that it's worth testing (as are replacement to ygg's core or as a stand-alone network or something).
+The following is a very rough TODO of what still needs to be implemented before this project is feature complete enough that it's worth calling it alpha / tagging whenever backwards compatibility breaks.
 
 ### Misc optimizations
 
@@ -29,9 +29,11 @@ This isn't high priority from a ygg-replacement standpoint (it's not needed for 
 ### Protocol update(s)
 
 1. Investigate keeping a second keyspace neighbor in each direction, so the chain isn't momentarily broken when a node joins. NOTE: Investigated, ultimately I think we'll need two neighbors per side + a different path setup order (path from next before path to prev), to prevent momentary disruption to the DHT when a node joins or leaves. Implementing/debugging/etc turns out to be more complicated than initially expected, so this is unlikely to happen until other things are in place and the existing code has been field tested.
-2. The encrypted package could use some work... either switch to the noise protocol framework, or improve what's already there (to e.g. not send ephemeral pubkeys in plaintext).
+2. ~The encrypted package could use some work... either switch to the noise protocol framework, or improve what's already there (to e.g. not send ephemeral pubkeys in plaintext).~
+Done, traffic ephemeral keys are kept out of cleartext, among other improvements.
 
 ### DEBUG interface
 
-Some sort of debug interface is needed, to get read access to the low level internals. This (probably) doesn't need to be a stable API endpoint. It would be useful (in the ygg context) to e.g. check a node's coords, get a list of peers (with ports), dump out the full set of DHT info, etc.
+~Some sort of debug interface is needed, to get read access to the low level internals. This (probably) doesn't need to be a stable API endpoint. It would be useful (in the ygg context) to e.g. check a node's coords, get a list of peers (with ports), dump out the full set of DHT info, etc.~
+Done, but there's still some room for improvement.
 
