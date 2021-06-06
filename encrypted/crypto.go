@@ -108,27 +108,21 @@ func getShared(out *boxShared, pub *boxPub, priv *boxPriv) {
 	box.Precompute((*[32]byte)(out), (*[32]byte)(pub), (*[32]byte)(priv))
 }
 
-func boxOpen(out, boxed []byte, nonce *boxNonce, shared *boxShared) ([]byte, bool) {
-	return box.OpenAfterPrecomputation(out, boxed, (*[24]byte)(nonce), (*[32]byte)(shared))
+func boxOpen(out, boxed []byte, nonce uint64, shared *boxShared) ([]byte, bool) {
+	n := nonceForUint64(nonce)
+	return box.OpenAfterPrecomputation(out, boxed, (*[24]byte)(&n), (*[32]byte)(shared))
 }
 
-func boxSeal(out, msg []byte, nonce *boxNonce, shared *boxShared) []byte {
-	return box.SealAfterPrecomputation(out, msg, (*[24]byte)(nonce), (*[32]byte)(shared))
-}
-
-func newRandomNonce() (*boxNonce, error) {
-	var nonce boxNonce
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return nil, err
-	}
-	return &nonce, nil
+func boxSeal(out, msg []byte, nonce uint64, shared *boxShared) []byte {
+	n := nonceForUint64(nonce)
+	return box.SealAfterPrecomputation(out, msg, (*[24]byte)(&n), (*[32]byte)(shared))
 }
 
 // TODO we need to catch if nonce hits its max value and force a rekey
 //  To that end, maybe we can use a smaller nonce size? or a vuint and reset on uint64 max?
 
-func nonceForUint64(u64 uint64) *boxNonce {
-	nonce := new(boxNonce)
+func nonceForUint64(u64 uint64) boxNonce {
+	var nonce boxNonce
 	slice := nonce[boxNonceSize-8:]
 	binary.BigEndian.PutUint64(slice, u64)
 	return nonce

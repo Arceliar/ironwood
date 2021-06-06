@@ -305,7 +305,7 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		var tmp []byte
 		tmp = append(tmp, info.nextPub[:]...)
 		tmp = append(tmp, msg...)
-		bs = boxSeal(bs, tmp, nonceForUint64(info.sendNonce), &info.sendShared)
+		bs = boxSeal(bs, tmp, info.sendNonce, &info.sendShared)
 		// send
 		info.mgr.pc.PacketConn.WriteTo(bs, types.Addr(info.ed[:]))
 		info._resetTimer()
@@ -396,7 +396,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			return
 		}
 		// Decrypt and handle packet
-		if unboxed, ok := boxOpen(nil, msg, nonceForUint64(nonce), sharedKey); ok {
+		if unboxed, ok := boxOpen(nil, msg, nonce, sharedKey); ok {
 			var key boxPub
 			copy(key[:], unboxed)
 			msg = unboxed[len(key):]
@@ -469,7 +469,7 @@ func (init *sessionInit) encrypt(from *edPriv, to *edPub) ([]byte, error) {
 	// Encrypt
 	var shared boxShared
 	getShared(&shared, toBox, &fromPriv)
-	bs := boxSeal(nil, payload, new(boxNonce), &shared)
+	bs := boxSeal(nil, payload, 0, &shared)
 	// Assemble final message
 	data := make([]byte, 1, sessionInitSize)
 	data[0] = sessionTypeInit
@@ -493,7 +493,7 @@ func (init *sessionInit) decrypt(priv *boxPriv, from *edPub, data []byte) bool {
 	getShared(&shared, &fromBox, priv)
 	var payload []byte
 	var ok bool
-	if payload, ok = boxOpen(nil, bs, new(boxNonce), &shared); !ok {
+	if payload, ok = boxOpen(nil, bs, 0, &shared); !ok {
 		return false
 	}
 	offset = 0
