@@ -2,6 +2,7 @@ package network
 
 import (
 	"crypto/ed25519"
+	"net"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -28,6 +29,7 @@ type DebugPeerInfo struct {
 	Coords  []uint64
 	Port    uint64
 	Updated time.Time
+	Conn    net.Conn
 }
 
 type DebugDHTInfo struct {
@@ -67,6 +69,7 @@ func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 			info.Coords = info.Coords[:len(info.Coords)-1] // Last hop is the port back to self
 			info.Port = uint64(p.port)
 			info.Updated = tinfo.time
+			info.Conn = p.conn
 			infos = append(infos, info)
 		}
 	})
