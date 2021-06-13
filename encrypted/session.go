@@ -405,8 +405,10 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			onSuccess(key)
 			info._resetTimer()
 		} else {
-			// This shouldn't happen during testing
-			// Not sure if we should do anything outside of testing...
+			// Keys somehow became out-of-sync
+			// This seems to happen in some edge cases if a node restarts
+			// Fix by sending a new init
+			info._sendInit()
 		}
 	})
 }
