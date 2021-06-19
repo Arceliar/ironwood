@@ -138,7 +138,7 @@ func (mgr *sessionManager) _handleTraffic(pub *edPub, msg []byte) {
 }
 
 func (mgr *sessionManager) writeTo(toKey edPub, msg []byte) {
-	phony.Block(mgr, func() {
+	mgr.Act(nil, func() {
 		if info := mgr.sessions[toKey]; info != nil {
 			info.doSend(mgr, msg)
 		} else {
