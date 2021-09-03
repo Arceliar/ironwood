@@ -172,6 +172,10 @@ func (t *dhtree) _fix() {
 				continue // skip expired sequence numbers
 			}
 		}
+		// Use millisecond precision, so that we can tie-break if the latency
+		// is close enough, otherwise it will be virtually impossible to fall
+		// through
+		infoTime := info.time.Round(time.Millisecond)
 		switch {
 		case !info.checkLoops():
 			// This has a loop, e.g. it's from a child, so skip it
@@ -185,10 +189,10 @@ func (t *dhtree) _fix() {
 			t.self, t.parent = info, p
 		case info.seq < t.self.seq:
 			// This is an older sequnce number, so ignore it
-		case info.time.Before(t.self.time):
+		case infoTime.Before(t.self.time):
 			// This info has been around for longer (e.g. the path is more stable)
 			t.self, t.parent = info, p
-		case info.time.After(t.self.time):
+		case infoTime.After(t.self.time):
 			// This info has been around for less time (e.g. the path is less stable)
 			// Note that everything after this is extremely unlikely to be reached...
 		case len(info.hops) < len(t.self.hops):
