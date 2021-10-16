@@ -768,12 +768,12 @@ func (info *treeInfo) dist(dest *treeLabel) int {
 	if b < a {
 		a, b = b, a // make 'a' be the smaller value
 	}
-	lcaIdx := -1 // last common ancestor
+	lcaIdx := 0 // last common ancestor
 	for idx := 0; idx < a; idx++ {
 		if info.hops[idx].port != dest.path[idx] {
 			break
 		}
-		lcaIdx = idx
+		lcaIdx++
 	}
 	return a + b - 2*lcaIdx
 }
