@@ -775,7 +775,7 @@ func (info *treeInfo) dist(dest *treeLabel) int {
 		}
 		lcaIdx = idx
 	}
-	return a + b - 2*lcaIdx
+	return a + b - 2*(lcaIdx+1)
 }
 
 func (info *treeInfo) encode(out []byte) ([]byte, error) {
