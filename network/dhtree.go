@@ -264,6 +264,22 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 	return bestPeer
 }
 
+func (t *dhtree) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
+	t.Act(from, func() {
+		//var label treeLabel // TODO lookups without a full label
+		//label.root = t.self.root
+		//label.seq = t.self.seq
+		label := *t._getLabel()
+		label.key = tr.dt.dest
+		label.path = tr.path
+		if next := t._treeLookup(&label); next != nil {
+			next.sendPathTraffic(t, tr)
+		} else {
+			t.handleDHTTraffic(nil, &tr.dt, false)
+		}
+	})
+}
+
 // _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
 // this only uses the source direction of paths through the dht
 // bootstraps use slightly different logic, since they need to stop short of the destination key
@@ -651,7 +667,8 @@ func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
 			pt := new(pathTraffic)
 			pt.path = path
 			pt.dt = *tr
-			t.core.peers.handlePathTraffic(t, pt)
+			//t.core.peers.handlePathTraffic(t, pt)
+			t.handlePathTraffic(nil, pt)
 		} else {
 			t.handleDHTTraffic(nil, tr, false)
 		}

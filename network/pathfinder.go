@@ -102,8 +102,12 @@ func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 	pf.dhtree.Act(from, func() {
 		if next := pf.dhtree._dhtLookup(n.dest, false); next != nil {
 			next.sendPathNotify(pf.dhtree, n)
-		} else if l := pf._getLookup(n); l != nil {
-			pf.handleLookup(nil, l) // TODO pf._handleLookup
+			//} else if l := pf._getLookup(n); l != nil {
+			//	pf.handleLookup(nil, l) // TODO pf._handleLookup
+			//}
+		} else if info, isIn := pf.paths[n.label.key]; isIn {
+			info.path = append(info.path[:0], n.label.path...)
+			info.path = append(info.path, 0)
 		}
 	})
 }

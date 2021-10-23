@@ -375,7 +375,7 @@ func (p *peer) _handlePathTraffic(bs []byte) error {
 		return err
 	}
 	// TODO? don't send to p.peers, have a (read-only) copy of the map locally? via atomics?
-	p.peers.handlePathTraffic(p, tr)
+	p.peers.core.dhtree.handlePathTraffic(p, tr)
 	return nil
 }
 
