@@ -35,6 +35,7 @@ type dhtree struct {
 	stimer     *time.Timer            // time.AfterFunc for self/parent expiration
 	wait       bool                   // FIXME this shouldn't be needed
 	hseq       uint64                 // used to track the order treeInfo updates are handled
+	bwait      bool                   // wait before sending another bootstrap
 }
 
 type treeExpiredInfo struct {
@@ -590,7 +591,9 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 		}
 		if t.prev == dinfo {
 			t.prev = nil
-			t._doBootstrap()
+			//time.AfterFunc(time.Second, func() { t.Act(nil, t._doBootstrap) })
+			//t._doBootstrap()
+			t.Act(nil, t._doBootstrap)
 		}
 	}
 }
@@ -606,13 +609,21 @@ func (t *dhtree) teardown(from phony.Actor, p *peer, teardown *dhtTeardown) {
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
 	//return // FIXME debug tree (root offline -> too much traffic to fix)
-	if t.btimer != nil {
+	if !t.bwait && t.btimer != nil {
 		if t.prev != nil && t.prev.root.equal(t.self.root) && t.prev.rootSeq == t.self.seq {
 			return
 		}
-		t._handleBootstrap(t._newBootstrap())
+		if !t.self.root.equal(t.core.crypto.publicKey) {
+			t._handleBootstrap(t._newBootstrap())
+			t.bwait = true
+		}
 		t.btimer.Stop()
-		t.btimer = time.AfterFunc(time.Second, func() { t.Act(nil, t._doBootstrap) })
+		t.btimer = time.AfterFunc(time.Second, func() {
+			t.Act(nil, func() {
+				t.bwait = false
+				t._doBootstrap()
+			})
+		})
 	}
 }
 
@@ -622,7 +633,7 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 	t.Act(from, func() {
 		next := t._dhtLookup(tr.dest, false)
 		if next == nil {
-			if tr.dest.equal(t.core.crypto.publicKey) {
+			if false && tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
 				t.pathfinder._doNotify(dest, !doNotify)
 			}
