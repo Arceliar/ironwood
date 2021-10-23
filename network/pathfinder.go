@@ -45,36 +45,6 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 	return nil
 }
 
-func (pf *pathfinder) _getLookup(n *pathNotify) *pathLookup {
-	if info, isIn := pf.paths[n.label.key]; isIn {
-		if time.Since(info.ltime) < pathfinderTHROTTLE || !n.check() {
-			return nil
-		}
-		l := new(pathLookup)
-		l.notify = *n
-		info.ltime = time.Now()
-		return l
-	}
-	return nil
-}
-
-func (pf *pathfinder) _getResponse(l *pathLookup) *pathResponse {
-	// Check if lookup comes from us
-	dest := l.notify.label.key
-	if !dest.equal(pf.dhtree.core.crypto.publicKey) || !l.notify.check() {
-		// TODO? skip l.notify.check()? only check the last hop?
-		return nil
-	}
-	r := new(pathResponse)
-	r.from = pf.dhtree.core.crypto.publicKey
-	r.path = make([]peerPort, 0, len(l.rpath)+1)
-	for idx := len(l.rpath) - 1; idx >= 0; idx-- {
-		r.path = append(r.path, l.rpath[idx])
-	}
-	r.path = append(r.path, 0)
-	return r
-}
-
 func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 	var info *pathInfo
 	if nfo, isIn := pf.paths[dest]; isIn {
@@ -102,36 +72,8 @@ func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 	pf.dhtree.Act(from, func() {
 		if next := pf.dhtree._dhtLookup(n.dest, false); next != nil {
 			next.sendPathNotify(pf.dhtree, n)
-			//} else if l := pf._getLookup(n); l != nil {
-			//	pf.handleLookup(nil, l) // TODO pf._handleLookup
-			//}
 		} else if info, isIn := pf.paths[n.label.key]; isIn {
 			info.path = append(info.path[:0], n.label.path...)
-			info.path = append(info.path, 0)
-		}
-	})
-}
-
-func (pf *pathfinder) handleLookup(from phony.Actor, l *pathLookup) {
-	pf.dhtree.Act(from, func() {
-		// TODO? check the treeLabel at some point
-		if next := pf.dhtree._treeLookup(l.notify.label); next != nil {
-			next.sendPathLookup(pf.dhtree, l)
-		} else if r := pf._getResponse(l); r != nil {
-			pf.dhtree.core.peers.handlePathResponse(pf.dhtree, r)
-		}
-	})
-}
-
-func (pf *pathfinder) handleResponse(from phony.Actor, r *pathResponse) {
-	pf.dhtree.Act(from, func() {
-		// Note: this only handles the case where there's no valid next hop in the path
-		if info, isIn := pf.paths[r.from]; isIn {
-			// Reverse r.rpath and save it to info.path
-			info.path = info.path[:0]
-			for idx := len(r.rpath) - 1; idx >= 0; idx-- {
-				info.path = append(info.path, r.rpath[idx])
-			}
 			info.path = append(info.path, 0)
 		}
 	})
@@ -216,86 +158,6 @@ func (pn *pathNotify) decode(data []byte) error {
 		return err
 	}
 	*pn = tmp
-	return nil
-}
-
-/**************
- * pathLookup *
- **************/
-
-type pathLookup struct {
-	notify pathNotify
-	rpath  []peerPort
-}
-
-func (l *pathLookup) encode(out []byte) ([]byte, error) {
-	var bs []byte
-	var err error
-	if bs, err = l.notify.encode(nil); err != nil {
-		return nil, err
-	}
-	out = wireEncodeUint(out, uint64(len(bs)))
-	out = append(out, bs...)
-	out = wireEncodePath(out, l.rpath)
-	return out, nil
-}
-
-func (l *pathLookup) decode(data []byte) error {
-	var tmp pathLookup
-	u, begin := wireDecodeUint(data)
-	end := int(u) + begin
-	if end > len(data) {
-		return wireDecodeError
-	} else if err := tmp.notify.decode(data[begin:end]); err != nil {
-		return err
-	} else if data = data[end:]; !wireChopPath(&tmp.rpath, &data) {
-		return wireDecodeError
-	} else if len(data) > 0 {
-		return wireDecodeError
-	} else if len(tmp.rpath) > 0 && tmp.rpath[len(tmp.rpath)-1] == 0 {
-		// there should never already be a 0 here
-		return wireDecodeError
-	}
-	*l = tmp
-	return nil
-}
-
-// TODO logic to forward this towards pathLookup.notify.info via the tree
-//   Append a port number back to the previous hop to path along the way
-
-/**********************
- * pathLookupResponse *
- **********************/
-
-type pathResponse struct {
-	// TODO? a sig or something? Since we can't sign the rpath, which is the part we care about...
-	from  publicKey
-	path  []peerPort
-	rpath []peerPort
-}
-
-func (r *pathResponse) encode(out []byte) ([]byte, error) {
-	out = append(out, r.from[:]...)
-	out = wireEncodePath(out, r.path)
-	out = wireEncodePath(out, r.rpath)
-	return out, nil
-}
-
-func (r *pathResponse) decode(data []byte) error {
-	var tmp pathResponse
-	if !wireChopSlice(tmp.from[:], &data) {
-		return wireDecodeError
-	} else if !wireChopPath(&tmp.path, &data) {
-		return wireDecodeError
-	} else if !wireChopPath(&tmp.rpath, &data) {
-		return wireDecodeError
-	} else if len(data) > 0 {
-		return wireDecodeError
-	} else if len(tmp.rpath) > 0 && tmp.rpath[len(tmp.rpath)-1] == 0 {
-		// there should never already be a 0 here
-		return wireDecodeError
-	}
-	*r = tmp
 	return nil
 }
 

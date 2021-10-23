@@ -667,7 +667,6 @@ func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
 			pt := new(pathTraffic)
 			pt.path = path
 			pt.dt = *tr
-			//t.core.peers.handlePathTraffic(t, pt)
 			t.handlePathTraffic(nil, pt)
 		} else {
 			t.handleDHTTraffic(nil, tr, false)

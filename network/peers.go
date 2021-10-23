@@ -190,9 +190,11 @@ func (p *peer) _handlePacket(bs []byte) error {
 	case wireProtoPathNotify:
 		return p._handlePathNotify(bs[1:])
 	case wireProtoPathLookup:
-		return p._handlePathLookup(bs[1:])
+		// TODO remove, temporary workaround for partial backwards compatibility
+		return nil
 	case wireProtoPathResponse:
-		return p._handlePathResponse(bs[1:])
+		// TODO remove, temporary workaround for partial backwards compatibility
+		return nil
 	case wireDHTTraffic:
 		return p._handleDHTTraffic(bs[1:])
 	case wirePathTraffic:
@@ -307,53 +309,6 @@ func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
 	})
 }
 
-func (p *peer) _handlePathLookup(bs []byte) error {
-	lookup := new(pathLookup)
-	if err := lookup.decode(bs); err != nil {
-		return err
-	}
-	lookup.rpath = append(lookup.rpath, p.port)
-	p.peers.core.dhtree.pathfinder.handleLookup(p, lookup)
-	return nil
-}
-
-func (p *peer) sendPathLookup(from phony.Actor, lookup *pathLookup) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoPathLookup, lookup)
-	})
-}
-
-func (p *peer) _handlePathResponse(bs []byte) error {
-	response := new(pathResponse)
-	if err := response.decode(bs); err != nil {
-		return err
-	}
-	response.rpath = append(response.rpath, p.port)
-	p.peers.handlePathResponse(p, response)
-	return nil
-}
-
-func (ps *peers) handlePathResponse(from phony.Actor, response *pathResponse) {
-	ps.Act(from, func() {
-		var nextPort peerPort
-		if len(response.path) > 0 {
-			nextPort = response.path[0]
-			response.path = response.path[1:]
-		}
-		if next, isIn := ps.peers[nextPort]; isIn {
-			next.sendPathResponse(ps, response)
-		} else {
-			ps.core.dhtree.pathfinder.handleResponse(ps, response)
-		}
-	})
-}
-
-func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoPathResponse, response)
-	})
-}
-
 func (p *peer) _handleDHTTraffic(bs []byte) error {
 	tr := new(dhtTraffic)
 	if err := tr.decode(bs); err != nil {
@@ -374,25 +329,9 @@ func (p *peer) _handlePathTraffic(bs []byte) error {
 	if err := tr.decode(bs); err != nil {
 		return err
 	}
-	// TODO? don't send to p.peers, have a (read-only) copy of the map locally? via atomics?
+	// TODO? don't send to the dhtree, have a (read-only) copy of the map locally? via atomics?
 	p.peers.core.dhtree.handlePathTraffic(p, tr)
 	return nil
-}
-
-func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
-	ps.Act(from, func() {
-		var nextPort peerPort
-		if len(tr.path) > 0 {
-			nextPort, tr.path = tr.path[0], tr.path[1:]
-		}
-		if next := ps.peers[nextPort]; next != nil {
-			// Forward using the source routed path
-			next.sendPathTraffic(nil, tr)
-		} else {
-			// Fall back to dhtTraffic
-			ps.core.dhtree.handleDHTTraffic(ps, &tr.dt, false)
-		}
-	})
 }
 
 func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
