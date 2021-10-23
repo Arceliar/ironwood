@@ -591,8 +591,8 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 		}
 		if t.prev == dinfo {
 			t.prev = nil
-			//time.AfterFunc(time.Second, func() { t.Act(nil, t._doBootstrap) })
-			//t._doBootstrap()
+			// It's possible that other bad news is incoming
+			// Delay bootstrap until we've processed any other queued messages
 			t.Act(nil, t._doBootstrap)
 		}
 	}
@@ -608,13 +608,14 @@ func (t *dhtree) teardown(from phony.Actor, p *peer, teardown *dhtTeardown) {
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
-	//return // FIXME debug tree (root offline -> too much traffic to fix)
 	if !t.bwait && t.btimer != nil {
 		if t.prev != nil && t.prev.root.equal(t.self.root) && t.prev.rootSeq == t.self.seq {
 			return
 		}
 		if !t.self.root.equal(t.core.crypto.publicKey) {
 			t._handleBootstrap(t._newBootstrap())
+			// Don't immediately send more bootstraps if called again too quickly
+			// This helps prevent traffic spikes in some mobility scenarios
 			t.bwait = true
 		}
 		t.btimer.Stop()
@@ -633,7 +634,7 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 	t.Act(from, func() {
 		next := t._dhtLookup(tr.dest, false)
 		if next == nil {
-			if false && tr.dest.equal(t.core.crypto.publicKey) {
+			if tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
 				t.pathfinder._doNotify(dest, !doNotify)
 			}
