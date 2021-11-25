@@ -91,8 +91,7 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 	c := new(core)
 	c.init(priv)
 	c.dhtree.self = info
-	bootstrap := new(dhtBootstrap)
-	bootstrap.label = *c.dhtree._getLabel()
+	bootstrap := c.dhtree._newBootstrap()
 	if !bootstrap.check() {
 		panic("failed to check bootstrap")
 	}

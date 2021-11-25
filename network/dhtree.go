@@ -350,27 +350,122 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 // _newBootstrap returns a *dhtBootstrap for this node, using t.self, with a signature
 func (t *dhtree) _newBootstrap() *dhtBootstrap {
 	dbs := new(dhtBootstrap)
-	dbs.label = *t._getLabel()
+	panic("TODO")
+	//dbs.label = *t._getLabel()
 	return dbs
+}
+
+func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo {
+	if !bootstrap.root.equal(t.self.root) || bootstrap.rootSeq != t.self.seq {
+		// Wrong root or rootSeq
+		return nil
+	}
+	if !bootstrap.check() {
+		// Signature check failed... TODO do this at peer level instead
+		return nil
+	}
+	source := bootstrap.key
+	dinfo := &dhtInfo{
+		key:     source,
+		seq:     bootstrap.seq, // TODO add a seq to bootstraps (like setups)
+		root:    bootstrap.root,
+		rootSeq: bootstrap.rootSeq,
+		peer:    prev,
+		rest:    t._dhtLookup(source, true),
+	}
+	if _, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+		// A path already exists
+		// TODO? in some circumstances, tear down that path and keep this one instead?
+		return nil
+	}
+	if !t._dhtAdd(dinfo) {
+		// We failed to add the dinfo to the DHT for some reason
+		return nil
+	}
+	// Setup timer for cleanup
+	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
+		t.Act(nil, func() {
+			// Clean up path if it has timed out
+			if info, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+				if info.peer != nil {
+					info.peer.sendTeardown(t, info.getTeardown())
+				}
+				t._teardown(info.peer, info.getTeardown())
+			}
+		})
+	})
+	return dinfo
+	/*
+		dinfo := new(dhtInfo)
+		dinfo.seq = setup.seq
+		dinfo.key = setup.token.source
+		dinfo.peer = prev
+		dinfo.rest = next
+		dinfo.root = setup.token.dest.root
+		dinfo.rootSeq = setup.token.dest.seq
+		if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
+			// Wrong root or mismatched seq
+			if prev != nil {
+				prev.sendTeardown(t, setup.getTeardown())
+			}
+			return
+		}
+		if _, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+			// Already have a path from this source
+			if prev != nil {
+				prev.sendTeardown(t, setup.getTeardown())
+			}
+			return
+		}
+		if !t._dhtAdd(dinfo) {
+			if prev != nil {
+				prev.sendTeardown(t, setup.getTeardown())
+			}
+		}
+		dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
+			t.Act(nil, func() {
+				// Clean up path if it has timed out
+				if info, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+					if info.peer != nil {
+						info.peer.sendTeardown(t, info.getTeardown())
+					}
+					t._teardown(info.peer, info.getTeardown())
+				}
+			})
+		})
+	*/
 }
 
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
-	source := bootstrap.label.key
-	if next := t._dhtLookup(source, true); next != nil {
-		next.sendBootstrap(t, bootstrap)
-		return
-	} else if source.equal(t.core.crypto.publicKey) {
-		return
-	} else if !bootstrap.check() {
-		return
+	panic("TODO add prev as an argument")
+	if dinfo := t._addBootstrapPath(bootstrap, nil); dinfo != nil {
+		if dinfo.rest != nil {
+			dinfo.rest.sendBootstrap(t, bootstrap)
+			return
+		}
+		// TODO handle case where we're the terminal node... is this a good path, or do we need to tear down? see: handleSetup logic for t.prev node
+		panic("TODO decide if we should keep this path")
+	} else {
+		panic("TODO send teardown")
 	}
-	ack := new(dhtBootstrapAck)
-	ack.bootstrap = *bootstrap
-	ack.response = *t._getToken(source)
-	t._handleBootstrapAck(ack)
+	/*
+		source := bootstrap.label.key
+		if next := t._dhtLookup(source, true); next != nil {
+			next.sendBootstrap(t, bootstrap)
+			return
+		} else if source.equal(t.core.crypto.publicKey) {
+			return
+		} else if !bootstrap.check() {
+			return
+		}
+		ack := new(dhtBootstrapAck)
+		ack.bootstrap = *bootstrap
+		ack.response = *t._getToken(source)
+		t._handleBootstrapAck(ack)
+	*/
 }
 
 // handleBootstrap is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrap
@@ -386,63 +481,65 @@ func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 // if yes, then we get rid of our current prev (if any) and start setting up a new path to the response node in the ack
 // if no, then we drop the bootstrap acknowledgement without doing anything
 func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
-	source := ack.response.dest.key
-	next := t._treeLookup(&ack.bootstrap.label)
-	switch {
-	case next != nil:
-		next.sendBootstrapAck(t, ack)
-		return
-	case t.core.crypto.publicKey.equal(source):
-		// This is our own ack, but we failed to find a next hop
-		return
-	case !t.core.crypto.publicKey.equal(ack.bootstrap.label.key):
-		// This isn't an ack of our own bootstrap
-		return
-	case !t.core.crypto.publicKey.equal(ack.response.source):
-		// This is an ack of or own bootstrap, but the token isn't for us
-		return
-	case !ack.response.dest.root.equal(t.self.root):
-		// We have a different root, so tree lookups would fail
-		return
-	case ack.response.dest.seq != t.self.seq:
-		// This response is too old, so path setup would fail
-		return
-	case t.prev == nil:
-		// We have no prev, so anything matching the above is good enough
-	case dhtOrdered(t.dkeys[t.prev], source, t.core.crypto.publicKey):
-		// This is from a better prev than our current one
-	case !source.equal(t.dkeys[t.prev]):
-		// This isn't from the current prev or better, so ignore it
-		return
-	case !t.prev.root.equal(t.self.root) || t.prev.rootSeq != t.self.seq:
-		// The curent prev needs replacing (old tree info)
-	default:
-		// We already have a better (FIXME? or equal) prev
-		return
-	}
-	if !ack.response.check() {
-		// Final thing to check, if the signatures are bad then ignore it
-		return
-	}
-	t.prev = nil
-	for _, dinfo := range t.dinfos {
-		// Former prev need to be notified that we're no longer next
-		// The only way to signal that is by tearing down the path
-		// We may have multiple former prev paths
-		//  From t.prev = nil when the tree changes, but kept around to bootstrap
-		// So loop over paths and close any going to a *different* node than the current prev
-		// The current prev can close the old path from that side after setup
-		if dest, isIn := t.dkeys[dinfo]; isIn && !dest.equal(source) {
-			t._teardown(nil, dinfo.getTeardown())
+	/*
+		source := ack.response.dest.key
+		next := t._treeLookup(&ack.bootstrap.label)
+		switch {
+		case next != nil:
+			next.sendBootstrapAck(t, ack)
+			return
+		case t.core.crypto.publicKey.equal(source):
+			// This is our own ack, but we failed to find a next hop
+			return
+		case !t.core.crypto.publicKey.equal(ack.bootstrap.label.key):
+			// This isn't an ack of our own bootstrap
+			return
+		case !t.core.crypto.publicKey.equal(ack.response.source):
+			// This is an ack of or own bootstrap, but the token isn't for us
+			return
+		case !ack.response.dest.root.equal(t.self.root):
+			// We have a different root, so tree lookups would fail
+			return
+		case ack.response.dest.seq != t.self.seq:
+			// This response is too old, so path setup would fail
+			return
+		case t.prev == nil:
+			// We have no prev, so anything matching the above is good enough
+		case dhtOrdered(t.dkeys[t.prev], source, t.core.crypto.publicKey):
+			// This is from a better prev than our current one
+		case !source.equal(t.dkeys[t.prev]):
+			// This isn't from the current prev or better, so ignore it
+			return
+		case !t.prev.root.equal(t.self.root) || t.prev.rootSeq != t.self.seq:
+			// The curent prev needs replacing (old tree info)
+		default:
+			// We already have a better (FIXME? or equal) prev
+			return
 		}
-	}
-	setup := t._newSetup(&ack.response)
-	t._handleSetup(nil, setup)
-	if t.prev == nil {
-		// This can happen if the treeLookup in handleSetup fails
-		// FIXME we should avoid letting this happen
-		//  E.g. check that the lookup will fail, or at least that the roots match
-	}
+		if !ack.response.check() {
+			// Final thing to check, if the signatures are bad then ignore it
+			return
+		}
+		t.prev = nil
+		for _, dinfo := range t.dinfos {
+			// Former prev need to be notified that we're no longer next
+			// The only way to signal that is by tearing down the path
+			// We may have multiple former prev paths
+			//  From t.prev = nil when the tree changes, but kept around to bootstrap
+			// So loop over paths and close any going to a *different* node than the current prev
+			// The current prev can close the old path from that side after setup
+			if dest, isIn := t.dkeys[dinfo]; isIn && !dest.equal(source) {
+				t._teardown(nil, dinfo.getTeardown())
+			}
+		}
+		setup := t._newSetup(&ack.response)
+		t._handleSetup(nil, setup)
+		if t.prev == nil {
+			// This can happen if the treeLookup in handleSetup fails
+			// FIXME we should avoid letting this happen
+			//  E.g. check that the lookup will fail, or at least that the roots match
+		}
+	*/
 }
 
 // handleBootstrapAck is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrapAck
@@ -925,6 +1022,54 @@ func (info *dhtInfo) getMapKey() dhtMapKey {
  ****************/
 
 type dhtBootstrap struct {
+	sig     signature
+	key     publicKey
+	root    publicKey
+	rootSeq uint64
+	seq     uint64
+}
+
+func (dbs *dhtBootstrap) bytesForSig() []byte {
+	const size = len(dbs.key) + len(dbs.root) + 8 + 8
+	bs := make([]byte, 0, size)
+	bs = append(bs, dbs.key[:]...)
+	bs = append(bs, dbs.root[:]...)
+	bs = bs[:size]
+	binary.BigEndian.PutUint64(bs[len(bs)-16:len(bs)-8], dbs.rootSeq)
+	binary.BigEndian.PutUint64(bs[len(bs)-8:], dbs.seq)
+	return bs
+}
+
+func (dbs *dhtBootstrap) check() bool {
+	bs := dbs.bytesForSig()
+	return dbs.key.verify(bs, &dbs.sig)
+}
+
+func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
+	out = append(out, dbs.sig[:]...)
+	out = append(out, dbs.bytesForSig()...)
+	return out, nil
+}
+
+func (dbs *dhtBootstrap) decode(data []byte) error {
+	var tmp dhtBootstrap
+	if !wireChopSlice(tmp.sig[:], &data) {
+		return wireDecodeError
+	} else if !wireChopSlice(tmp.key[:], &data) {
+		return wireDecodeError
+	} else if !wireChopSlice(tmp.root[:], &data) {
+		return wireDecodeError
+	} else if len(data) != 16 { // TODO? < 16, in case it's embedded in something?
+		return wireDecodeError
+	}
+	tmp.rootSeq = binary.BigEndian.Uint64(data[:8])
+	tmp.seq = binary.BigEndian.Uint64(data[8:])
+	*dbs = tmp
+	return nil
+}
+
+/*
+type dhtBootstrap struct {
 	label treeLabel
 }
 
@@ -944,6 +1089,7 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 	*dbs = tmp
 	return nil
 }
+*/
 
 /*****************
  * dhtSetupToken *
