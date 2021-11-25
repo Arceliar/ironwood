@@ -234,6 +234,9 @@ func (p *peer) _handleBootstrap(bs []byte) error {
 	if err := bootstrap.decode(bs); err != nil {
 		return err
 	}
+	if !bootstrap.check() {
+		return errors.New("invalid bootstrap")
+	}
 	p.peers.core.dhtree.handleBootstrap(p, p, bootstrap)
 	return nil
 }

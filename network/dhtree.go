@@ -301,12 +301,22 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 	}
 	// doDHT updates best based on a DHT path
 	doDHT := func(info *dhtInfo) {
+		if !info.isActive {
+			return
+		}
+		if info.isOrphaned {
+			//return // FIXME DEBUG, pretend orphaned paths just don't exist...
+		}
 		doCheckedUpdate(info.key, info.peer, info) // updates if the source is better
 		if bestInfo != nil && info.key.equal(bestInfo.key) {
 			if treeLess(info.root, bestInfo.root) {
 				doUpdate(info.key, info.peer, info) // same source, but the root is better
 			} else if info.root.equal(bestInfo.root) && info.rootSeq > bestInfo.rootSeq {
 				doUpdate(info.key, info.peer, info) // same source, same root, but the rootSeq is newer
+			} else if !info.root.equal(bestInfo.root) || info.rootSeq != bestInfo.rootSeq {
+				// skip any non-matches
+			} else if info.seq > bestInfo.seq {
+				doUpdate(info.key, info.peer, info) // same source/root/rootSeq, but newer seq
 			}
 		}
 	}
@@ -376,10 +386,12 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		// Wrong root or rootSeq
 		return nil
 	}
+	/* This is now checked by the peer actor instead
 	if !bootstrap.check() {
 		// Signature check failed... TODO do this at peer level instead
 		return nil
 	}
+	*/
 	source := bootstrap.key
 	next := t._dhtLookup(source, true)
 	if prev == nil && next == nil {
@@ -719,7 +731,6 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 			} else if from == dinfo.rest {
 				// The dest side is unreachable, so we need to mark the path as orphaned
 				// The source is still reachable via the path, so it's not completely useless yet
-				// TODO make it possible to have an orphaned path and a non-orphaned one at the same time (not currently possible, they use the same map key)
 				next = dinfo.peer
 				if !dinfo.isOrphaned {
 					delete(dinfos, dinfo.dhtPathState)
@@ -772,7 +783,7 @@ func (t *dhtree) _doBootstrap() {
 			t._handleBootstrap(nil, t._newBootstrap())
 			// Don't immediately send more bootstraps if called again too quickly
 			// This helps prevent traffic spikes in some mobility scenarios
-			t.bwait = true
+			t.bwait = true // TODO test without this, if things get stuck in a broken state then it signals a problem somewhere
 		}
 		t.btimer.Stop()
 		t.btimer = time.AfterFunc(time.Second, func() {
