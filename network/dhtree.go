@@ -24,7 +24,7 @@ type dhtree struct {
 	pathfinder pathfinder
 	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
-	dinfos     map[dhtMapKey]*dhtInfo
+	dinfos     map[dhtMapKey]map[dhtPathState]*dhtInfo
 	self       *treeInfo              // self info
 	parent     *peer                  // peer that sent t.self to us
 	prev       *dhtInfo               // previous key in dht, who we maintain a path to
@@ -47,7 +47,7 @@ func (t *dhtree) init(c *core) {
 	t.core = c
 	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
-	t.dinfos = make(map[dhtMapKey]*dhtInfo)
+	t.dinfos = make(map[dhtMapKey]map[dhtPathState]*dhtInfo)
 	t.dkeys = make(map[*dhtInfo]publicKey)
 	t.seq = uint64(time.Now().UnixNano())
 	r := make([]byte, 8)
@@ -136,9 +136,11 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 			t.parent = nil
 			t._fix()
 		}
-		for _, dinfo := range t.dinfos {
-			if dinfo.peer == p || dinfo.rest == p {
-				t._teardown(p, dinfo.getTeardown())
+		for _, dinfos := range t.dinfos {
+			for _, dinfo := range dinfos {
+				if dinfo.peer == p || dinfo.rest == p {
+					t._teardown(p, dinfo.getTeardown())
+				}
 			}
 		}
 	})
@@ -331,8 +333,10 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 		}
 	}
 	// Update based on our DHT infos
-	for _, info := range t.dinfos {
-		doDHT(info)
+	for _, dinfos := range t.dinfos {
+		for _, dinfo := range dinfos {
+			doDHT(dinfo)
+		}
 	}
 	return bestPeer
 }
@@ -343,7 +347,14 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
-	t.dinfos[info.getMapKey()] = info
+	if _, isIn := t.dinfos[info.getMapKey()]; !isIn {
+		t.dinfos[info.getMapKey()] = make(map[dhtPathState]*dhtInfo)
+	}
+	dinfos := t.dinfos[info.getMapKey()]
+	if _, isIn := dinfos[info.dhtPathState]; isIn {
+		return false
+	}
+	dinfos[info.dhtPathState] = info
 	return true
 }
 
@@ -383,10 +394,13 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		peer:    prev,
 		rest:    next,
 	}
-	if _, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-		// A path already exists
-		// TODO? in some circumstances, tear down that path and keep this one instead?
-		return nil
+	dinfo.isActive = true // FIXME DEBUG, this should start false and switch to true when acked (or after some timeout)
+	if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+		if _, isIn := dinfos[dinfo.dhtPathState]; isIn {
+			// A path already exists
+			// TODO? in some circumstances, tear down that path and keep this one instead?
+			return nil
+		}
 	}
 	if !t._dhtAdd(dinfo) {
 		// We failed to add the dinfo to the DHT for some reason
@@ -396,11 +410,13 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
-			if info, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-				if info.peer != nil {
-					info.peer.sendTeardown(t, info.getTeardown())
+			if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+				if info := dinfos[dinfo.dhtPathState]; info == dinfo {
+					if info.peer != nil {
+						info.peer.sendTeardown(t, info.getTeardown())
+					}
+					t._teardown(info.peer, info.getTeardown())
 				}
-				t._teardown(info.peer, info.getTeardown())
 			}
 		})
 	})
@@ -581,95 +597,97 @@ func (t *dhtree) _newSetup(token *dhtSetupToken) *dhtSetup {
 // if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better next, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
 // otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our next path (if we are, tearing down our existing next if one exists)
 func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
-	next := t._treeLookup(&setup.token.dest)
-	dest := setup.token.dest.key
-	if next == nil && !dest.equal(t.core.crypto.publicKey) {
-		// FIXME? this has problems if prev is self (from changes to tree state?)
-		if prev != nil {
-			prev.sendTeardown(t, setup.getTeardown())
+	/*
+		next := t._treeLookup(&setup.token.dest)
+		dest := setup.token.dest.key
+		if next == nil && !dest.equal(t.core.crypto.publicKey) {
+			// FIXME? this has problems if prev is self (from changes to tree state?)
+			if prev != nil {
+				prev.sendTeardown(t, setup.getTeardown())
+			}
+			return
 		}
-		return
-	}
-	dinfo := new(dhtInfo)
-	dinfo.seq = setup.seq
-	dinfo.key = setup.token.source
-	dinfo.peer = prev
-	dinfo.rest = next
-	dinfo.root = setup.token.dest.root
-	dinfo.rootSeq = setup.token.dest.seq
-	if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
-		// Wrong root or mismatched seq
-		if prev != nil {
-			prev.sendTeardown(t, setup.getTeardown())
+		dinfo := new(dhtInfo)
+		dinfo.seq = setup.seq
+		dinfo.key = setup.token.source
+		dinfo.peer = prev
+		dinfo.rest = next
+		dinfo.root = setup.token.dest.root
+		dinfo.rootSeq = setup.token.dest.seq
+		if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
+			// Wrong root or mismatched seq
+			if prev != nil {
+				prev.sendTeardown(t, setup.getTeardown())
+			}
+			return
 		}
-		return
-	}
-	if _, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-		// Already have a path from this source
-		if prev != nil {
-			prev.sendTeardown(t, setup.getTeardown())
+		if _, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+			// Already have a path from this source
+			if prev != nil {
+				prev.sendTeardown(t, setup.getTeardown())
+			}
+			return
 		}
-		return
-	}
-	if !t._dhtAdd(dinfo) {
-		if prev != nil {
-			prev.sendTeardown(t, setup.getTeardown())
+		if !t._dhtAdd(dinfo) {
+			if prev != nil {
+				prev.sendTeardown(t, setup.getTeardown())
+			}
 		}
-	}
-	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
-		t.Act(nil, func() {
-			// Clean up path if it has timed out
-			if info, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-				if info.peer != nil {
-					info.peer.sendTeardown(t, info.getTeardown())
+		dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
+			t.Act(nil, func() {
+				// Clean up path if it has timed out
+				if info, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+					if info.peer != nil {
+						info.peer.sendTeardown(t, info.getTeardown())
+					}
+					t._teardown(info.peer, info.getTeardown())
 				}
-				t._teardown(info.peer, info.getTeardown())
-			}
+			})
 		})
-	})
-	if prev == nil {
-		// sanity checks, this should only happen when setting up our prev
-		if !setup.token.source.equal(t.core.crypto.publicKey) {
-			panic("wrong source")
-		} else if setup.seq != t.seq {
-			panic("wrong seq")
-		} else if t.prev != nil {
-			panic("already have a prev")
+		if prev == nil {
+			// sanity checks, this should only happen when setting up our prev
+			if !setup.token.source.equal(t.core.crypto.publicKey) {
+				panic("wrong source")
+			} else if setup.seq != t.seq {
+				panic("wrong seq")
+			} else if t.prev != nil {
+				panic("already have a prev")
+			}
+			t.prev = dinfo
+			t.dkeys[dinfo] = dest
 		}
-		t.prev = dinfo
-		t.dkeys[dinfo] = dest
-	}
-	if next != nil {
-		next.sendSetup(t, setup)
-	} else {
-		if t.next != nil {
-			// TODO get this right!
-			//  We need to replace the old next in most cases
-			//  The exceptions are when:
-			//    1. The dinfo's root/seq don't match our current root/seq
-			//    2. The dinfo matches, but so does t.next, and t.next is better
-			//  What happens when the dinfo matches, t.next does not, but t.next is still better?...
-			//  Just doing something for now (replace next) but not sure that's right...
-			var doUpdate bool
-			if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
-				// The root/seq is bad, so don't update
-			} else if dinfo.key.equal(t.next.key) {
-				// It's an update from the current next
-				doUpdate = true
-			} else if dhtOrdered(t.core.crypto.publicKey, dinfo.key, t.next.key) {
-				// It's an update from a better next
-				doUpdate = true
-			}
-			if doUpdate {
-				t._teardown(nil, t.next.getTeardown())
-				t.next = dinfo
-			} else {
-				t._teardown(nil, dinfo.getTeardown())
-			}
+		if next != nil {
+			next.sendSetup(t, setup)
 		} else {
-			t.next = dinfo
+			if t.next != nil {
+				// TODO get this right!
+				//  We need to replace the old next in most cases
+				//  The exceptions are when:
+				//    1. The dinfo's root/seq don't match our current root/seq
+				//    2. The dinfo matches, but so does t.next, and t.next is better
+				//  What happens when the dinfo matches, t.next does not, but t.next is still better?...
+				//  Just doing something for now (replace next) but not sure that's right...
+				var doUpdate bool
+				if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
+					// The root/seq is bad, so don't update
+				} else if dinfo.key.equal(t.next.key) {
+					// It's an update from the current next
+					doUpdate = true
+				} else if dhtOrdered(t.core.crypto.publicKey, dinfo.key, t.next.key) {
+					// It's an update from a better next
+					doUpdate = true
+				}
+				if doUpdate {
+					t._teardown(nil, t.next.getTeardown())
+					t.next = dinfo
+				} else {
+					t._teardown(nil, dinfo.getTeardown())
+				}
+			} else {
+				t.next = dinfo
+			}
 		}
-	}
+	*/
 }
 
 // handleSetup is the dhtree actor behavior that sends a message to _handleSetup
@@ -681,34 +699,57 @@ func (t *dhtree) handleSetup(from phony.Actor, prev *peer, setup *dhtSetup) {
 
 // _teardown removes the path associated with the teardown from our dht and forwards it to the next hop along that path (or does nothing if the teardown doesn't match a known path)
 func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
-	if dinfo, isIn := t.dinfos[teardown.getMapKey()]; isIn {
-		if teardown.seq != dinfo.seq {
-			return
-		} else if !teardown.key.equal(dinfo.key) {
-			panic("this should never happen")
-		}
-		var next *peer
-		if from == dinfo.peer {
-			next = dinfo.rest
-		} else if from == dinfo.rest {
-			next = dinfo.peer
-		} else {
-			return //panic("DEBUG teardown of path from wrong node")
-		}
-		dinfo.timer.Stop()
-		delete(t.dkeys, dinfo)
-		delete(t.dinfos, teardown.getMapKey())
-		if next != nil {
-			next.sendTeardown(t, teardown)
-		}
-		if t.next == dinfo {
-			t.next = nil
-		}
-		if t.prev == dinfo {
-			t.prev = nil
-			// It's possible that other bad news is incoming
-			// Delay bootstrap until we've processed any other queued messages
-			t.Act(nil, t._doBootstrap)
+	if dinfos, isIn := t.dinfos[teardown.getMapKey()]; isIn {
+		for _, dinfo := range dinfos {
+			if teardown.seq != dinfo.seq {
+				continue
+			} else if !teardown.key.equal(dinfo.key) {
+				panic("this should never happen")
+			}
+			var next *peer
+			if from == dinfo.peer {
+				// The source side is unreachable, so we need to remove this path
+				next = dinfo.rest
+				dinfo.timer.Stop()
+				delete(t.dkeys, dinfo)
+				delete(dinfos, dinfo.dhtPathState)
+				if len(dinfos) == 0 {
+					delete(t.dinfos, teardown.getMapKey())
+				}
+			} else if from == dinfo.rest {
+				// The dest side is unreachable, so we need to mark the path as orphaned
+				// The source is still reachable via the path, so it's not completely useless yet
+				// TODO make it possible to have an orphaned path and a non-orphaned one at the same time (not currently possible, they use the same map key)
+				next = dinfo.peer
+				if !dinfo.isOrphaned {
+					delete(dinfos, dinfo.dhtPathState)
+					dinfo.isOrphaned = true
+					if altInfo := dinfos[dinfo.dhtPathState]; altInfo != nil {
+						// altInfo is older, apparently, so tear it down and replace it
+						// We want to really delete it, so this is always a source-side teardown (from altInfo.peer)
+						t._teardown(altInfo.peer, altInfo.getTeardown())
+					}
+					dinfos[dinfo.dhtPathState] = dinfo
+				} else {
+					// Already orphaned, so this is a duplicate
+					// TODO prevent duplicates from happening (e.g. peer dies on an already orphaned path, no need to send more signals...)
+					continue
+				}
+			} else {
+				continue //panic("DEBUG teardown of path from wrong node")
+			}
+			if next != nil {
+				next.sendTeardown(t, teardown)
+			}
+			if t.next == dinfo {
+				t.next = nil
+			}
+			if t.prev == dinfo {
+				t.prev = nil
+				// It's possible that other bad news is incoming
+				// Delay bootstrap until we've processed any other queued messages
+				t.Act(nil, t._doBootstrap)
+			}
 		}
 	}
 }
@@ -1019,10 +1060,21 @@ type dhtInfo struct {
 	root    publicKey
 	rootSeq uint64
 	timer   *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
+	dhtPathState
+}
+
+type dhtPathState struct {
+	isActive   bool // Path has been acknowledged from the remote side, or reached some activation timeout
+	isOrphaned bool // Path has been torn down from the "rest" direction
 }
 
 func (info *dhtInfo) getTeardown() *dhtTeardown {
-	return &dhtTeardown{seq: info.seq, key: info.key, root: info.root, rootSeq: info.rootSeq}
+	return &dhtTeardown{
+		seq:     info.seq,
+		key:     info.key,
+		root:    info.root,
+		rootSeq: info.rootSeq,
+	}
 }
 
 type dhtMapKey struct {
@@ -1032,7 +1084,11 @@ type dhtMapKey struct {
 }
 
 func (info *dhtInfo) getMapKey() dhtMapKey {
-	return dhtMapKey{info.key, info.root, info.rootSeq}
+	return dhtMapKey{
+		key:     info.key,
+		root:    info.root,
+		rootSeq: info.rootSeq,
+	}
 }
 
 /****************

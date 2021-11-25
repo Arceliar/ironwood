@@ -78,7 +78,13 @@ func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 
 func (d *Debug) GetDHT() (infos []DebugDHTInfo) {
 	phony.Block(&d.c.dhtree, func() {
-		for _, dinfo := range d.c.dhtree.dinfos {
+		for _, dinfos := range d.c.dhtree.dinfos {
+			var dinfo *dhtInfo
+			for _, dfo := range dinfos {
+				// TODO dump all dhtInfos, not just one random one per map key
+				dinfo = dfo
+				break
+			}
 			var info DebugDHTInfo
 			info.Key = append(info.Key, dinfo.key[:]...)
 			if dinfo.peer != nil {
