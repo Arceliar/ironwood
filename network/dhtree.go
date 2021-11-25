@@ -405,45 +405,6 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		})
 	})
 	return dinfo
-	/*
-		dinfo := new(dhtInfo)
-		dinfo.seq = setup.seq
-		dinfo.key = setup.token.source
-		dinfo.peer = prev
-		dinfo.rest = next
-		dinfo.root = setup.token.dest.root
-		dinfo.rootSeq = setup.token.dest.seq
-		if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
-			// Wrong root or mismatched seq
-			if prev != nil {
-				prev.sendTeardown(t, setup.getTeardown())
-			}
-			return
-		}
-		if _, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-			// Already have a path from this source
-			if prev != nil {
-				prev.sendTeardown(t, setup.getTeardown())
-			}
-			return
-		}
-		if !t._dhtAdd(dinfo) {
-			if prev != nil {
-				prev.sendTeardown(t, setup.getTeardown())
-			}
-		}
-		dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
-			t.Act(nil, func() {
-				// Clean up path if it has timed out
-				if info, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-					if info.peer != nil {
-						info.peer.sendTeardown(t, info.getTeardown())
-					}
-					t._teardown(info.peer, info.getTeardown())
-				}
-			})
-		})
-	*/
 }
 
 func (t *dhtree) _replaceNext(dinfo *dhtInfo) {
