@@ -70,7 +70,6 @@ func wireEncodeUint(dest []byte, u uint64) []byte {
 func wireDecodeUint(source []byte) (uint64, int) {
 	u, l := binary.Uvarint(source)
 	if l < 0 {
-		panic("DEBUG")
 		l = -l
 	}
 	return u, l
