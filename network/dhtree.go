@@ -349,9 +349,14 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 
 // _newBootstrap returns a *dhtBootstrap for this node, using t.self, with a signature
 func (t *dhtree) _newBootstrap() *dhtBootstrap {
-	dbs := new(dhtBootstrap)
-	panic("TODO")
-	//dbs.label = *t._getLabel()
+	t.seq++
+	dbs := &dhtBootstrap{
+		key:     t.core.crypto.publicKey,
+		root:    t.self.root,
+		rootSeq: t.self.seq,
+		seq:     t.seq,
+	}
+	dbs.sig = t.core.crypto.privateKey.sign(dbs.bytesForSig())
 	return dbs
 }
 
@@ -365,13 +370,18 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		return nil
 	}
 	source := bootstrap.key
+	next := t._dhtLookup(source, true)
+	if prev == nil && next == nil {
+		// This is our own bootstrap and we don't have anywhere to send it
+		return nil
+	}
 	dinfo := &dhtInfo{
 		key:     source,
 		seq:     bootstrap.seq, // TODO add a seq to bootstraps (like setups)
 		root:    bootstrap.root,
 		rootSeq: bootstrap.rootSeq,
 		peer:    prev,
-		rest:    t._dhtLookup(source, true),
+		rest:    next,
 	}
 	if _, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
 		// A path already exists
@@ -436,20 +446,67 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	*/
 }
 
+func (t *dhtree) _replaceNext(dinfo *dhtInfo) {
+	if t.next != nil {
+		// TODO get this right!
+		//  We need to replace the old next in most cases
+		//  The exceptions are when:
+		//    1. The dinfo's root/seq don't match our current root/seq
+		//    2. The dinfo matches, but so does t.next, and t.next is better
+		//  What happens when the dinfo matches, t.next does not, but t.next is still better?...
+		//  Just doing something for now (replace next) but not sure that's right...
+		var doUpdate bool
+		if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
+			// The root/seq is bad, so don't update
+		} else if dinfo.key.equal(t.next.key) {
+			// It's an update from the current next
+			doUpdate = true
+		} else if dhtOrdered(t.core.crypto.publicKey, dinfo.key, t.next.key) {
+			// It's an update from a better next
+			doUpdate = true
+		}
+		// TODO? this is a newer update, but from a worse node? which should win?
+		if doUpdate {
+			t._teardown(nil, t.next.getTeardown())
+			t.next = dinfo
+		} else {
+			t._teardown(nil, dinfo.getTeardown())
+		}
+	} else {
+		t.next = dinfo
+	}
+}
+
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
-func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
-	panic("TODO add prev as an argument")
-	if dinfo := t._addBootstrapPath(bootstrap, nil); dinfo != nil {
+func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
+	if dinfo := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
+		if dinfo.peer == nil {
+			// sanity checks, this should only happen when setting up our prev
+			if !bootstrap.key.equal(t.core.crypto.publicKey) {
+				panic("wrong key")
+			} else if bootstrap.seq != t.seq {
+				panic("wrong seq")
+			} else if t.prev != nil {
+				if t.prev.root.equal(t.self.root) && t.prev.rootSeq == t.self.seq {
+					panic("already have an equivalent prev")
+				} else {
+					// TODO only tear down if the prev is from a bootstrap
+					t._teardown(nil, t.prev.getTeardown())
+				}
+			}
+			t.prev = dinfo
+			//t.dkeys[dinfo] = dest // N/A for bootstrap paths...
+		}
 		if dinfo.rest != nil {
 			dinfo.rest.sendBootstrap(t, bootstrap)
 			return
 		}
 		// TODO handle case where we're the terminal node... is this a good path, or do we need to tear down? see: handleSetup logic for t.prev node
-		panic("TODO decide if we should keep this path")
-	} else {
-		panic("TODO send teardown")
+		t._replaceNext(dinfo)
+	} else if prev != nil {
+		prev.sendTeardown(t, bootstrap.getTeardown())
 	}
 	/*
 		source := bootstrap.label.key
@@ -469,9 +526,9 @@ func (t *dhtree) _handleBootstrap(bootstrap *dhtBootstrap) {
 }
 
 // handleBootstrap is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrap
-func (t *dhtree) handleBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
+func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBootstrap) {
 	t.Act(from, func() {
-		t._handleBootstrap(bootstrap)
+		t._handleBootstrap(prev, bootstrap)
 	})
 }
 
@@ -710,7 +767,7 @@ func (t *dhtree) _doBootstrap() {
 			return
 		}
 		if !t.self.root.equal(t.core.crypto.publicKey) {
-			t._handleBootstrap(t._newBootstrap())
+			t._handleBootstrap(nil, t._newBootstrap())
 			// Don't immediately send more bootstraps if called again too quickly
 			// This helps prevent traffic spikes in some mobility scenarios
 			t.bwait = true
@@ -1043,6 +1100,15 @@ func (dbs *dhtBootstrap) bytesForSig() []byte {
 func (dbs *dhtBootstrap) check() bool {
 	bs := dbs.bytesForSig()
 	return dbs.key.verify(bs, &dbs.sig)
+}
+
+func (dbs *dhtBootstrap) getTeardown() *dhtTeardown {
+	return &dhtTeardown{
+		seq:     dbs.seq,
+		key:     dbs.key,
+		root:    dbs.root,
+		rootSeq: dbs.rootSeq,
+	}
 }
 
 func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
