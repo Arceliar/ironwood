@@ -252,6 +252,9 @@ func (p *peer) _handleBootstrapAck(bs []byte) error {
 	if err := ack.decode(bs); err != nil {
 		return err
 	}
+	if !ack.check() {
+		return errors.New("invalid bootstrap acknowledgement")
+	}
 	p.peers.core.dhtree.handleBootstrapAck(p, ack)
 	return nil
 }

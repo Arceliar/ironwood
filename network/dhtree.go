@@ -404,17 +404,21 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		peer:    prev,
 		rest:    next,
 	}
-	dinfo.isActive = true // FIXME DEBUG, this should start false and switch to true when acked (or after some timeout)
+	//dinfo.isActive = true // FIXME DEBUG, this should start false and switch to true when acked (or after some timeout)
 	if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-		if _, isIn := dinfos[dinfo.dhtPathState]; isIn {
-			// A path in the same state already exists
-			// TODO? in some circumstances, tear down that path and keep this one instead?
-			return nil
-		}
 		for _, dfo := range dinfos {
 			if dfo.seq == dinfo.seq {
 				return nil // FIXME? This looped, but the above check didn't catch it (somehow)... I guess that's possible with races
 			}
+		}
+		if altInfo, isIn := dinfos[dinfo.dhtPathState]; isIn {
+			// A path in the same state already exists
+			// TODO? in some circumstances, tear down that path and keep this one instead?
+			if altInfo.peer != nil {
+				altInfo.peer.sendTeardown(t, altInfo.getTeardown())
+			}
+			t._teardown(altInfo.peer, altInfo.getTeardown())
+			//return nil
 		}
 	}
 	if !t._dhtAdd(dinfo) {
@@ -438,7 +442,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	return dinfo
 }
 
-func (t *dhtree) _replaceNext(dinfo *dhtInfo) {
+func (t *dhtree) _replaceNext(dinfo *dhtInfo) bool {
 	if t.next != nil {
 		// TODO get this right!
 		//  We need to replace the old next in most cases
@@ -461,11 +465,14 @@ func (t *dhtree) _replaceNext(dinfo *dhtInfo) {
 		if doUpdate {
 			t._teardown(nil, t.next.getTeardown())
 			t.next = dinfo
+			return true
 		} else {
 			t._teardown(nil, dinfo.getTeardown())
+			return false
 		}
 	} else {
 		t.next = dinfo
+		return true
 	}
 }
 
@@ -495,8 +502,12 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 			dinfo.rest.sendBootstrap(t, bootstrap)
 			return
 		}
-		// TODO handle case where we're the terminal node... is this a good path, or do we need to tear down? see: handleSetup logic for t.prev node
-		t._replaceNext(dinfo)
+		if t._replaceNext(dinfo) {
+			ack := new(dhtBootstrapAck)
+			ack.bootstrap = *bootstrap
+			ack.response = *t._getToken(bootstrap.key)
+			t._handleBootstrapAck(ack)
+		}
 	} else if prev != nil {
 		prev.sendTeardown(t, bootstrap.getTeardown())
 	}
@@ -524,13 +535,54 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 	})
 }
 
+func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
+	mapKey := dhtMapKey{ // TODO bootstrap.getMapKey() or something along those lines
+		key:     ack.bootstrap.key,
+		root:    ack.bootstrap.root,
+		rootSeq: ack.bootstrap.rootSeq,
+	}
+	var found bool
+	if dinfos, isIn := t.dinfos[mapKey]; isIn {
+		for _, dinfo := range dinfos {
+			if dinfo.seq != ack.bootstrap.seq {
+				continue
+			}
+			found = true
+			// TODO pass in which peer it came from, check that it's from dinfo.rest
+			if dinfo.isActive {
+				panic("DEBUG path already isActive")
+				break // or continue?
+			}
+			delete(dinfos, dinfo.dhtPathState)
+			dinfo.isActive = true
+			for !t._dhtAdd(dinfo) {
+				altInfo := dinfos[dinfo.dhtPathState]
+				if altInfo.peer != nil {
+					altInfo.peer.sendTeardown(t, altInfo.getTeardown())
+				}
+				t._teardown(altInfo.peer, altInfo.getTeardown())
+			}
+			if dinfo.peer != nil {
+				dinfo.peer.sendBootstrapAck(t, ack)
+			}
+			break
+		}
+	}
+	if !found {
+		// This can happen if we receive an ack after already sending a teardown to that peer (they cross on the wire)
+		//pstr := fmt.Sprintf("DEBUG tried to acknowledge nonexistant path, %v, %v, %v", mapKey, t.dinfos, len(t.dinfos[mapKey]))
+		//panic(pstr)
+		//fmt.Println(pstr)
+	}
+}
+
 // _handleBootstrapAck takes an ack packet and checks if we know a next hop on the tree
 // if yes, then we forward to the next hop
 // if no, then we decide whether or not this node is better than our current prev
 // if yes, then we get rid of our current prev (if any) and start setting up a new path to the response node in the ack
 // if no, then we drop the bootstrap acknowledgement without doing anything
+/*
 func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
-	/*
 		source := ack.response.dest.key
 		next := t._treeLookup(&ack.bootstrap.label)
 		switch {
@@ -588,8 +640,8 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 			// FIXME we should avoid letting this happen
 			//  E.g. check that the lookup will fail, or at least that the roots match
 		}
-	*/
 }
+*/
 
 // handleBootstrapAck is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrapAck
 func (t *dhtree) handleBootstrapAck(from phony.Actor, ack *dhtBootstrapAck) {
@@ -737,7 +789,6 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 				next = dinfo.peer
 				delete(dinfos, dinfo.dhtPathState)
 				dinfo.isOrphaned = true
-				//dinfo.isActive = false // FIXME debug, testing
 				/*
 					if altInfo := dinfos[dinfo.dhtPathState]; altInfo != nil {
 						// altInfo is older, apparently, so tear it down and replace it
@@ -776,6 +827,7 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 				// Delay bootstrap until we've processed any other queued messages
 				t.Act(nil, t._doBootstrap)
 			}
+			break
 		}
 	}
 }
@@ -794,7 +846,8 @@ func (t *dhtree) _doBootstrap() {
 		if t.prev != nil && t.prev.root.equal(t.self.root) && t.prev.rootSeq == t.self.seq {
 			return
 		}
-		if !t.self.root.equal(t.core.crypto.publicKey) {
+		//if !t.self.root.equal(t.core.crypto.publicKey) {
+		if t.parent != nil {
 			t._handleBootstrap(nil, t._newBootstrap())
 			// Don't immediately send more bootstraps if called again too quickly
 			// This helps prevent traffic spikes in some mobility scenarios
