@@ -408,7 +408,19 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
 		for _, dfo := range dinfos {
 			if dfo.seq == dinfo.seq {
-				return nil // FIXME? This looped, but the above check didn't catch it (somehow)... I guess that's possible with races
+				// The path looped, so we have two options here:
+				//  1. Tear down the new path, and let the source try again
+				//  2. Stitch the old path and the new path together, and remove the loop
+				// This is an attempt at option 2
+				if dfo.rest != nil {
+					dfo.rest.sendTeardown(t, dfo.getTeardown())
+				}
+				dfo.rest = dinfo.rest
+				if t.prev == dfo {
+					// TODO figure out if this is really safe
+					t.prev = nil
+				}
+				return dfo
 			}
 		}
 		if altInfo, isIn := dinfos[dinfo.dhtPathState]; isIn && altInfo.seq < dinfo.seq {
