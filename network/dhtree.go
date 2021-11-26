@@ -3,6 +3,7 @@ package network
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -138,7 +139,7 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 		}
 		for _, dinfos := range t.dinfos {
 			for _, dinfo := range dinfos {
-				if dinfo.peer == p || dinfo.rest == p {
+				if dinfo.peer == p || (!dinfo.isOrphaned && dinfo.rest == p) {
 					t._teardown(p, dinfo.getTeardown())
 				}
 			}
@@ -304,9 +305,6 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 		if !info.isActive {
 			return
 		}
-		if info.isOrphaned {
-			//return // FIXME DEBUG, pretend orphaned paths just don't exist...
-		}
 		doCheckedUpdate(info.key, info.peer, info) // updates if the source is better
 		if bestInfo != nil && info.key.equal(bestInfo.key) {
 			if treeLess(info.root, bestInfo.root) {
@@ -409,9 +407,14 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	dinfo.isActive = true // FIXME DEBUG, this should start false and switch to true when acked (or after some timeout)
 	if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
 		if _, isIn := dinfos[dinfo.dhtPathState]; isIn {
-			// A path already exists
+			// A path in the same state already exists
 			// TODO? in some circumstances, tear down that path and keep this one instead?
 			return nil
+		}
+		for _, dfo := range dinfos {
+			if dfo.seq == dinfo.seq {
+				return nil // FIXME? This looped, but the above check didn't catch it (somehow)... I guess that's possible with races
+			}
 		}
 	}
 	if !t._dhtAdd(dinfo) {
@@ -728,24 +731,36 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 				if len(dinfos) == 0 {
 					delete(t.dinfos, teardown.getMapKey())
 				}
-			} else if from == dinfo.rest {
+			} else if from == dinfo.rest && !dinfo.isOrphaned {
 				// The dest side is unreachable, so we need to mark the path as orphaned
 				// The source is still reachable via the path, so it's not completely useless yet
 				next = dinfo.peer
-				if !dinfo.isOrphaned {
-					delete(dinfos, dinfo.dhtPathState)
-					dinfo.isOrphaned = true
+				delete(dinfos, dinfo.dhtPathState)
+				dinfo.isOrphaned = true
+				//dinfo.isActive = false // FIXME debug, testing
+				/*
 					if altInfo := dinfos[dinfo.dhtPathState]; altInfo != nil {
 						// altInfo is older, apparently, so tear it down and replace it
 						// We want to really delete it, so this is always a source-side teardown (from altInfo.peer)
 						t._teardown(altInfo.peer, altInfo.getTeardown())
 					}
 					dinfos[dinfo.dhtPathState] = dinfo
-				} else {
-					// Already orphaned, so this is a duplicate
-					// TODO prevent duplicates from happening (e.g. peer dies on an already orphaned path, no need to send more signals...)
-					continue
+				*/
+				for !t._dhtAdd(dinfo) {
+					// FIXME why?! Why does this seem to work, but an if statement doesn't?
+					// Probably the len == 0 case in the source side teardown...
+					altInfo := dinfos[dinfo.dhtPathState]
+					t._teardown(altInfo.peer, altInfo.getTeardown())
 				}
+			} else if from == dinfo.rest && dinfo.isOrphaned {
+				// FIXME DEBUG we don't want this to happen in honest networks, ever
+				// Already orphaned, so this is a duplicate
+				// TODO prevent duplicates from happening (e.g. peer dies on an already orphaned path, no need to send more signals...)
+				pstr := fmt.Sprintf("DEBUG duplicate orphand path, %v, %v", t.core.crypto.publicKey[:], dinfo.key[:])
+				//panic(pstr)
+				fmt.Println(pstr)
+				//panic("DEBUG duplicate orphaned path")
+				continue
 			} else {
 				continue //panic("DEBUG teardown of path from wrong node")
 			}

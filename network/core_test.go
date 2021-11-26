@@ -63,7 +63,10 @@ func TestTwoNodes(t *testing.T) {
 	addrB := b.LocalAddr()
 	done := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer func() {
+			defer func() { recover() }()
+			close(done)
+		}()
 		msg := make([]byte, 2048)
 		n, from, err := b.ReadFrom(msg)
 		if err != nil {
@@ -160,7 +163,10 @@ func TestLineNetwork(t *testing.T) {
 				}
 			}()
 			go func() {
-				defer close(done)
+				defer func() {
+					defer func() { recover() }()
+					close(done)
+				}()
 				// Recv from a at b
 				read := make([]byte, 2048)
 				for {
@@ -275,7 +281,10 @@ func TestRandomTreeNetwork(t *testing.T) {
 				}
 			}()
 			go func() {
-				defer close(done)
+				defer func() {
+					defer func() { recover() }()
+					close(done)
+				}()
 				// Recv from a at b
 				read := make([]byte, 2048)
 				for {
