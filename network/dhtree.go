@@ -411,7 +411,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 				return nil // FIXME? This looped, but the above check didn't catch it (somehow)... I guess that's possible with races
 			}
 		}
-		if altInfo, isIn := dinfos[dinfo.dhtPathState]; isIn {
+		if altInfo, isIn := dinfos[dinfo.dhtPathState]; isIn && altInfo.seq < dinfo.seq {
 			// A path in the same state already exists
 			// TODO? in some circumstances, tear down that path and keep this one instead?
 			if altInfo.peer != nil {
@@ -557,6 +557,13 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 			dinfo.isActive = true
 			for !t._dhtAdd(dinfo) {
 				altInfo := dinfos[dinfo.dhtPathState]
+				if dinfo.seq < altInfo.seq {
+					if dinfo.peer != nil {
+						dinfo.peer.sendTeardown(t, dinfo.getTeardown())
+					}
+					t._teardown(dinfo.peer, dinfo.getTeardown())
+					return
+				}
 				if altInfo.peer != nil {
 					altInfo.peer.sendTeardown(t, altInfo.getTeardown())
 				}
