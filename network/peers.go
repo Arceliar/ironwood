@@ -247,6 +247,24 @@ func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	})
 }
 
+func (p *peer) _handleExtension(bs []byte) error {
+	ext := new(dhtExtension)
+	if err := ext.decode(bs); err != nil {
+		return err
+	}
+	if !ext.check() {
+		return errors.New("invalid extenson")
+	}
+	p.peers.core.dhtree.handleExtension(p, p, ext)
+	return nil
+}
+
+func (p *peer) sendExtension(from phony.Actor, ext *dhtExtension) {
+	p.Act(from, func() {
+		p.writer.sendPacket(wireProtoDHTExtension, ext)
+	})
+}
+
 func (p *peer) _handleBootstrapAck(bs []byte) error {
 	ack := new(dhtBootstrapAck)
 	if err := ack.decode(bs); err != nil {
