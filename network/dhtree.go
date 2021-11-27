@@ -514,13 +514,33 @@ func (t *dhtree) _extend(prev *peer, ext *dhtExtension) {
 				peer:         guideInfo.rest,
 				rest:         guideInfo.peer,
 			}
-			//dinfo.isActive = true // Extending an existing (active) path, so it's safe to be active here
+			// TODO? don't activate until we send an ack to the extended path?
+			dinfo.isActive = true // Extending an existing (active) path, so it's safe to be active here
 			if prev != dinfo.peer {
+				panic("DEBUG extend from wrong peer")
 				prev.sendTeardown(t, dinfo.getTeardown())
 				return
 			}
 			// TODO we need to stitch together any loops with any existing path (same mapKey and seq)
-			panic("TODO")
+			var stitched bool
+			if oldInfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+				if oldInfo, isIn := oldInfos[dinfo.seq]; isIn {
+					// TODO stitch together the old path to remove the loop, teardown as needed
+					//panic("TODO stitch")
+					//_ = oldInfo
+					// The new dinfo object will replace oldInfo
+					// The path should come from oldInfo's source direction
+					dinfo.peer = oldInfo.peer
+					// The path should be in the same state as the old one
+					dinfo.dhtPathState = oldInfo.dhtPathState
+					// Remove oldInfo and clean up anything in the "rest" direction
+					t._teardown(oldInfo.peer, oldInfo.getTeardown())
+					// TODO make absolutely sure that t._dhtAdd cannot fail after this...
+					stitched = true
+				}
+			}
+			// TODO add the path, forward, set t.next if needed, etc. (basically everything)
+			//panic("TODO finish this")
 			/*
 					if dfo.seq == dinfo.seq {
 					  // The path looped, so we have two options here:
@@ -551,11 +571,17 @@ func (t *dhtree) _extend(prev *peer, ext *dhtExtension) {
 				}
 			*/
 			if !t._dhtAdd(dinfo) {
+				panic("DEBUG dhtAdd failed")
+				if stitched {
+					panic("this should never happen")
+				}
 				// We failed to add the dinfo to the DHT for some reason
 				if dinfo.peer != nil {
 					dinfo.peer.sendTeardown(t, dinfo.getTeardown())
 				}
 				return
+			} else {
+				//panic("DEBUG dhtAdd success")
 			}
 			// Setup timer for cleanup
 			dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
@@ -572,16 +598,23 @@ func (t *dhtree) _extend(prev *peer, ext *dhtExtension) {
 				})
 			})
 			if dinfo.rest != nil {
+				//panic("DEBUG forwarding extension")
 				dinfo.rest.sendExtension(t, ext)
 				return
 			}
+			panic("DEBUG extend reached end of line")
 			// Then set t.next (if needed) and ack/teardown as appropriate
 			if !t._replaceNext(dinfo) {
+				panic("DEBUG Failed to replace next")
 				t._teardown(nil, dinfo.getTeardown())
+			} else {
+				panic("DEBUG replaced next")
 			}
 			return
 		}
+		panic("DEBUG no guide found in inner loop")
 	}
+	panic("DEBUG no guide found in outer loop")
 	// TODO
 	/*
 			if !bootstrap.root.equal(t.self.root) || bootstrap.rootSeq != t.self.seq {
@@ -687,8 +720,8 @@ func (t *dhtree) _replaceNext(dinfo *dhtInfo) bool {
 				extKey:    t.next.key,
 				extSeq:    t.next.seq,
 			}
-			_ = ext //t._extend(nil, ext) // FIXME TODO get this working
-			t._teardown(nil, t.next.getTeardown())
+			t._extend(nil, ext) // FIXME TODO get this working
+			//t._teardown(nil, t.next.getTeardown())
 			t.next = dinfo
 			return true
 		} else {
