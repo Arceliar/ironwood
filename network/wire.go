@@ -18,6 +18,7 @@ const (
 	wireProtoPathResponse
 	wireDHTTraffic
 	wirePathTraffic
+	wireKeepAlive
 )
 
 // TODO? proper packet types for out-of-band, instead of embedding into ordinary traffic

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"time"
 
@@ -11,8 +12,12 @@ import (
 )
 
 const (
-	peerKEEPALIVE = 4 * time.Second
-	peerTIMEOUT   = 6 * time.Second
+	peerENABLE_DELAY_SCALING = 1
+	peerRETRY_WINDOW         = 2 // seconds to wait between expected time and timeout
+	peerINIT_DELAY           = 4 // backwards compatibiity / historical reasons
+	peerINIT_TIMEOUT         = 6 // backwards compatiblity / historical reasons
+	peerMIN_DELAY            = 1
+	peerMAX_DELAY            = 30 // TODO figure out what makes sense
 )
 
 type peerPort uint64
@@ -54,6 +59,9 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		p.port = port
 		p.writer.peer = p
 		p.writer.timer = time.AfterFunc(0, func() {})
+		p.writer.delay = peerINIT_DELAY
+		p.timeout = peerINIT_TIMEOUT
+		p.time = time.Now()
 		ps.peers[port] = p
 	})
 	return p, err
@@ -81,6 +89,8 @@ type peer struct {
 	queue       packetQueue
 	ready       bool // is the writer ready for traffic?
 	writer      peerWriter
+	timeout     byte
+	time        time.Time // time when the peer was initialized
 }
 
 type peerWriter struct {
@@ -90,12 +100,14 @@ type peerWriter struct {
 	writeBuf  []byte
 	seq       uint64
 	timer     *time.Timer
+	delay     byte
 }
 
 func (w *peerWriter) _write(bs []byte) {
 	w.timer.Stop()
 	_, _ = w.peer.conn.Write(bs)
-	w.timer = time.AfterFunc(peerKEEPALIVE, w.keepAlive)
+	delay := time.Duration(w.delay) * time.Second
+	w.timer = time.AfterFunc(delay, w.keepAlive)
 	w.seq++
 	seq := w.seq
 	w.Act(nil, func() {
@@ -137,7 +149,22 @@ func (p *peer) handler() error {
 		default:
 		}
 		p.writer.Act(nil, func() {
-			p.writer._write([]byte{0x00, 0x01, wireDummy})
+			if peerENABLE_DELAY_SCALING == 0 {
+				p.writer._write([]byte{0x00, 0x01, wireDummy})
+				return
+			}
+			// TODO figure out a good delay schedule, this is just a placeholder
+			uptime := time.Since(p.time)
+			delay := uint(math.Sqrt(uptime.Minutes()))
+			// Clamp to allowed range
+			switch {
+			case delay < peerMIN_DELAY:
+				delay = peerMIN_DELAY
+			case delay > peerMAX_DELAY:
+				delay = peerMAX_DELAY
+			}
+			p.writer.delay = byte(delay)
+			p.writer._write([]byte{0x00, 0x02, wireKeepAlive, p.writer.delay})
 		})
 	}
 	// Hack to get ourself into the remote node's dhtree
@@ -147,7 +174,8 @@ func (p *peer) handler() error {
 	var lenBuf [2]byte // packet length is a uint16
 	bs := make([]byte, 65535)
 	for {
-		if err := p.conn.SetReadDeadline(time.Now().Add(peerTIMEOUT)); err != nil {
+		timeout := time.Duration(p.timeout) * time.Second
+		if err := p.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 			return err
 		}
 		if _, err := io.ReadFull(p.conn, lenBuf[:]); err != nil {
@@ -199,6 +227,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleDHTTraffic(bs[1:])
 	case wirePathTraffic:
 		return p._handlePathTraffic(bs[1:])
+	case wireKeepAlive:
+		return p._handleKeepAlive(bs[1:])
 	default:
 		return errors.New("unrecognized packet type")
 	}
@@ -427,6 +457,22 @@ func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	p.Act(from, func() {
 		p._push(tr)
 	})
+}
+
+func (p *peer) _handleKeepAlive(bs []byte) error {
+	if len(bs) != 1 {
+		return errors.New("wrong wireKeepAlive length")
+	}
+	delay := bs[0]
+	// TODO? don't error here, just move it to the allowed range
+	switch {
+	case delay < peerMIN_DELAY:
+		return errors.New("wireKeepAlive delay too short")
+	case delay > peerMAX_DELAY:
+		return errors.New("wireKeepAlive delay too long")
+	}
+	p.timeout = bs[0] + peerRETRY_WINDOW
+	return nil
 }
 
 func (p *peer) _push(packet wireEncodeable) {
