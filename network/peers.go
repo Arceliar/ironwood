@@ -181,6 +181,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
 		return p._handleBootstrap(bs[1:])
+	case wireProtoDHTExtension:
+		return p._handleExtension(bs[1:])
 	case wireProtoDHTBootstrapAck:
 		return p._handleBootstrapAck(bs[1:])
 	case wireProtoDHTSetup:
@@ -250,9 +252,11 @@ func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 func (p *peer) _handleExtension(bs []byte) error {
 	ext := new(dhtExtension)
 	if err := ext.decode(bs); err != nil {
+		panic("DEBUG")
 		return err
 	}
 	if !ext.check() {
+		panic("DEBUG")
 		return errors.New("invalid extenson")
 	}
 	p.peers.core.dhtree.handleExtension(p, p, ext)

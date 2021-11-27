@@ -539,37 +539,6 @@ func (t *dhtree) _extend(prev *peer, ext *dhtExtension) {
 					stitched = true
 				}
 			}
-			// TODO add the path, forward, set t.next if needed, etc. (basically everything)
-			//panic("TODO finish this")
-			/*
-					if dfo.seq == dinfo.seq {
-					  // The path looped, so we have two options here:
-					  //  1. Tear down the new path, and let the source try again
-					  //  2. Stitch the old path and the new path together, and remove the loop
-					  // This is an attempt at option 2
-					  if dfo.rest != nil {
-						  dfo.rest.sendTeardown(t, dfo.getTeardown())
-					  }
-					  dfo.rest = dinfo.rest
-					  if t.prev == dfo {
-						  // TODO figure out if this is really safe
-						  t.prev = nil
-					  }
-					  return dfo
-				  }
-			*/
-			// Now check if a path already exists / do the usual dhtAdd stuff
-			/*
-				if altInfo, isIn := dinfos[dinfo.dhtPathState]; isIn && altInfo.seq < dinfo.seq {
-					// A path in the same state already exists
-					// TODO? in some circumstances, tear down that path and keep this one instead?
-					if altInfo.peer != nil {
-						altInfo.peer.sendTeardown(t, altInfo.getTeardown())
-					}
-					t._teardown(altInfo.peer, altInfo.getTeardown())
-					//return nil
-				}
-			*/
 			if !t._dhtAdd(dinfo) {
 				panic("DEBUG dhtAdd failed")
 				if stitched {
@@ -598,93 +567,29 @@ func (t *dhtree) _extend(prev *peer, ext *dhtExtension) {
 				})
 			})
 			if dinfo.rest != nil {
+				if prev != nil {
+					//panic("DEBUG forwarding extension from later hop")
+				}
 				//panic("DEBUG forwarding extension")
 				dinfo.rest.sendExtension(t, ext)
 				return
 			}
-			panic("DEBUG extend reached end of line")
+			//panic("DEBUG extend reached end of line")
 			// Then set t.next (if needed) and ack/teardown as appropriate
 			if !t._replaceNext(dinfo) {
-				panic("DEBUG Failed to replace next")
+				//panic("DEBUG Failed to replace next")
 				t._teardown(nil, dinfo.getTeardown())
 			} else {
-				panic("DEBUG replaced next")
+				//panic("DEBUG replaced next")
 			}
 			return
 		}
-		panic("DEBUG no guide found in inner loop")
+		//panic("DEBUG no guide found in inner loop")
 	}
-	panic("DEBUG no guide found in outer loop")
-	// TODO
-	/*
-			if !bootstrap.root.equal(t.self.root) || bootstrap.rootSeq != t.self.seq {
-				// Wrong root or rootSeq
-				return nil
-			}
-			source := bootstrap.key
-			next := t._dhtLookup(source, true)
-			if prev == nil && next == nil {
-				// This is our own bootstrap and we don't have anywhere to send it
-				return nil
-			}
-			dinfo := &dhtInfo{
-		    dhtBootstrap: *bootstrap,
-				//key:     source,
-				//seq:     bootstrap.seq, // TODO add a seq to bootstraps (like setups)
-				//root:    bootstrap.root,
-				//rootSeq: bootstrap.rootSeq,
-				peer:    prev,
-				rest:    next,
-			}
-			//dinfo.isActive = true // FIXME DEBUG, this should start false and switch to true when acked (or after some timeout)
-			if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-				for _, dfo := range dinfos {
-					if dfo.seq == dinfo.seq {
-						// The path looped, so we have two options here:
-						//  1. Tear down the new path, and let the source try again
-						//  2. Stitch the old path and the new path together, and remove the loop
-						// This is an attempt at option 2
-						if dfo.rest != nil {
-							dfo.rest.sendTeardown(t, dfo.getTeardown())
-						}
-						dfo.rest = dinfo.rest
-						if t.prev == dfo {
-							// TODO figure out if this is really safe
-							t.prev = nil
-						}
-						return dfo
-					}
-				}
-				if altInfo, isIn := dinfos[dinfo.dhtPathState]; isIn && altInfo.seq < dinfo.seq {
-					// A path in the same state already exists
-					// TODO? in some circumstances, tear down that path and keep this one instead?
-					if altInfo.peer != nil {
-						altInfo.peer.sendTeardown(t, altInfo.getTeardown())
-					}
-					t._teardown(altInfo.peer, altInfo.getTeardown())
-					//return nil
-				}
-			}
-			if !t._dhtAdd(dinfo) {
-				// We failed to add the dinfo to the DHT for some reason
-				return nil
-			}
-			// Setup timer for cleanup
-			dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
-				t.Act(nil, func() {
-					// Clean up path if it has timed out
-					if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-						if info := dinfos[dinfo.dhtPathState]; info == dinfo {
-							if info.peer != nil {
-								info.peer.sendTeardown(t, info.getTeardown())
-							}
-							t._teardown(info.peer, info.getTeardown())
-						}
-					}
-				})
-			})
-			return dinfo
-	*/
+	//panic("DEBUG no guide found in outer loop")
+	if prev != nil {
+		prev.sendTeardown(t, ext.bootstrap.getTeardown())
+	}
 }
 
 func (t *dhtree) handleExtension(from phony.Actor, prev *peer, ext *dhtExtension) {
@@ -1595,7 +1500,7 @@ func (de *dhtExtension) decode(data []byte) error {
 		return wireDecodeError
 	}
 	tmp.extSeq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	if err := de.bootstrap.decode(data); err != nil {
+	if err := tmp.bootstrap.decode(data); err != nil {
 		return err
 	}
 	*de = tmp
