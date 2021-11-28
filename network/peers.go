@@ -353,6 +353,7 @@ func (p *peer) sendTeardown(from phony.Actor, teardown *dhtTeardown) {
 func (p *peer) _handlePathNotify(bs []byte) error {
 	notify := new(pathNotify)
 	if err := notify.decode(bs); err != nil {
+		panic("DEBUG")
 		return err
 	}
 	p.peers.core.dhtree.pathfinder.handleNotify(p, notify)
@@ -368,6 +369,7 @@ func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
 func (p *peer) _handlePathRequest(bs []byte) error {
 	req := new(pathRequest)
 	if err := req.decode(bs); err != nil {
+		panic("DEBUG")
 		return err
 	}
 	//req.rpath = append(req.rpath, p.port)
@@ -384,9 +386,11 @@ func (p *peer) sendPathRequest(from phony.Actor, req *pathRequest) {
 func (p *peer) _handlePathResponse(bs []byte) error {
 	res := new(pathResponse)
 	if err := res.decode(bs); err != nil {
+		panic("DEBUG")
 		return err
 	}
 	if !res.check() {
+		panic("DEBUG")
 		return errors.New("invalid path response")
 	}
 	//response.rpath = append(response.rpath, p.port)

@@ -407,7 +407,7 @@ type pathResponse struct {
 }
 
 func (res *pathResponse) check() bool {
-	return res.req.source.verify(res.bytesForSig(), &res.sig)
+	return res.req.check() && res.req.source.verify(res.bytesForSig(), &res.sig)
 }
 
 func (res *pathResponse) bytesForSig() []byte {
@@ -434,7 +434,7 @@ func (res *pathResponse) decode(data []byte) error {
 		return wireDecodeError
 	}
 	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	if err := res.req.decode(data); err != nil {
+	if err := tmp.req.decode(data); err != nil {
 		return err
 	}
 	*res = tmp
