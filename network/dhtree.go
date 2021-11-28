@@ -148,6 +148,24 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 	})
 }
 
+func (t *dhtree) _cleanupOldPrevs() {
+	for mapKey, dinfos := range t.dinfos {
+		if !mapKey.key.equal(t.core.crypto.publicKey) {
+			continue
+		}
+		for _, dinfo := range dinfos {
+			if dinfo.peer != nil {
+				panic("this should never happen")
+			}
+			if t.prev == dinfo {
+				// Don't tear down the current prev
+				continue
+			}
+			t._teardown(dinfo.peer, dinfo.getTeardown())
+		}
+	}
+}
+
 // _fix selects the best parent (and is called in response to receiving a tree update)
 // if this is not the same as our current parent, then it sends a tree update to our peers and resets our prev/next in the dht
 func (t *dhtree) _fix() {
@@ -479,6 +497,15 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 			}
 		*/
 	}
+	if dinfo.peer == nil {
+		// We're about to replace our current prev
+		// Lets tear down any old prevs, except the current one, to clean up
+		// Then we'll let the current prev stick around while we set up a new one
+		if !dinfo.key.equal(t.core.crypto.publicKey) {
+			panic("this should never happen")
+		}
+		t._cleanupOldPrevs()
+	}
 	if !t._dhtAdd(dinfo) {
 		// We failed to add the dinfo to the DHT for some reason
 		return nil
@@ -751,6 +778,10 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 					t._teardown(dinfo.peer, dinfo.getTeardown())
 				} else if dinfo.peer != nil {
 					dinfo.peer.sendBootstrapAck(t, ack)
+				}
+				if t.prev == dinfo {
+					// We have an acknowledged prev, so we can safely clean up any old ones
+					t._cleanupOldPrevs()
 				}
 				/*
 					for !t._dhtAdd(dinfo) {

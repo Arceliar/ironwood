@@ -40,7 +40,7 @@ type DebugDHTInfo struct {
 
 type DebugPathInfo struct {
 	Key  ed25519.PublicKey
-	Peer ed25519.PublicKey
+	Port uint64
 }
 
 func (d *Debug) GetSelf() (info DebugSelfInfo) {
@@ -104,7 +104,9 @@ func (d *Debug) GetPaths() (infos []DebugPathInfo) {
 		for key, pinfo := range d.c.dhtree.pathfinder.paths {
 			var info DebugPathInfo
 			info.Key = append(info.Key, key[:]...)
-			info.Peer = append(info.Peer, pinfo.peer.key[:]...)
+			if pinfo.peer != nil {
+				info.Port = uint64(pinfo.peer.port)
+			}
 			infos = append(infos, info)
 		}
 	})
