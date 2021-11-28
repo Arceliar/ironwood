@@ -45,12 +45,12 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 	return nil
 }
 
-func (pf *pathfinder) _getLookup(n *pathNotify) *pathLookup {
+func (pf *pathfinder) _getLookup(n *pathNotify) *pathRequest {
 	if info, isIn := pf.paths[n.label.key]; isIn {
 		if time.Since(info.ltime) < pathfinderTHROTTLE || !n.check() {
 			return nil
 		}
-		l := new(pathLookup)
+		l := new(pathRequest)
 		l.notify = *n
 		info.ltime = time.Now()
 		return l
@@ -58,7 +58,7 @@ func (pf *pathfinder) _getLookup(n *pathNotify) *pathLookup {
 	return nil
 }
 
-func (pf *pathfinder) _getResponse(l *pathLookup) *pathResponse {
+func (pf *pathfinder) _getResponse(l *pathRequest) *pathResponse {
 	// Check if lookup comes from us
 	dest := l.notify.label.key
 	if !dest.equal(pf.dhtree.core.crypto.publicKey) || !l.notify.check() {
@@ -108,11 +108,11 @@ func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 	})
 }
 
-func (pf *pathfinder) handleLookup(from phony.Actor, l *pathLookup) {
+func (pf *pathfinder) handleLookup(from phony.Actor, l *pathRequest) {
 	pf.dhtree.Act(from, func() {
 		// TODO? check the treeLabel at some point
 		if next := pf.dhtree._treeLookup(l.notify.label); next != nil {
-			next.sendPathLookup(pf.dhtree, l)
+			next.sendPathRequest(pf.dhtree, l)
 		} else if r := pf._getResponse(l); r != nil {
 			pf.dhtree.core.peers.handlePathResponse(pf.dhtree, r)
 		}
@@ -143,11 +143,11 @@ func (pf *pathfinder) _doNotify(dest publicKey, keepAlive bool) {
 The basic logic is:
   0. Add a placeholder to pathfinder.paths for nodes we care about (make sure nil path is handled)
   1. Send a pathNotify whenever we receive a non-source-routed packet
-  2. Possibly send a pathLookup when we receive a pathNotify
+  2. Possibly send a pathRequest when we receive a pathNotify
     Check that we care about the path (pathInfo exists)
     Check that we haven't sent a lookup too recently (e.g. within the last second)
-  3. Reply to pathLookup with pathLookupResponse
-  4. If we receive a pathLookupResponse from a node we care about, save the path to pathfinder.paths
+  3. Reply to pathRequest with pathResponse
+  4. If we receive a pathResponse from a node we care about, save the path to pathfinder.paths
 */
 
 /************
@@ -216,15 +216,15 @@ func (pn *pathNotify) decode(data []byte) error {
 }
 
 /**************
- * pathLookup *
+ * pathRequest *
  **************/
 
-type pathLookup struct {
+type pathRequest struct {
 	notify pathNotify
 	rpath  []peerPort
 }
 
-func (l *pathLookup) encode(out []byte) ([]byte, error) {
+func (l *pathRequest) encode(out []byte) ([]byte, error) {
 	var bs []byte
 	var err error
 	if bs, err = l.notify.encode(nil); err != nil {
@@ -236,8 +236,8 @@ func (l *pathLookup) encode(out []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (l *pathLookup) decode(data []byte) error {
-	var tmp pathLookup
+func (l *pathRequest) decode(data []byte) error {
+	var tmp pathRequest
 	u, begin := wireDecodeUint(data)
 	end := int(u) + begin
 	if end > len(data) {
@@ -256,11 +256,11 @@ func (l *pathLookup) decode(data []byte) error {
 	return nil
 }
 
-// TODO logic to forward this towards pathLookup.notify.info via the tree
+// TODO logic to forward this towards pathRequest.notify.info via the tree
 //   Append a port number back to the previous hop to path along the way
 
 /**********************
- * pathLookupResponse *
+ * pathResponse *
  **********************/
 
 type pathResponse struct {

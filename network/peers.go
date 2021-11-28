@@ -219,8 +219,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleTeardown(bs[1:])
 	case wireProtoPathNotify:
 		return p._handlePathNotify(bs[1:])
-	case wireProtoPathLookup:
-		return p._handlePathLookup(bs[1:])
+	case wireProtoPathRequest:
+		return p._handlePathRequest(bs[1:])
 	case wireProtoPathResponse:
 		return p._handlePathResponse(bs[1:])
 	case wireDHTTraffic:
@@ -365,8 +365,8 @@ func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
 	})
 }
 
-func (p *peer) _handlePathLookup(bs []byte) error {
-	lookup := new(pathLookup)
+func (p *peer) _handlePathRequest(bs []byte) error {
+	lookup := new(pathRequest)
 	if err := lookup.decode(bs); err != nil {
 		return err
 	}
@@ -375,9 +375,9 @@ func (p *peer) _handlePathLookup(bs []byte) error {
 	return nil
 }
 
-func (p *peer) sendPathLookup(from phony.Actor, lookup *pathLookup) {
+func (p *peer) sendPathRequest(from phony.Actor, lookup *pathRequest) {
 	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoPathLookup, lookup)
+		p.writer.sendPacket(wireProtoPathRequest, lookup)
 	})
 }
 

@@ -14,7 +14,7 @@ const (
 	wireProtoDHTSetup
 	wireProtoDHTTeardown
 	wireProtoPathNotify
-	wireProtoPathLookup
+	wireProtoPathRequest
 	wireProtoPathResponse
 	wireDHTTraffic
 	wirePathTraffic
