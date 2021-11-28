@@ -366,31 +366,35 @@ func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
 }
 
 func (p *peer) _handlePathRequest(bs []byte) error {
-	lookup := new(pathRequest)
-	if err := lookup.decode(bs); err != nil {
+	req := new(pathRequest)
+	if err := req.decode(bs); err != nil {
 		return err
 	}
-	lookup.rpath = append(lookup.rpath, p.port)
-	p.peers.core.dhtree.pathfinder.handleLookup(p, lookup)
+	//req.rpath = append(req.rpath, p.port)
+	p.peers.core.dhtree.pathfinder.handleRequest(p, req)
 	return nil
 }
 
-func (p *peer) sendPathRequest(from phony.Actor, lookup *pathRequest) {
+func (p *peer) sendPathRequest(from phony.Actor, req *pathRequest) {
 	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoPathRequest, lookup)
+		p.writer.sendPacket(wireProtoPathRequest, req)
 	})
 }
 
 func (p *peer) _handlePathResponse(bs []byte) error {
-	response := new(pathResponse)
-	if err := response.decode(bs); err != nil {
+	res := new(pathResponse)
+	if err := res.decode(bs); err != nil {
 		return err
 	}
-	response.rpath = append(response.rpath, p.port)
-	p.peers.handlePathResponse(p, response)
+	if !res.check() {
+		return errors.New("invalid path response")
+	}
+	//response.rpath = append(response.rpath, p.port)
+	p.peers.core.dhtree.pathfinder.handleResponse(p, res)
 	return nil
 }
 
+/*
 func (ps *peers) handlePathResponse(from phony.Actor, response *pathResponse) {
 	ps.Act(from, func() {
 		var nextPort peerPort
@@ -405,6 +409,7 @@ func (ps *peers) handlePathResponse(from phony.Actor, response *pathResponse) {
 		}
 	})
 }
+*/
 
 func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
 	p.Act(from, func() {

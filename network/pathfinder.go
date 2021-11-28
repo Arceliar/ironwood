@@ -1,6 +1,7 @@
 package network
 
 import (
+	"encoding/binary"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -28,6 +29,24 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 		throttle = pathfinderTIMEOUT
 	}
 	if info, isIn := pf.paths[dest]; isIn && time.Since(info.ntime) > throttle {
+		n := &pathNotify{
+			sig:  pf.dhtree.core.crypto.privateKey.sign(dest[:]),
+			dest: dest,
+			key:  pf.dhtree.core.crypto.publicKey,
+		}
+		info.ntime = time.Now()
+		return n
+	}
+	return nil
+}
+
+/*
+func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
+	throttle := pathfinderTHROTTLE
+	if keepAlive {
+		throttle = pathfinderTIMEOUT
+	}
+	if info, isIn := pf.paths[dest]; isIn && time.Since(info.ntime) > throttle {
 		n := new(pathNotify)
 		n.label = pf.dhtree._getLabel()
 		n.dest = dest
@@ -44,7 +63,38 @@ func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 	}
 	return nil
 }
+*/
 
+func (pf *pathfinder) _getRequest(n *pathNotify) *pathRequest {
+	if info, isIn := pf.paths[n.key]; isIn {
+		if time.Since(info.ltime) < pathfinderTHROTTLE || !n.check() {
+			return nil
+		}
+		req := &pathRequest{
+			dhtSetupToken: *pf.dhtree._getToken(n.key),
+		}
+		info.ltime = time.Now()
+		return req
+	}
+	return nil
+}
+
+/*
+func (pf *pathfinder) _getLookup(n *pathNotify) *pathRequest {
+	if info, isIn := pf.paths[n.key]; isIn {
+		if time.Since(info.ltime) < pathfinderTHROTTLE || !n.check() {
+			return nil
+		}
+		l := new(pathRequest)
+		l.notify = *n
+		info.ltime = time.Now()
+		return l
+	}
+	return nil
+}
+*/
+
+/*
 func (pf *pathfinder) _getLookup(n *pathNotify) *pathRequest {
 	if info, isIn := pf.paths[n.label.key]; isIn {
 		if time.Since(info.ltime) < pathfinderTHROTTLE || !n.check() {
@@ -57,7 +107,27 @@ func (pf *pathfinder) _getLookup(n *pathNotify) *pathRequest {
 	}
 	return nil
 }
+*/
 
+func (pf *pathfinder) _getResponse(req *pathRequest) *pathResponse {
+	// Check if lookup comes from us
+	// Note that req reuses dhtSetupToken
+	// That means source/dest may mean the opposite of what you think they do, be careful
+	dest := req.source
+	if !dest.equal(pf.dhtree.core.crypto.publicKey) || !req.check() {
+		// TODO? skip l.notify.check()? only check the last hop?
+		return nil
+	}
+	pf.dhtree.seq++
+	res := &pathResponse{
+		req: *req,
+		seq: pf.dhtree.seq,
+	}
+	res.sig = pf.dhtree.core.crypto.privateKey.sign(res.bytesForSig())
+	return res
+}
+
+/*
 func (pf *pathfinder) _getResponse(l *pathRequest) *pathResponse {
 	// Check if lookup comes from us
 	dest := l.notify.label.key
@@ -74,6 +144,7 @@ func (pf *pathfinder) _getResponse(l *pathRequest) *pathResponse {
 	r.path = append(r.path, 0)
 	return r
 }
+*/
 
 func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 	var info *pathInfo
@@ -102,12 +173,24 @@ func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 	pf.dhtree.Act(from, func() {
 		if next := pf.dhtree._dhtLookup(n.dest, false); next != nil {
 			next.sendPathNotify(pf.dhtree, n)
-		} else if l := pf._getLookup(n); l != nil {
-			pf.handleLookup(nil, l) // TODO pf._handleLookup
+		} else if req := pf._getRequest(n); req != nil {
+			pf.handleRequest(nil, req)
 		}
 	})
 }
 
+func (pf *pathfinder) handleRequest(from phony.Actor, req *pathRequest) {
+	pf.dhtree.Act(from, func() {
+		// TODO? check the treeLabel at some point
+		if next := pf.dhtree._dhtLookup(req.source, false); next != nil {
+			next.sendPathRequest(pf.dhtree, req)
+		} else if res := pf._getResponse(req); res != nil {
+			pf.handleResponse(nil, res)
+		}
+	})
+}
+
+/*
 func (pf *pathfinder) handleLookup(from phony.Actor, l *pathRequest) {
 	pf.dhtree.Act(from, func() {
 		// TODO? check the treeLabel at some point
@@ -118,7 +201,22 @@ func (pf *pathfinder) handleLookup(from phony.Actor, l *pathRequest) {
 		}
 	})
 }
+*/
 
+func (pf *pathfinder) handleResponse(from phony.Actor, res *pathResponse) {
+	pf.dhtree.Act(from, func() {
+		// TODO save path back to res.req.source in a local path cache
+		// If a path already exists, replace it if (and only if) this is higher res.seq
+		if next := pf.dhtree._treeLookup(&res.req.dest); next != nil {
+			next.sendPathResponse(pf.dhtree, res)
+		} else {
+			// TODO Anything? If we were the destination, we should have just cached a path...
+			panic("DEBUG reached end of handleResponse")
+		}
+	})
+}
+
+/*
 func (pf *pathfinder) handleResponse(from phony.Actor, r *pathResponse) {
 	pf.dhtree.Act(from, func() {
 		// Note: this only handles the case where there's no valid next hop in the path
@@ -132,6 +230,7 @@ func (pf *pathfinder) handleResponse(from phony.Actor, r *pathResponse) {
 		}
 	})
 }
+*/
 
 func (pf *pathfinder) _doNotify(dest publicKey, keepAlive bool) {
 	if n := pf._getNotify(dest, keepAlive); n != nil {
@@ -165,6 +264,37 @@ type pathInfo struct {
  * pathNotify *
  **************/
 
+type pathNotify struct {
+	sig  signature
+	dest publicKey
+	key  publicKey
+}
+
+func (pn *pathNotify) check() bool {
+	return pn.key.verify(pn.dest[:], &pn.sig)
+}
+
+func (pn *pathNotify) encode(out []byte) ([]byte, error) {
+	out = append(out, pn.sig[:]...)
+	out = append(out, pn.dest[:]...)
+	out = append(out, pn.key[:]...)
+	return out, nil
+}
+
+func (pn *pathNotify) decode(data []byte) error {
+	var tmp pathNotify
+	if !wireChopSlice(tmp.sig[:], &data) {
+		return wireDecodeError
+	} else if !wireChopSlice(tmp.dest[:], &data) {
+		return wireDecodeError
+	} else if !wireChopSlice(tmp.key[:], &data) {
+		return wireDecodeError
+	}
+	*pn = tmp
+	return nil
+}
+
+/*
 type pathNotify struct {
 	sig   signature // TODO? remove this? is it really useful for anything?...
 	dest  publicKey // Who to send the notify to
@@ -214,11 +344,17 @@ func (pn *pathNotify) decode(data []byte) error {
 	*pn = tmp
 	return nil
 }
+*/
 
 /**************
  * pathRequest *
  **************/
 
+type pathRequest struct {
+	dhtSetupToken // Happens to be basically what we want, TODO something custom / not equal (so you couldn't reuse the bytes for a DHT setup)
+}
+
+/*
 type pathRequest struct {
 	notify pathNotify
 	rpath  []peerPort
@@ -255,6 +391,7 @@ func (l *pathRequest) decode(data []byte) error {
 	*l = tmp
 	return nil
 }
+*/
 
 // TODO logic to forward this towards pathRequest.notify.info via the tree
 //   Append a port number back to the previous hop to path along the way
@@ -263,6 +400,48 @@ func (l *pathRequest) decode(data []byte) error {
  * pathResponse *
  **********************/
 
+type pathResponse struct {
+	sig signature
+	seq uint64
+	req pathRequest
+}
+
+func (res *pathResponse) check() bool {
+	return res.req.source.verify(res.bytesForSig(), &res.sig)
+}
+
+func (res *pathResponse) bytesForSig() []byte {
+	var seqBytes [8]byte
+	binary.BigEndian.PutUint64(seqBytes[:], res.seq)
+	bs, err := res.req.encode(seqBytes[:])
+	if err != nil {
+		panic(err)
+	}
+	return bs
+}
+
+func (res *pathResponse) encode(out []byte) ([]byte, error) {
+	out = append(out, res.sig[:]...)
+	out = append(out, res.bytesForSig()...)
+	return out, nil
+}
+
+func (res *pathResponse) decode(data []byte) error {
+	var tmp pathResponse
+	if !wireChopSlice(tmp.sig[:], &data) {
+		return wireDecodeError
+	} else if len(data) < 8 {
+		return wireDecodeError
+	}
+	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
+	if err := res.req.decode(data); err != nil {
+		return err
+	}
+	*res = tmp
+	return nil
+}
+
+/*
 type pathResponse struct {
 	// TODO? a sig or something? Since we can't sign the rpath, which is the part we care about...
 	from  publicKey
@@ -294,6 +473,7 @@ func (r *pathResponse) decode(data []byte) error {
 	*r = tmp
 	return nil
 }
+*/
 
 /***************
  * pathTraffic *
