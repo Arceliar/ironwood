@@ -23,6 +23,15 @@ func (pf *pathfinder) init(t *dhtree) {
 	pf.paths = make(map[publicKey]*pathInfo)
 }
 
+func (pf *pathfinder) _remove(p *peer) {
+	for key, pinfo := range pf.paths {
+		if pinfo.peer == p {
+			pinfo.timer.Stop()
+			delete(pf.paths, key)
+		}
+	}
+}
+
 func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 	throttle := pathfinderTHROTTLE
 	if keepAlive {
@@ -146,7 +155,7 @@ func (pf *pathfinder) _getResponse(l *pathRequest) *pathResponse {
 }
 */
 
-func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
+func (pf *pathfinder) _getPath(dest publicKey) *peer {
 	var info *pathInfo
 	if nfo, isIn := pf.paths[dest]; isIn {
 		info = nfo
@@ -166,7 +175,7 @@ func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 			}
 		})
 	})
-	return info.path
+	return info.peer
 }
 
 func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
@@ -254,11 +263,21 @@ The basic logic is:
  ************/
 
 type pathInfo struct {
+	peer  *peer
+	seq   uint64
+	timer *time.Timer // time.AfterFunc(cleanup...), reset whenever this is used
+	ltime time.Time   // Time a lookup was last sent
+	ntime time.Time   // Time a notify was last sent (to periodically try to optimize paths)
+}
+
+/*
+type pathInfo struct {
 	path  []peerPort
 	timer *time.Timer // time.AfterFunc(cleanup...), reset whenever this is used
 	ltime time.Time   // Time a lookup was last sent
 	ntime time.Time   // Time a notify was last sent (to periodically try to optimize paths)
 }
+*/
 
 /**************
  * pathNotify *

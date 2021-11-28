@@ -144,6 +144,7 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 				}
 			}
 		}
+		t.pathfinder._remove(p)
 	})
 }
 
@@ -1097,11 +1098,12 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 
 func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
 	t.Act(from, func() {
-		if path := t.pathfinder._getPath(tr.dest); path != nil {
+		if peer := t.pathfinder._getPath(tr.dest); peer != nil {
 			pt := new(pathTraffic)
-			pt.path = path
+			//pt.path = path
 			pt.dt = *tr
-			t.core.peers.handlePathTraffic(t, pt)
+			peer.sendPathTraffic(t, pt)
+			//t.core.peers.handlePathTraffic(t, pt)
 		} else {
 			t.handleDHTTraffic(nil, tr, false)
 		}
