@@ -37,6 +37,7 @@ func (pf *pathfinder) handlePathTraffic(from phony.Actor, pt *pathTraffic) {
 		// TODO save path back to res.req.source in a local path cache
 		// If a path already exists, replace it if (and only if) this is higher res.seq
 		if pinfo, isIn := pf.paths[pt.dest]; isIn && pinfo.peer != nil {
+			pf._updateTimer(pt.dest, pinfo)
 			pinfo.peer.sendPathTraffic(pf.dhtree, pt)
 			//panic("DEBUG send path traffic")
 		} else {
@@ -177,6 +178,7 @@ func (pf *pathfinder) _getPathInfo(dest publicKey) *pathInfo {
 		info = new(pathInfo)
 		info.ltime = time.Now().Add(-pathfinderTHROTTLE)
 		info.ntime = time.Now().Add(-pathfinderTHROTTLE)
+		pf._updateTimer(dest, info)
 		pf.paths[dest] = info
 	}
 	return info
