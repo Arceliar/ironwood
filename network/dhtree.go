@@ -289,7 +289,7 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 // _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
 // this only uses the source direction of paths through the dht
 // bootstraps use slightly different logic, since they need to stop short of the destination key
-func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
+func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *publicKey) *peer {
 	// Start by defining variables and helper functions
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
@@ -359,11 +359,30 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 			doUpdate(p.key, p, nil)
 		}
 	}
+	// Update based on pathfinder paths
+	if mark != nil {
+		for key, pinfo := range t.pathfinder.paths {
+			if pinfo.peer == nil {
+				continue
+			}
+			if treeLess(key, *mark) {
+				// Worse than high water mark, so ignore
+				continue
+			}
+			if dhtOrdered(best, key, dest) {
+				doUpdate(key, pinfo.peer, nil)
+			}
+		}
+	}
 	// Update based on our DHT infos
 	for _, dinfos := range t.dinfos {
 		for _, dinfo := range dinfos {
 			doDHT(dinfo)
 		}
+	}
+	// Update the high water mark
+	if mark != nil {
+		*mark = best
 	}
 	return bestPeer
 }
@@ -453,7 +472,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	}
 	*/
 	source := bootstrap.key
-	next := t._dhtLookup(source, true)
+	next := t._dhtLookup(source, true, nil)
 	if prev == nil && next == nil {
 		// This is our own bootstrap and we don't have anywhere to send it
 		return nil
@@ -1114,7 +1133,7 @@ func (t *dhtree) _doBootstrap() {
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
 func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
 	t.Act(from, func() {
-		next := t._dhtLookup(tr.dest, false)
+		next := t._dhtLookup(tr.dest, false, &tr.mark)
 		if next == nil {
 			if true && tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
@@ -1753,13 +1772,15 @@ func (t *dhtTeardown) decode(data []byte) error {
 type dhtTraffic struct {
 	source  publicKey
 	dest    publicKey
-	kind    byte // in-band vs out-of-band, TODO? separate type?
+	mark    publicKey // high water mark, for opportunistic use of pathfinder paths
+	kind    byte      // in-band vs out-of-band, TODO? separate type?
 	payload []byte
 }
 
 func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
 	out = append(out, t.source[:]...)
 	out = append(out, t.dest[:]...)
+	out = append(out, t.mark[:]...)
 	out = append(out, t.kind)
 	out = append(out, t.payload...)
 	return out, nil
@@ -1771,8 +1792,8 @@ func (t *dhtTraffic) decode(data []byte) error {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.dest[:], &data) {
 		return wireDecodeError
-	}
-	if len(data) < 1 {
+	} else if !wireChopSlice(tmp.mark[:], &data) {
+	} else if len(data) < 1 {
 		return wireDecodeError
 	}
 	tmp.kind, data = data[0], data[1:]
