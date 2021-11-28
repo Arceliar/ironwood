@@ -32,6 +32,20 @@ func (pf *pathfinder) _remove(p *peer) {
 	}
 }
 
+func (pf *pathfinder) handlePathTraffic(from phony.Actor, pt *pathTraffic) {
+	pf.dhtree.Act(from, func() {
+		// TODO save path back to res.req.source in a local path cache
+		// If a path already exists, replace it if (and only if) this is higher res.seq
+		if pinfo, isIn := pf.paths[pt.dest]; isIn && pinfo.peer != nil {
+			pinfo.peer.sendPathTraffic(pf.dhtree, pt)
+			//panic("DEBUG send path traffic")
+		} else {
+			pf.dhtree.handleDHTTraffic(nil, &pt.dhtTraffic, false)
+			//panic("DEBUG fallback to DHT")
+		}
+	})
+}
+
 func (pf *pathfinder) _getNotify(dest publicKey, keepAlive bool) *pathNotify {
 	throttle := pathfinderTHROTTLE
 	if keepAlive {
@@ -155,6 +169,40 @@ func (pf *pathfinder) _getResponse(l *pathRequest) *pathResponse {
 }
 */
 
+func (pf *pathfinder) _getPathInfo(dest publicKey) *pathInfo {
+	var info *pathInfo
+	if nfo, isIn := pf.paths[dest]; isIn {
+		info = nfo
+	} else {
+		info = new(pathInfo)
+		info.ltime = time.Now().Add(-pathfinderTHROTTLE)
+		info.ntime = time.Now().Add(-pathfinderTHROTTLE)
+		pf.paths[dest] = info
+	}
+	return info
+}
+
+func (pf *pathfinder) _updateTimer(dest publicKey, info *pathInfo) {
+	if info.timer != nil {
+		info.timer.Stop()
+	}
+	info.timer = time.AfterFunc(pathfinderTIMEOUT, func() {
+		pf.dhtree.Act(nil, func() {
+			if pf.paths[dest] == info {
+				info.timer.Stop()
+				delete(pf.paths, dest)
+			}
+		})
+	})
+}
+
+func (pf *pathfinder) _getPathPeer(dest publicKey) *peer {
+	info := pf._getPathInfo(dest)
+	pf._updateTimer(dest, info)
+	return info.peer
+}
+
+/*
 func (pf *pathfinder) _getPath(dest publicKey) *peer {
 	var info *pathInfo
 	if nfo, isIn := pf.paths[dest]; isIn {
@@ -177,6 +225,7 @@ func (pf *pathfinder) _getPath(dest publicKey) *peer {
 	})
 	return info.peer
 }
+*/
 
 func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 	pf.dhtree.Act(from, func() {
@@ -194,7 +243,7 @@ func (pf *pathfinder) handleRequest(from phony.Actor, req *pathRequest) {
 		if next := pf.dhtree._dhtLookup(req.source, false); next != nil {
 			next.sendPathRequest(pf.dhtree, req)
 		} else if res := pf._getResponse(req); res != nil {
-			pf.handleResponse(nil, res)
+			pf.handleResponse(nil, nil, res)
 		}
 	})
 }
@@ -212,15 +261,25 @@ func (pf *pathfinder) handleLookup(from phony.Actor, l *pathRequest) {
 }
 */
 
-func (pf *pathfinder) handleResponse(from phony.Actor, res *pathResponse) {
+func (pf *pathfinder) handleResponse(from phony.Actor, prev *peer, res *pathResponse) {
 	pf.dhtree.Act(from, func() {
 		// TODO save path back to res.req.source in a local path cache
 		// If a path already exists, replace it if (and only if) this is higher res.seq
+		pinfo := pf._getPathInfo(res.req.source)
+		if pinfo.seq >= res.seq {
+			// We already have a path that's at least as new
+			return
+		}
+		if pinfo.timer != nil {
+			pinfo.timer.Stop()
+		}
+		pinfo.seq = res.seq
+		pinfo.peer = prev
 		if next := pf.dhtree._treeLookup(&res.req.dest); next != nil {
 			next.sendPathResponse(pf.dhtree, res)
 		} else {
 			// TODO Anything? If we were the destination, we should have just cached a path...
-			panic("DEBUG reached end of handleResponse")
+			//panic("DEBUG reached end of handleResponse")
 		}
 	})
 }
@@ -499,6 +558,11 @@ func (r *pathResponse) decode(data []byte) error {
  ***************/
 
 type pathTraffic struct {
+	dhtTraffic
+}
+
+/*
+type pathTraffic struct {
 	path []peerPort
 	dt   dhtTraffic
 }
@@ -524,3 +588,4 @@ func pathPopFirstHop(data []byte) (peerPort, []byte) {
 	copy(data, data[l:]) // Shift data forward, because we pool []byte
 	return peerPort(u), data[:len(data)-l]
 }
+*/

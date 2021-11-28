@@ -394,7 +394,7 @@ func (p *peer) _handlePathResponse(bs []byte) error {
 		return errors.New("invalid path response")
 	}
 	//response.rpath = append(response.rpath, p.port)
-	p.peers.core.dhtree.pathfinder.handleResponse(p, res)
+	p.peers.core.dhtree.pathfinder.handleResponse(p, p, res)
 	return nil
 }
 
@@ -442,6 +442,17 @@ func (p *peer) _handlePathTraffic(bs []byte) error {
 		return err
 	}
 	// TODO? don't send to p.peers, have a (read-only) copy of the map locally? via atomics?
+	p.peers.core.dhtree.pathfinder.handlePathTraffic(p, tr)
+	return nil
+}
+
+/*
+func (p *peer) _handlePathTraffic(bs []byte) error {
+	tr := new(pathTraffic)
+	if err := tr.decode(bs); err != nil {
+		return err
+	}
+	// TODO? don't send to p.peers, have a (read-only) copy of the map locally? via atomics?
 	p.peers.handlePathTraffic(p, tr)
 	return nil
 }
@@ -461,6 +472,7 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 		}
 	})
 }
+*/
 
 func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	p.Act(from, func() {
@@ -511,10 +523,10 @@ func (p *peer) _push(packet wireEncodeable) {
 		size = len(tr.payload)
 	case *pathTraffic:
 		id = pqStreamID{
-			source: tr.dt.source,
-			dest:   tr.dt.dest,
+			source: tr.source,
+			dest:   tr.dest,
 		}
-		size = len(tr.dt.payload)
+		size = len(tr.payload)
 	default:
 		panic("this should never happen")
 	}

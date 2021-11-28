@@ -1088,6 +1088,14 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 			if true && tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
 				t.pathfinder._doNotify(dest, !doNotify)
+				/*
+					if !doNotify {
+						println("success!")
+						//panic("DEBUG success!")
+					} else {
+						println("fail :(")
+					}
+				*/
 			}
 			t.core.pconn.handleTraffic(tr)
 		} else {
@@ -1098,12 +1106,14 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 
 func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
 	t.Act(from, func() {
-		if peer := t.pathfinder._getPath(tr.dest); peer != nil {
-			pt := new(pathTraffic)
+		if peer := t.pathfinder._getPathPeer(tr.dest); peer != nil {
+			//pt := new(pathTraffic)
 			//pt.path = path
-			pt.dt = *tr
-			peer.sendPathTraffic(t, pt)
+			//pt.dt = *tr
 			//t.core.peers.handlePathTraffic(t, pt)
+			pt := &pathTraffic{*tr}
+			peer.sendPathTraffic(t, pt)
+			//panic("DEBUG found peer")
 		} else {
 			t.handleDHTTraffic(nil, tr, false)
 		}
