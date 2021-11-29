@@ -209,6 +209,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
 		return p._handleBootstrap(bs[1:])
+	case wireProtoDHTActivate:
+		return p._handleActivate(bs[1:])
 	case wireProtoDHTExtension:
 		return p._handleExtension(bs[1:])
 	case wireProtoDHTBootstrapAck:
@@ -276,6 +278,21 @@ func (p *peer) _handleBootstrap(bs []byte) error {
 func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoDHTBootstrap, bootstrap)
+	})
+}
+
+func (p *peer) _handleActivate(bs []byte) error {
+	act := new(dhtActivate)
+	if err := act.decode(bs); err != nil {
+		return err
+	}
+	p.peers.core.dhtree.handleActivate(p, p, act)
+	return nil
+}
+
+func (p *peer) sendActivate(from phony.Actor, act *dhtActivate) {
+	p.Act(from, func() {
+		p.writer.sendPacket(wireProtoDHTActivate, act)
 	})
 }
 

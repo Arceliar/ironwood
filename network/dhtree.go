@@ -28,6 +28,7 @@ type dhtree struct {
 	dinfos     map[dhtMapKey]map[uint64]*dhtInfo
 	self       *treeInfo              // self info
 	parent     *peer                  // peer that sent t.self to us
+	ptimer     *time.Timer            // timer before we force a prev to activate
 	prev       *dhtInfo               // previous key in dht, who we maintain a path to
 	next       *dhtInfo               // next in dht, they maintain a path to us
 	dkeys      map[*dhtInfo]publicKey // map of *dhtInfo->destKey for current and past prev
@@ -159,6 +160,9 @@ func (t *dhtree) _cleanupOldPrevs() {
 			}
 			if t.prev == dinfo {
 				// Don't tear down the current prev
+				continue
+			} else if t.prev != nil && !t.prev.isActive && dinfo.isActive {
+				// Wait until we have an active prev before trying to clean up any other active ones
 				continue
 			}
 			t._teardown(dinfo.peer, dinfo.getTeardown())
@@ -310,6 +314,9 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	// doAncestry updates based on the ancestry information in a treeInfo
 	doAncestry := func(info *treeInfo, p *peer) {
 		doCheckedUpdate(info.root, p, nil) // updates if the root is better
+		if isBootstrap {
+			return
+		}
 		for _, hop := range info.hops {
 			doCheckedUpdate(hop.next, p, nil) // updates if this hop is better
 			tinfo := t.tinfos[bestPeer]       // may be nil if we're in the middle of a remove
@@ -497,7 +504,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		peer: prev,
 		rest: next,
 	}
-	dinfo.isActive = true // FIXME DEBUG, this should start false and switch to true when acked (or after some timeout)
+	//dinfo.isActive = true // FIXME DEBUG, this should start false and switch to true when acked (or after some timeout)
 	if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
 		if dfo, isIn := dinfos[dinfo.seq]; isIn {
 			//return nil // TODO FIXME debug this
@@ -558,10 +565,12 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 }
 
 func (t *dhtree) _extend(prev *peer, ext *dhtExtension) {
-	for mapKey, guideInfos := range t.dinfos {
-		if !mapKey.key.equal(ext.extKey) {
-			continue
-		}
+	mapKey := dhtMapKey{
+		key:     ext.extKey,
+		root:    ext.bootstrap.root,
+		rootSeq: ext.bootstrap.rootSeq,
+	}
+	if guideInfos, isIn := t.dinfos[mapKey]; isIn {
 		for _, guideInfo := range guideInfos {
 			if guideInfo.seq != ext.extSeq {
 				continue
@@ -716,9 +725,32 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 					t._teardown(nil, t.prev.getTeardown())
 				}
 			}
+			if t.ptimer == nil {
+				// TODO? something other than an arbitrary 1 minute timeout
+				t.ptimer = time.AfterFunc(time.Minute, func() {
+					t.Act(nil, func() {
+						if t.ptimer == nil {
+							return
+						}
+						t.ptimer.Stop()
+						t.ptimer = nil
+						if t.prev != nil && !t.prev.isActive {
+							act := &dhtActivate{*bootstrap.getTeardown()}
+							t._handleActivate(prev, act)
+							t._cleanupOldPrevs()
+						}
+					})
+				})
+			}
 			t.prev = dinfo
 			//t.dkeys[dinfo] = dest // N/A for bootstrap paths...
 		}
+		// TODO remove this, debugging code
+		/*
+		   act := &dhtActivate{*bootstrap.getTeardown()}
+		   t._handleActivate(prev, act)
+		*/
+		// End TODO
 		if dinfo.rest != nil {
 			dinfo.rest.sendBootstrap(t, bootstrap)
 			return
@@ -756,13 +788,50 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 	})
 }
 
-func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
-	mapKey := dhtMapKey{ // TODO bootstrap.getMapKey() or something along those lines
-		key:     ack.bootstrap.key,
-		root:    ack.bootstrap.root,
-		rootSeq: ack.bootstrap.rootSeq,
+func (t *dhtree) _handleActivate(prev *peer, act *dhtActivate) {
+	if dinfos, isIn := t.dinfos[act.getMapKey()]; isIn {
+		if dinfo, isIn := dinfos[act.seq]; isIn {
+			if dinfo.peer != prev {
+				panic("DEBUG activate from wrong peer")
+				return
+			}
+			if !dinfo.isActive {
+				// TODO correctly check flags
+				delete(dinfos, act.seq)
+				if len(dinfos) == 0 {
+					delete(t.dinfos, act.getMapKey())
+				}
+				dinfo.isActive = true
+				if !t._dhtAdd(dinfo) {
+					if dinfo.peer != nil {
+						dinfo.peer.sendTeardown(t, dinfo.getTeardown())
+					}
+					if dinfo.rest != nil {
+						dinfo.rest.sendTeardown(t, dinfo.getTeardown())
+					}
+					return
+				}
+				if dinfo.rest != nil {
+					dinfo.rest.sendActivate(t, act)
+					//panic("DEBUG sent activate")
+				} else {
+					//panic("DEBUG activate finished")
+				}
+			}
+			return
+		}
 	}
-	var found bool
+	//panic("DEBUG failed to find dinfo for activate")
+}
+
+func (t *dhtree) handleActivate(from phony.Actor, prev *peer, act *dhtActivate) {
+	t.Act(from, func() {
+		t._handleActivate(prev, act)
+	})
+}
+
+func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
+	mapKey := ack.bootstrap.getTeardown().getMapKey()
 	if dinfos, isIn := t.dinfos[mapKey]; isIn {
 		//for _, dinfo := range dinfos {
 		if dinfo, isIn := dinfos[ack.bootstrap.seq]; isIn {
@@ -770,77 +839,32 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 				panic("this should never happen")
 				//continue
 			}
-			found = true
-			// TODO pass in which peer it came from, check that it's from dinfo.rest
-			/*
-				if dinfo.isActive {
-					panic("DEBUG path already isActive")
-					break // or continue?
-				}
-				delete(dinfos, dinfo.dhtPathState)
-				dinfo.isActive = true
-				for !t._dhtAdd(dinfo) {
-					altInfo := dinfos[dinfo.dhtPathState]
-					if dinfo.seq < altInfo.seq {
-						if dinfo.peer != nil {
-							dinfo.peer.sendTeardown(t, dinfo.getTeardown())
-						}
-						t._teardown(dinfo.peer, dinfo.getTeardown())
-						return
-					}
-					if altInfo.peer != nil {
-						altInfo.peer.sendTeardown(t, altInfo.getTeardown())
-					}
-					t._teardown(altInfo.peer, altInfo.getTeardown())
-				}
-				if dinfo.peer != nil {
-					dinfo.peer.sendBootstrapAck(t, ack)
-				}
-				break
-			*/
 			if !dinfo.isActive {
 				delete(dinfos, dinfo.seq)
+				if len(dinfos) == 0 {
+					delete(t.dinfos, mapKey)
+				}
 				dinfo.isActive = true
 				if !t._dhtAdd(dinfo) {
 					if dinfo.peer != nil {
 						dinfo.peer.sendTeardown(t, dinfo.getTeardown())
 					}
-					t._teardown(dinfo.peer, dinfo.getTeardown())
+					if dinfo.rest != nil {
+						dinfo.rest.sendTeardown(t, dinfo.getTeardown())
+					}
 				} else if dinfo.peer != nil {
 					dinfo.peer.sendBootstrapAck(t, ack)
 				}
 				if t.prev == dinfo {
 					// We have an acknowledged prev, so we can safely clean up any old ones
+					if t.ptimer != nil {
+						t.ptimer.Stop()
+						t.ptimer = nil
+					}
 					t._cleanupOldPrevs()
 				}
-				/*
-					for !t._dhtAdd(dinfo) {
-						altInfo := dinfos[dinfo.dhtPathState]
-						if dinfo.seq < altInfo.seq {
-							if dinfo.peer != nil {
-								dinfo.peer.sendTeardown(t, dinfo.getTeardown())
-							}
-							t._teardown(dinfo.peer, dinfo.getTeardown())
-							return
-						}
-						if altInfo.peer != nil {
-							altInfo.peer.sendTeardown(t, altInfo.getTeardown())
-						}
-						t._teardown(altInfo.peer, altInfo.getTeardown())
-					}
-					if dinfo.peer != nil {
-						dinfo.peer.sendBootstrapAck(t, ack)
-					}
-				*/
 			}
-			//break
 		}
-	}
-	if !found {
-		// This can happen if we receive an ack after already sending a teardown to that peer (they cross on the wire)
-		//pstr := fmt.Sprintf("DEBUG tried to acknowledge nonexistant path, %v, %v, %v", mapKey, t.dinfos, len(t.dinfos[mapKey]))
-		//panic(pstr)
-		//fmt.Println(pstr)
 	}
 }
 
@@ -1543,6 +1567,17 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 	return nil
 }
 */
+
+/***************
+ * dhtActivate *
+ ***************/
+
+// TODO? something else / something unique
+// This is sent by the source if no ack is sent before some timeout
+
+type dhtActivate struct {
+	dhtTeardown
+}
 
 /****************
  * dhtExtention *

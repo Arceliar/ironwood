@@ -9,6 +9,7 @@ const (
 	wireDummy = iota // unused
 	wireProtoTree
 	wireProtoDHTBootstrap
+	wireProtoDHTActivate
 	wireProtoDHTExtension
 	wireProtoDHTBootstrapAck
 	wireProtoDHTSetup
