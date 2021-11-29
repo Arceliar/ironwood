@@ -366,11 +366,11 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 				continue
 			}
 			if !treeLess(mark.prev, key) {
-				// Not strictly better than old mark, so ignore
+				// Not strictly better than the lower threshold mark, so ignore
 				continue
 			}
 			if treeLess(key, mark.next) {
-				// Worse than high water mark, so ignore
+				// Strictly worse than the best path found so far
 				continue
 			}
 			if dhtOrdered(best, key, dest) {
@@ -379,9 +379,13 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		}
 		// Update the high water mark
 		if treeLess(mark.next, best) {
+			// New best path
 			mark.next = best
 		}
 		if treeLess(best, mark.next) {
+			// We hit a dead end or otherwise went backwards in keyspace
+			// Update the prev mark to prevent us from looping
+			// TODO do this better, I'm pretty sure we can still get a single loop cycle before things are updated
 			mark.prev = mark.next
 		}
 	}
@@ -1168,7 +1172,9 @@ func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
 			//pt.path = path
 			//pt.dt = *tr
 			//t.core.peers.handlePathTraffic(t, pt)
-			pt := &pathTraffic{*tr}
+			pt := &pathTraffic{
+				baseTraffic: tr.baseTraffic,
+			}
 			peer.sendPathTraffic(t, pt)
 			//panic("DEBUG found peer")
 		} else {
@@ -1781,39 +1787,56 @@ type dhtWatermark struct {
 	next publicKey
 }
 
-type dhtTraffic struct {
+type baseTraffic struct {
 	source  publicKey
 	dest    publicKey
-	mark    dhtWatermark
 	kind    byte // in-band vs out-of-band, TODO? separate type?
 	payload []byte
 }
 
-func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
+func (t *baseTraffic) encode(out []byte) ([]byte, error) {
 	out = append(out, t.source[:]...)
 	out = append(out, t.dest[:]...)
-	out = append(out, t.mark.prev[:]...)
-	out = append(out, t.mark.next[:]...)
 	out = append(out, t.kind)
 	out = append(out, t.payload...)
 	return out, nil
 }
 
-func (t *dhtTraffic) decode(data []byte) error {
-	var tmp dhtTraffic
+func (t *baseTraffic) decode(data []byte) error {
+	var tmp baseTraffic
 	if !wireChopSlice(tmp.source[:], &data) {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.dest[:], &data) {
-		return wireDecodeError
-	} else if !wireChopSlice(tmp.mark.prev[:], &data) {
-		return wireDecodeError
-	} else if !wireChopSlice(tmp.mark.next[:], &data) {
 		return wireDecodeError
 	} else if len(data) < 1 {
 		return wireDecodeError
 	}
 	tmp.kind, data = data[0], data[1:]
 	tmp.payload = append(tmp.payload[:0], data...)
+	*t = tmp
+	return nil
+}
+
+type dhtTraffic struct {
+	mark dhtWatermark
+	baseTraffic
+}
+
+func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
+	out = append(out, t.mark.prev[:]...)
+	out = append(out, t.mark.next[:]...)
+	return t.baseTraffic.encode(out)
+}
+
+func (t *dhtTraffic) decode(data []byte) error {
+	var tmp dhtTraffic
+	if !wireChopSlice(tmp.mark.prev[:], &data) {
+		return wireDecodeError
+	} else if !wireChopSlice(tmp.mark.next[:], &data) {
+		return wireDecodeError
+	} else if err := tmp.baseTraffic.decode(data); err != nil {
+		return err
+	}
 	*t = tmp
 	return nil
 }

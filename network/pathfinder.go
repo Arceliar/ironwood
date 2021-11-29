@@ -41,7 +41,10 @@ func (pf *pathfinder) handlePathTraffic(from phony.Actor, pt *pathTraffic) {
 			pinfo.peer.sendPathTraffic(pf.dhtree, pt)
 			//panic("DEBUG send path traffic")
 		} else {
-			pf.dhtree.handleDHTTraffic(nil, &pt.dhtTraffic, false)
+			dt := &dhtTraffic{
+				baseTraffic: pt.baseTraffic,
+			}
+			pf.dhtree.handleDHTTraffic(nil, dt, false)
 			//panic("DEBUG fallback to DHT")
 		}
 	})
@@ -560,7 +563,7 @@ func (r *pathResponse) decode(data []byte) error {
  ***************/
 
 type pathTraffic struct {
-	dhtTraffic
+	baseTraffic
 }
 
 /*
