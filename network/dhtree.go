@@ -289,7 +289,7 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 // _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
 // this only uses the source direction of paths through the dht
 // bootstraps use slightly different logic, since they need to stop short of the destination key
-func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *publicKey) *peer {
+func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark) *peer {
 	// Start by defining variables and helper functions
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
@@ -365,7 +365,11 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *publicKey) *
 			if pinfo.peer == nil {
 				continue
 			}
-			if treeLess(key, *mark) {
+			if !treeLess(mark.prev, key) {
+				// Not strictly better than old mark, so ignore
+				continue
+			}
+			if treeLess(key, mark.next) {
 				// Worse than high water mark, so ignore
 				continue
 			}
@@ -373,16 +377,19 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *publicKey) *
 				doUpdate(key, pinfo.peer, nil)
 			}
 		}
+		// Update the high water mark
+		if treeLess(mark.next, best) {
+			mark.next = best
+		}
+		if treeLess(best, mark.next) {
+			mark.prev = mark.next
+		}
 	}
 	// Update based on our DHT infos
 	for _, dinfos := range t.dinfos {
 		for _, dinfo := range dinfos {
 			doDHT(dinfo)
 		}
-	}
-	// Update the high water mark
-	if mark != nil {
-		*mark = best
 	}
 	return bestPeer
 }
@@ -1769,18 +1776,24 @@ func (t *dhtTeardown) decode(data []byte) error {
  * dhtTraffic *
  **************/
 
+type dhtWatermark struct {
+	prev publicKey
+	next publicKey
+}
+
 type dhtTraffic struct {
 	source  publicKey
 	dest    publicKey
-	mark    publicKey // high water mark, for opportunistic use of pathfinder paths
-	kind    byte      // in-band vs out-of-band, TODO? separate type?
+	mark    dhtWatermark
+	kind    byte // in-band vs out-of-band, TODO? separate type?
 	payload []byte
 }
 
 func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
 	out = append(out, t.source[:]...)
 	out = append(out, t.dest[:]...)
-	out = append(out, t.mark[:]...)
+	out = append(out, t.mark.prev[:]...)
+	out = append(out, t.mark.next[:]...)
 	out = append(out, t.kind)
 	out = append(out, t.payload...)
 	return out, nil
@@ -1792,7 +1805,10 @@ func (t *dhtTraffic) decode(data []byte) error {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.dest[:], &data) {
 		return wireDecodeError
-	} else if !wireChopSlice(tmp.mark[:], &data) {
+	} else if !wireChopSlice(tmp.mark.prev[:], &data) {
+		return wireDecodeError
+	} else if !wireChopSlice(tmp.mark.next[:], &data) {
+		return wireDecodeError
 	} else if len(data) < 1 {
 		return wireDecodeError
 	}
