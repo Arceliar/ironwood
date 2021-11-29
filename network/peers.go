@@ -209,16 +209,6 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
 		return p._handleBootstrap(bs[1:])
-	case wireProtoDHTActivate:
-		return p._handleActivate(bs[1:])
-	case wireProtoDHTExtension:
-		return p._handleExtension(bs[1:])
-	case wireProtoDHTBootstrapAck:
-		return p._handleBootstrapAck(bs[1:])
-	case wireProtoDHTSetup:
-		return p._handleSetup(bs[1:])
-	case wireProtoDHTTeardown:
-		return p._handleTeardown(bs[1:])
 	case wireProtoPathNotify:
 		return p._handlePathNotify(bs[1:])
 	case wireProtoPathRequest:
@@ -278,92 +268,6 @@ func (p *peer) _handleBootstrap(bs []byte) error {
 func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoDHTBootstrap, bootstrap)
-	})
-}
-
-func (p *peer) _handleActivate(bs []byte) error {
-	act := new(dhtActivate)
-	if err := act.decode(bs); err != nil {
-		return err
-	}
-	p.peers.core.dhtree.handleActivate(p, p, act)
-	return nil
-}
-
-func (p *peer) sendActivate(from phony.Actor, act *dhtActivate) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoDHTActivate, act)
-	})
-}
-
-func (p *peer) _handleExtension(bs []byte) error {
-	ext := new(dhtExtension)
-	if err := ext.decode(bs); err != nil {
-		panic("DEBUG")
-		return err
-	}
-	if !ext.check() {
-		panic("DEBUG")
-		return errors.New("invalid extenson")
-	}
-	p.peers.core.dhtree.handleExtension(p, p, ext)
-	return nil
-}
-
-func (p *peer) sendExtension(from phony.Actor, ext *dhtExtension) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoDHTExtension, ext)
-	})
-}
-
-func (p *peer) _handleBootstrapAck(bs []byte) error {
-	ack := new(dhtBootstrapAck)
-	if err := ack.decode(bs); err != nil {
-		return err
-	}
-	if !ack.check() {
-		return errors.New("invalid bootstrap acknowledgement")
-	}
-	p.peers.core.dhtree.handleBootstrapAck(p, ack)
-	return nil
-}
-
-func (p *peer) sendBootstrapAck(from phony.Actor, ack *dhtBootstrapAck) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoDHTBootstrapAck, ack)
-	})
-}
-
-func (p *peer) _handleSetup(bs []byte) error {
-	setup := new(dhtSetup)
-	if err := setup.decode(bs); err != nil {
-		return err
-	}
-	if !setup.check() {
-		return errors.New("invalid setup")
-	}
-	p.peers.core.dhtree.handleSetup(p, p, setup)
-	return nil
-}
-
-func (p *peer) sendSetup(from phony.Actor, setup *dhtSetup) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoDHTSetup, setup)
-	})
-}
-
-func (p *peer) _handleTeardown(bs []byte) error {
-	teardown := new(dhtTeardown)
-	if err := teardown.decode(bs); err != nil {
-		return err
-	}
-	p.peers.core.dhtree.teardown(p, p, teardown)
-	return nil
-}
-
-func (p *peer) sendTeardown(from phony.Actor, teardown *dhtTeardown) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoDHTTeardown, teardown)
 	})
 }
 

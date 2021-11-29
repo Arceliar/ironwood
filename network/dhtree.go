@@ -3,11 +3,14 @@ package network
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"fmt"
 	"time"
 
 	"github.com/Arceliar/phony"
 )
+
+// TODO everything dht-routed (except possibly bootstraps) needs a DHT high water mark...
+// To avoid transient loops when paths time out
+// That includes dhtTraffic (separate from the pathfinder path watermarks), and pathfinder notify/request packets
 
 const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
@@ -25,13 +28,9 @@ type dhtree struct {
 	pathfinder pathfinder
 	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
-	dinfos     map[dhtMapKey]map[uint64]*dhtInfo
+	dinfos     map[publicKey]*dhtInfo // map of key onto info
 	self       *treeInfo              // self info
 	parent     *peer                  // peer that sent t.self to us
-	ptimer     *time.Timer            // timer before we force a prev to activate
-	prev       *dhtInfo               // previous key in dht, who we maintain a path to
-	next       *dhtInfo               // next in dht, they maintain a path to us
-	dkeys      map[*dhtInfo]publicKey // map of *dhtInfo->destKey for current and past prev
 	seq        uint64                 // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
 	btimer     *time.Timer            // time.AfterFunc to send bootstrap packets
 	stimer     *time.Timer            // time.AfterFunc for self/parent expiration
@@ -49,9 +48,8 @@ func (t *dhtree) init(c *core) {
 	t.core = c
 	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
-	t.dinfos = make(map[dhtMapKey]map[uint64]*dhtInfo)
-	t.dkeys = make(map[*dhtInfo]publicKey)
-	t.seq = uint64(time.Now().UnixNano())
+	t.dinfos = make(map[publicKey]*dhtInfo)
+	t.seq = uint64(time.Now().Unix())
 	r := make([]byte, 8)
 	if _, err := rand.Read(r); err != nil {
 		panic(err)
@@ -138,36 +136,14 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 			t.parent = nil
 			t._fix()
 		}
-		for _, dinfos := range t.dinfos {
-			for _, dinfo := range dinfos {
-				if dinfo.peer == p || (!dinfo.isOrphaned && dinfo.rest == p) {
-					t._teardown(p, dinfo.getTeardown())
-				}
+		for key, dinfo := range t.dinfos {
+			if dinfo.peer == p {
+				dinfo.timer.Stop()
+				delete(t.dinfos, key)
 			}
 		}
 		t.pathfinder._remove(p)
 	})
-}
-
-func (t *dhtree) _cleanupOldPrevs() {
-	for mapKey, dinfos := range t.dinfos {
-		if !mapKey.key.equal(t.core.crypto.publicKey) {
-			continue
-		}
-		for _, dinfo := range dinfos {
-			if dinfo.peer != nil {
-				panic("this should never happen")
-			}
-			if t.prev == dinfo {
-				// Don't tear down the current prev
-				continue
-			} else if t.prev != nil && !t.prev.isActive && dinfo.isActive {
-				// Wait until we have an active prev before trying to clean up any other active ones
-				continue
-			}
-			t._teardown(dinfo.peer, dinfo.getTeardown())
-		}
-	}
 }
 
 // _fix selects the best parent (and is called in response to receiving a tree update)
@@ -315,7 +291,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	doAncestry := func(info *treeInfo, p *peer) {
 		doCheckedUpdate(info.root, p, nil) // updates if the root is better
 		if isBootstrap {
-			return
+			//return
 		}
 		for _, hop := range info.hops {
 			doCheckedUpdate(hop.next, p, nil) // updates if this hop is better
@@ -328,11 +304,8 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	}
 	// doDHT updates best based on a DHT path
 	doDHT := func(info *dhtInfo) {
-		if !info.isActive {
-			return
-		}
 		if isBootstrap && !(info.root.equal(t.self.root) || info.rootSeq != t.self.seq) {
-			return
+			//return
 		}
 		doCheckedUpdate(info.key, info.peer, info) // updates if the source is better
 		if bestInfo != nil && info.key.equal(bestInfo.key) {
@@ -400,10 +373,8 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		}
 	}
 	// Update based on our DHT infos
-	for _, dinfos := range t.dinfos {
-		for _, dinfo := range dinfos {
-			doDHT(dinfo)
-		}
+	for _, dinfo := range t.dinfos {
+		doDHT(dinfo)
 	}
 	return bestPeer
 }
@@ -414,58 +385,13 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
-	if dinfos, isIn := t.dinfos[info.getMapKey()]; isIn {
-		if _, isIn = dinfos[info.seq]; isIn {
+	if oldInfo, isIn := t.dinfos[info.key]; isIn {
+		if oldInfo.seq >= info.seq {
 			return false
 		}
-		for _, oldInfo := range dinfos {
-			if oldInfo.dhtPathState != info.dhtPathState {
-				continue
-			}
-			if oldInfo.seq < info.seq {
-				// This path is newer than the old one, so tear down the old one (so we can replace it)
-				if oldInfo.peer != nil {
-					oldInfo.peer.sendTeardown(t, oldInfo.getTeardown())
-				}
-				t._teardown(oldInfo.peer, oldInfo.getTeardown())
-			} else {
-				// We already have a path that's either the same seq or better, so ignore this one
-				return false
-			}
-		}
 	}
-	if _, isIn := t.dinfos[info.getMapKey()]; !isIn {
-		t.dinfos[info.getMapKey()] = make(map[uint64]*dhtInfo)
-	}
-	dinfos := t.dinfos[info.getMapKey()]
-	dinfos[info.seq] = info
+	t.dinfos[info.key] = info
 	return true
-	/*
-		for _, oldInfo := range dinfos {
-			if info.dhtPathState == oldInfo.dhtPathState {
-				// FIXME TODO? allow replacement if our seq is better?
-				// Or jut always replace?
-				// Currently, we don't ever replace, but that may not be the right action
-				if oldInfo.seq < info.seq {
-					if oldInfo.peer != nil {
-						oldInfo.peer.sendTeardown(t, oldInfo.getTeardown())
-					}
-					t._teardown(oldInfo.peer, oldInfo.getTeardown())
-					break //continue
-				}
-				return false
-			}
-		}
-		if _, isIn := t.dinfos[info.getMapKey()]; !isIn {
-			t.dinfos[info.getMapKey()] = make(map[uint64]*dhtInfo)
-		}
-		dinfos := t.dinfos[info.getMapKey()]
-		if _, isIn := dinfos[info.seq]; isIn {
-			return false
-		}
-		dinfos[info.seq] = info
-		return true
-	*/
 }
 
 // _newBootstrap returns a *dhtBootstrap for this node, using t.self, with a signature
@@ -505,208 +431,22 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		//root:    bootstrap.root,
 		//rootSeq: bootstrap.rootSeq,
 		peer: prev,
-		rest: next,
-	}
-	//dinfo.isActive = true // FIXME DEBUG, this should start false and switch to true when acked (or after some timeout)
-	if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-		if dfo, isIn := dinfos[dinfo.seq]; isIn {
-			//return nil // TODO FIXME debug this
-			// The path looped, so we have two options here:
-			//  1. Tear down the new path, and let the source try again
-			//  2. Stitch the old path and the new path together, and remove the loop
-			// This is an attempt at option 2
-			if dfo.rest != nil {
-				dfo.rest.sendTeardown(t, dfo.getTeardown())
-			}
-			dfo.rest = dinfo.rest
-			if t.prev == dfo {
-				// TODO figure out if this is really safe
-				t.prev = nil
-			}
-			return dfo
-		}
-		/*
-			if altInfo, isIn := dinfos[dinfo.dhtPathState]; isIn && altInfo.seq < dinfo.seq {
-				// A path in the same state already exists
-				// TODO? in some circumstances, tear down that path and keep this one instead?
-				if altInfo.peer != nil {
-					altInfo.peer.sendTeardown(t, altInfo.getTeardown())
-				}
-				t._teardown(altInfo.peer, altInfo.getTeardown())
-				//return nil
-			}
-		*/
-	}
-	if dinfo.peer == nil {
-		// We're about to replace our current prev
-		// Lets tear down any old prevs, except the current one, to clean up
-		// Then we'll let the current prev stick around while we set up a new one
-		if !dinfo.key.equal(t.core.crypto.publicKey) {
-			panic("this should never happen")
-		}
-		t._cleanupOldPrevs()
+		rest: next, // TODO either don't keep this, or monitor when it goes offline and try to send again?
 	}
 	if !t._dhtAdd(dinfo) {
 		// We failed to add the dinfo to the DHT for some reason
 		return nil
 	}
 	// Setup timer for cleanup
-	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
+	dinfo.timer = time.AfterFunc(3*time.Second, func() {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
-			if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-				if info := dinfos[dinfo.seq]; info == dinfo {
-					if info.peer != nil {
-						info.peer.sendTeardown(t, info.getTeardown())
-					}
-					t._teardown(info.peer, info.getTeardown())
-				}
+			if info := t.dinfos[dinfo.key]; info == dinfo {
+				delete(t.dinfos, dinfo.key)
 			}
 		})
 	})
 	return dinfo
-}
-
-func (t *dhtree) _extend(prev *peer, ext *dhtExtension) {
-	mapKey := dhtMapKey{
-		key:     ext.extKey,
-		root:    ext.bootstrap.root,
-		rootSeq: ext.bootstrap.rootSeq,
-	}
-	if guideInfos, isIn := t.dinfos[mapKey]; isIn {
-		for _, guideInfo := range guideInfos {
-			if guideInfo.seq != ext.extSeq {
-				continue
-			}
-			// We've found the correct path, now do something with it...
-			dinfo := &dhtInfo{
-				dhtBootstrap: ext.bootstrap,
-				peer:         guideInfo.rest,
-				rest:         guideInfo.peer,
-			}
-			// TODO? don't activate until we send an ack to the extended path?
-			dinfo.isActive = true // Extending an existing (active) path, so it's safe to be active here
-			if prev != dinfo.peer {
-				panic("DEBUG extend from wrong peer")
-				prev.sendTeardown(t, dinfo.getTeardown())
-				return
-			}
-			// TODO we need to stitch together any loops with any existing path (same mapKey and seq)
-			var stitched bool
-			if oldInfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-				if oldInfo, isIn := oldInfos[dinfo.seq]; isIn {
-					// TODO stitch together the old path to remove the loop, teardown as needed
-					//panic("TODO stitch")
-					//_ = oldInfo
-					// The new dinfo object will replace oldInfo
-					// The path should come from oldInfo's source direction
-					dinfo.peer = oldInfo.peer
-					// The path should be in the same state as the old one
-					dinfo.dhtPathState = oldInfo.dhtPathState
-					// Remove oldInfo and clean up anything in the "rest" direction
-					t._teardown(oldInfo.peer, oldInfo.getTeardown())
-					// TODO make absolutely sure that t._dhtAdd cannot fail after this...
-					stitched = true
-				}
-			}
-			if !t._dhtAdd(dinfo) {
-				panic("DEBUG dhtAdd failed")
-				if stitched {
-					panic("this should never happen")
-				}
-				// We failed to add the dinfo to the DHT for some reason
-				if dinfo.peer != nil {
-					dinfo.peer.sendTeardown(t, dinfo.getTeardown())
-				}
-				return
-			} else {
-				//panic("DEBUG dhtAdd success")
-			}
-			// Setup timer for cleanup
-			dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
-				t.Act(nil, func() {
-					// Clean up path if it has timed out
-					if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-						if info := dinfos[dinfo.seq]; info == dinfo {
-							if info.peer != nil {
-								info.peer.sendTeardown(t, info.getTeardown())
-							}
-							t._teardown(info.peer, info.getTeardown())
-						}
-					}
-				})
-			})
-			if dinfo.rest != nil {
-				if prev != nil {
-					//panic("DEBUG forwarding extension from later hop")
-				}
-				//panic("DEBUG forwarding extension")
-				dinfo.rest.sendExtension(t, ext)
-				return
-			}
-			//panic("DEBUG extend reached end of line")
-			// Then set t.next (if needed) and ack/teardown as appropriate
-			if !t._replaceNext(dinfo) {
-				//panic("DEBUG Failed to replace next")
-				t._teardown(nil, dinfo.getTeardown())
-			} else {
-				//panic("DEBUG replaced next")
-			}
-			return
-		}
-		//panic("DEBUG no guide found in inner loop")
-	}
-	//panic("DEBUG no guide found in outer loop")
-	if prev != nil {
-		prev.sendTeardown(t, ext.bootstrap.getTeardown())
-	}
-}
-
-func (t *dhtree) handleExtension(from phony.Actor, prev *peer, ext *dhtExtension) {
-	t.Act(from, func() {
-		t._extend(prev, ext)
-	})
-}
-
-func (t *dhtree) _replaceNext(dinfo *dhtInfo) bool {
-	if t.next != nil {
-		// TODO get this right!
-		//  We need to replace the old next in most cases
-		//  The exceptions are when:
-		//    1. The dinfo's root/seq don't match our current root/seq
-		//    2. The dinfo matches, but so does t.next, and t.next is better
-		//  What happens when the dinfo matches, t.next does not, but t.next is still better?...
-		//  Just doing something for now (replace next) but not sure that's right...
-		var doUpdate bool
-		if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
-			// The root/seq is bad, so don't update
-		} else if dinfo.key.equal(t.next.key) {
-			// It's an update from the current next
-			doUpdate = true
-		} else if dhtOrdered(t.core.crypto.publicKey, dinfo.key, t.next.key) {
-			// It's an update from a better next
-			doUpdate = true
-		}
-		// TODO? this is a newer update, but from a worse node? which should win?
-		if doUpdate {
-			// TODO use a dhtExtension instead of tearing down the old path
-			ext := &dhtExtension{
-				bootstrap: t.next.dhtBootstrap,
-				extKey:    t.next.key,
-				extSeq:    t.next.seq,
-			}
-			t._extend(nil, ext) // FIXME TODO get this working
-			//t._teardown(nil, t.next.getTeardown())
-			t.next = dinfo
-			return true
-		} else {
-			t._teardown(nil, dinfo.getTeardown())
-			return false
-		}
-	} else {
-		t.next = dinfo
-		return true
-	}
 }
 
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
@@ -714,74 +454,10 @@ func (t *dhtree) _replaceNext(dinfo *dhtInfo) bool {
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 	if dinfo := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
-		if dinfo.peer == nil {
-			// sanity checks, this should only happen when setting up our prev
-			if !bootstrap.key.equal(t.core.crypto.publicKey) {
-				panic("wrong key")
-			} else if bootstrap.seq != t.seq {
-				panic("wrong seq")
-			} else if t.prev != nil {
-				if t.prev.root.equal(t.self.root) && t.prev.rootSeq == t.self.seq {
-					panic("already have an equivalent prev")
-				} else {
-					// TODO only tear down if the prev is from a bootstrap
-					t._teardown(nil, t.prev.getTeardown())
-				}
-			}
-			if t.ptimer == nil {
-				// TODO? something other than an arbitrary 1 minute timeout
-				t.ptimer = time.AfterFunc(time.Minute, func() {
-					t.Act(nil, func() {
-						if t.ptimer == nil {
-							return
-						}
-						t.ptimer.Stop()
-						t.ptimer = nil
-						if t.prev != nil && !t.prev.isActive {
-							act := &dhtActivate{*bootstrap.getTeardown()}
-							t._handleActivate(prev, act)
-							t._cleanupOldPrevs()
-						}
-					})
-				})
-			}
-			t.prev = dinfo
-			//t.dkeys[dinfo] = dest // N/A for bootstrap paths...
-		}
-		// TODO remove this, debugging code
-		/*
-		   act := &dhtActivate{*bootstrap.getTeardown()}
-		   t._handleActivate(prev, act)
-		*/
-		// End TODO
 		if dinfo.rest != nil {
 			dinfo.rest.sendBootstrap(t, bootstrap)
-			return
 		}
-		if t._replaceNext(dinfo) {
-			ack := new(dhtBootstrapAck)
-			ack.bootstrap = *bootstrap
-			ack.response = *t._getToken(bootstrap.key)
-			t._handleBootstrapAck(ack) // TODO FIXME enable this
-		}
-	} else if prev != nil {
-		prev.sendTeardown(t, bootstrap.getTeardown())
 	}
-	/*
-		source := bootstrap.label.key
-		if next := t._dhtLookup(source, true); next != nil {
-			next.sendBootstrap(t, bootstrap)
-			return
-		} else if source.equal(t.core.crypto.publicKey) {
-			return
-		} else if !bootstrap.check() {
-			return
-		}
-		ack := new(dhtBootstrapAck)
-		ack.bootstrap = *bootstrap
-		ack.response = *t._getToken(source)
-		t._handleBootstrapAck(ack)
-	*/
 }
 
 // handleBootstrap is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrap
@@ -791,366 +467,10 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 	})
 }
 
-func (t *dhtree) _handleActivate(prev *peer, act *dhtActivate) {
-	if dinfos, isIn := t.dinfos[act.getMapKey()]; isIn {
-		if dinfo, isIn := dinfos[act.seq]; isIn {
-			if dinfo.peer != prev {
-				panic("DEBUG activate from wrong peer")
-				return
-			}
-			if !dinfo.isActive {
-				// TODO correctly check flags
-				delete(dinfos, act.seq)
-				if len(dinfos) == 0 {
-					delete(t.dinfos, act.getMapKey())
-				}
-				dinfo.isActive = true
-				if !t._dhtAdd(dinfo) {
-					if dinfo.peer != nil {
-						dinfo.peer.sendTeardown(t, dinfo.getTeardown())
-					}
-					if dinfo.rest != nil {
-						dinfo.rest.sendTeardown(t, dinfo.getTeardown())
-					}
-					return
-				}
-				if dinfo.rest != nil {
-					dinfo.rest.sendActivate(t, act)
-					//panic("DEBUG sent activate")
-				} else {
-					//panic("DEBUG activate finished")
-				}
-			}
-			return
-		}
-	}
-	//panic("DEBUG failed to find dinfo for activate")
-}
-
-func (t *dhtree) handleActivate(from phony.Actor, prev *peer, act *dhtActivate) {
-	t.Act(from, func() {
-		t._handleActivate(prev, act)
-	})
-}
-
-func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
-	mapKey := ack.bootstrap.getTeardown().getMapKey()
-	if dinfos, isIn := t.dinfos[mapKey]; isIn {
-		//for _, dinfo := range dinfos {
-		if dinfo, isIn := dinfos[ack.bootstrap.seq]; isIn {
-			if dinfo.seq != ack.bootstrap.seq {
-				panic("this should never happen")
-				//continue
-			}
-			if !dinfo.isActive {
-				delete(dinfos, dinfo.seq)
-				if len(dinfos) == 0 {
-					delete(t.dinfos, mapKey)
-				}
-				dinfo.isActive = true
-				if !t._dhtAdd(dinfo) {
-					if dinfo.peer != nil {
-						dinfo.peer.sendTeardown(t, dinfo.getTeardown())
-					}
-					if dinfo.rest != nil {
-						dinfo.rest.sendTeardown(t, dinfo.getTeardown())
-					}
-				} else if dinfo.peer != nil {
-					dinfo.peer.sendBootstrapAck(t, ack)
-				}
-				if t.prev == dinfo {
-					// We have an acknowledged prev, so we can safely clean up any old ones
-					if t.ptimer != nil {
-						t.ptimer.Stop()
-						t.ptimer = nil
-					}
-					t._cleanupOldPrevs()
-				}
-			}
-		}
-	}
-}
-
-// _handleBootstrapAck takes an ack packet and checks if we know a next hop on the tree
-// if yes, then we forward to the next hop
-// if no, then we decide whether or not this node is better than our current prev
-// if yes, then we get rid of our current prev (if any) and start setting up a new path to the response node in the ack
-// if no, then we drop the bootstrap acknowledgement without doing anything
-/*
-func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
-		source := ack.response.dest.key
-		next := t._treeLookup(&ack.bootstrap.label)
-		switch {
-		case next != nil:
-			next.sendBootstrapAck(t, ack)
-			return
-		case t.core.crypto.publicKey.equal(source):
-			// This is our own ack, but we failed to find a next hop
-			return
-		case !t.core.crypto.publicKey.equal(ack.bootstrap.label.key):
-			// This isn't an ack of our own bootstrap
-			return
-		case !t.core.crypto.publicKey.equal(ack.response.source):
-			// This is an ack of or own bootstrap, but the token isn't for us
-			return
-		case !ack.response.dest.root.equal(t.self.root):
-			// We have a different root, so tree lookups would fail
-			return
-		case ack.response.dest.seq != t.self.seq:
-			// This response is too old, so path setup would fail
-			return
-		case t.prev == nil:
-			// We have no prev, so anything matching the above is good enough
-		case dhtOrdered(t.dkeys[t.prev], source, t.core.crypto.publicKey):
-			// This is from a better prev than our current one
-		case !source.equal(t.dkeys[t.prev]):
-			// This isn't from the current prev or better, so ignore it
-			return
-		case !t.prev.root.equal(t.self.root) || t.prev.rootSeq != t.self.seq:
-			// The curent prev needs replacing (old tree info)
-		default:
-			// We already have a better (FIXME? or equal) prev
-			return
-		}
-		if !ack.response.check() {
-			// Final thing to check, if the signatures are bad then ignore it
-			return
-		}
-		t.prev = nil
-		for _, dinfo := range t.dinfos {
-			// Former prev need to be notified that we're no longer next
-			// The only way to signal that is by tearing down the path
-			// We may have multiple former prev paths
-			//  From t.prev = nil when the tree changes, but kept around to bootstrap
-			// So loop over paths and close any going to a *different* node than the current prev
-			// The current prev can close the old path from that side after setup
-			if dest, isIn := t.dkeys[dinfo]; isIn && !dest.equal(source) {
-				t._teardown(nil, dinfo.getTeardown())
-			}
-		}
-		setup := t._newSetup(&ack.response)
-		t._handleSetup(nil, setup)
-		if t.prev == nil {
-			// This can happen if the treeLookup in handleSetup fails
-			// FIXME we should avoid letting this happen
-			//  E.g. check that the lookup will fail, or at least that the roots match
-		}
-}
-*/
-
-// handleBootstrapAck is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrapAck
-func (t *dhtree) handleBootstrapAck(from phony.Actor, ack *dhtBootstrapAck) {
-	t.Act(from, func() {
-		t._handleBootstrapAck(ack)
-	})
-}
-
-// _newSetup returns a *dhtSetup for this node, with a new sequence number and signature
-func (t *dhtree) _newSetup(token *dhtSetupToken) *dhtSetup {
-	t.seq++
-	setup := new(dhtSetup)
-	setup.seq = t.seq
-	setup.token = *token
-	setup.sig = t.core.crypto.privateKey.sign(setup.bytesForSig())
-	return setup
-}
-
-// _handleSetup checks if it's safe to add a path from the setup source to the setup destination
-// if we can't add it (due to no next hop to forward it to, or if we're the destination but we already have a better next, or if we already have a path from the same source node), then we send a teardown to remove the path from the network
-// otherwise, we add the path to our table, and forward it (if we're not the destination) or set it as our next path (if we are, tearing down our existing next if one exists)
-func (t *dhtree) _handleSetup(prev *peer, setup *dhtSetup) {
-	/*
-		next := t._treeLookup(&setup.token.dest)
-		dest := setup.token.dest.key
-		if next == nil && !dest.equal(t.core.crypto.publicKey) {
-			// FIXME? this has problems if prev is self (from changes to tree state?)
-			if prev != nil {
-				prev.sendTeardown(t, setup.getTeardown())
-			}
-			return
-		}
-		dinfo := new(dhtInfo)
-		dinfo.seq = setup.seq
-		dinfo.key = setup.token.source
-		dinfo.peer = prev
-		dinfo.rest = next
-		dinfo.root = setup.token.dest.root
-		dinfo.rootSeq = setup.token.dest.seq
-		if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
-			// Wrong root or mismatched seq
-			if prev != nil {
-				prev.sendTeardown(t, setup.getTeardown())
-			}
-			return
-		}
-		if _, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-			// Already have a path from this source
-			if prev != nil {
-				prev.sendTeardown(t, setup.getTeardown())
-			}
-			return
-		}
-		if !t._dhtAdd(dinfo) {
-			if prev != nil {
-				prev.sendTeardown(t, setup.getTeardown())
-			}
-		}
-		dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
-			t.Act(nil, func() {
-				// Clean up path if it has timed out
-				if info, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
-					if info.peer != nil {
-						info.peer.sendTeardown(t, info.getTeardown())
-					}
-					t._teardown(info.peer, info.getTeardown())
-				}
-			})
-		})
-		if prev == nil {
-			// sanity checks, this should only happen when setting up our prev
-			if !setup.token.source.equal(t.core.crypto.publicKey) {
-				panic("wrong source")
-			} else if setup.seq != t.seq {
-				panic("wrong seq")
-			} else if t.prev != nil {
-				panic("already have a prev")
-			}
-			t.prev = dinfo
-			t.dkeys[dinfo] = dest
-		}
-		if next != nil {
-			next.sendSetup(t, setup)
-		} else {
-			if t.next != nil {
-				// TODO get this right!
-				//  We need to replace the old next in most cases
-				//  The exceptions are when:
-				//    1. The dinfo's root/seq don't match our current root/seq
-				//    2. The dinfo matches, but so does t.next, and t.next is better
-				//  What happens when the dinfo matches, t.next does not, but t.next is still better?...
-				//  Just doing something for now (replace next) but not sure that's right...
-				var doUpdate bool
-				if !dinfo.root.equal(t.self.root) || dinfo.rootSeq != t.self.seq {
-					// The root/seq is bad, so don't update
-				} else if dinfo.key.equal(t.next.key) {
-					// It's an update from the current next
-					doUpdate = true
-				} else if dhtOrdered(t.core.crypto.publicKey, dinfo.key, t.next.key) {
-					// It's an update from a better next
-					doUpdate = true
-				}
-				if doUpdate {
-					t._teardown(nil, t.next.getTeardown())
-					t.next = dinfo
-				} else {
-					t._teardown(nil, dinfo.getTeardown())
-				}
-			} else {
-				t.next = dinfo
-			}
-		}
-	*/
-}
-
-// handleSetup is the dhtree actor behavior that sends a message to _handleSetup
-func (t *dhtree) handleSetup(from phony.Actor, prev *peer, setup *dhtSetup) {
-	t.Act(from, func() {
-		t._handleSetup(prev, setup)
-	})
-}
-
-// _teardown removes the path associated with the teardown from our dht and forwards it to the next hop along that path (or does nothing if the teardown doesn't match a known path)
-func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
-	if dinfos, isIn := t.dinfos[teardown.getMapKey()]; isIn {
-		//for _, dinfo := range dinfos {
-		if dinfo, isIn := dinfos[teardown.seq]; isIn {
-			if teardown.seq != dinfo.seq {
-				panic("this should never happen")
-				//continue
-			} else if !teardown.key.equal(dinfo.key) {
-				panic("this should never happen")
-			}
-			var next *peer
-			if from == dinfo.peer {
-				// The source side is unreachable, so we need to remove this path
-				next = dinfo.rest
-				dinfo.timer.Stop()
-				delete(t.dkeys, dinfo)
-				delete(dinfos, dinfo.seq)
-				if len(dinfos) == 0 {
-					delete(t.dinfos, teardown.getMapKey())
-				}
-			} else if from == dinfo.rest && !dinfo.isOrphaned {
-				// The dest side is unreachable, so we need to mark the path as orphaned
-				// The source is still reachable via the path, so it's not completely useless yet
-				next = dinfo.peer
-				delete(dinfos, dinfo.seq)
-				dinfo.isOrphaned = true
-				/*
-					if altInfo := dinfos[dinfo.dhtPathState]; altInfo != nil {
-						// altInfo is older, apparently, so tear it down and replace it
-						// We want to really delete it, so this is always a source-side teardown (from altInfo.peer)
-						t._teardown(altInfo.peer, altInfo.getTeardown())
-					}
-					dinfos[dinfo.dhtPathState] = dinfo
-				*/
-				if !t._dhtAdd(dinfo) {
-					if dinfo.rest != nil {
-						dinfo.rest.sendTeardown(t, dinfo.getTeardown())
-					}
-				}
-				/*
-					for !t._dhtAdd(dinfo) {
-						// FIXME why?! Why does this seem to work, but an if statement doesn't?
-						// Probably the len == 0 case in the source side teardown...
-						altInfo := dinfos[dinfo.dhtPathState]
-						t._teardown(altInfo.peer, altInfo.getTeardown())
-					}
-				*/
-			} else if from == dinfo.rest && dinfo.isOrphaned {
-				// FIXME DEBUG we don't want this to happen in honest networks, ever
-				// Already orphaned, so this is a duplicate
-				// TODO prevent duplicates from happening (e.g. peer dies on an already orphaned path, no need to send more signals...)
-				pstr := fmt.Sprintf("DEBUG duplicate orphand path, %v, %v", t.core.crypto.publicKey[:], dinfo.key[:])
-				//panic(pstr)
-				fmt.Println(pstr)
-				//panic("DEBUG duplicate orphaned path")
-				return //continue
-			} else {
-				return //continue //panic("DEBUG teardown of path from wrong node")
-			}
-			if next != nil {
-				next.sendTeardown(t, teardown)
-			}
-			if t.next == dinfo {
-				t.next = nil
-			}
-			if t.prev == dinfo {
-				t.prev = nil
-				// It's possible that other bad news is incoming
-				// Delay bootstrap until we've processed any other queued messages
-				t.Act(nil, t._doBootstrap)
-			}
-			//break
-		}
-	}
-}
-
-// teardown is the dhtinfo actor behavior that sends a message to _teardown
-func (t *dhtree) teardown(from phony.Actor, p *peer, teardown *dhtTeardown) {
-	t.Act(from, func() {
-		t._teardown(p, teardown)
-	})
-}
-
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
 	if !t.bwait && t.btimer != nil {
-		if t.prev != nil && t.prev.root.equal(t.self.root) && t.prev.rootSeq == t.self.seq {
-			return
-		}
-		//if !t.self.root.equal(t.core.crypto.publicKey) {
 		if t.parent != nil {
 			t._handleBootstrap(nil, t._newBootstrap())
 			// Don't immediately send more bootstraps if called again too quickly
@@ -1158,7 +478,7 @@ func (t *dhtree) _doBootstrap() {
 			t.bwait = true // TODO test without this, if things get stuck in a broken state then it signals a problem somewhere
 		}
 		t.btimer.Stop()
-		t.btimer = time.AfterFunc(time.Second, func() {
+		t.btimer = time.AfterFunc(1*time.Second, func() {
 			t.Act(nil, func() {
 				t.bwait = false
 				t._doBootstrap()
@@ -1173,7 +493,7 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 	t.Act(from, func() {
 		next := t._dhtLookup(tr.dest, false, &tr.mark)
 		if next == nil {
-			if true && tr.dest.equal(t.core.crypto.publicKey) {
+			if false && tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
 				t.pathfinder._doNotify(dest, !doNotify)
 				/*
@@ -1457,35 +777,6 @@ type dhtInfo struct {
 	//root    publicKey
 	//rootSeq uint64
 	timer *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
-	dhtPathState
-}
-
-type dhtPathState struct {
-	isActive   bool // Path has been acknowledged from the remote side, or reached some activation timeout
-	isOrphaned bool // Path has been torn down from the "rest" direction
-}
-
-func (info *dhtInfo) getTeardown() *dhtTeardown {
-	return &dhtTeardown{
-		seq:     info.seq,
-		key:     info.key,
-		root:    info.root,
-		rootSeq: info.rootSeq,
-	}
-}
-
-type dhtMapKey struct {
-	key     publicKey
-	root    publicKey
-	rootSeq uint64
-}
-
-func (info *dhtInfo) getMapKey() dhtMapKey {
-	return dhtMapKey{
-		key:     info.key,
-		root:    info.root,
-		rootSeq: info.rootSeq,
-	}
 }
 
 /****************
@@ -1516,15 +807,6 @@ func (dbs *dhtBootstrap) check() bool {
 	return dbs.key.verify(bs, &dbs.sig)
 }
 
-func (dbs *dhtBootstrap) getTeardown() *dhtTeardown {
-	return &dhtTeardown{
-		seq:     dbs.seq,
-		key:     dbs.key,
-		root:    dbs.root,
-		rootSeq: dbs.rootSeq,
-	}
-}
-
 func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
 	out = append(out, dbs.sig[:]...)
 	out = append(out, dbs.bytesForSig()...)
@@ -1545,78 +827,6 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 	tmp.rootSeq = binary.BigEndian.Uint64(data[:8])
 	tmp.seq = binary.BigEndian.Uint64(data[8:])
 	*dbs = tmp
-	return nil
-}
-
-/*
-type dhtBootstrap struct {
-	label treeLabel
-}
-
-func (dbs *dhtBootstrap) check() bool {
-	return dbs.label.check()
-}
-
-func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
-	return dbs.label.encode(out)
-}
-
-func (dbs *dhtBootstrap) decode(data []byte) error {
-	var tmp dhtBootstrap
-	if err := tmp.label.decode(data); err != nil {
-		return err
-	}
-	*dbs = tmp
-	return nil
-}
-*/
-
-/***************
- * dhtActivate *
- ***************/
-
-// TODO? something else / something unique
-// This is sent by the source if no ack is sent before some timeout
-
-type dhtActivate struct {
-	dhtTeardown
-}
-
-/****************
- * dhtExtention *
- ****************/
-
-type dhtExtension struct {
-	// TODO? sender key and signature?
-	extKey    publicKey
-	extSeq    uint64
-	bootstrap dhtBootstrap
-}
-
-func (de *dhtExtension) check() bool {
-	return de.bootstrap.check()
-}
-
-func (de *dhtExtension) encode(out []byte) ([]byte, error) {
-	out = append(out, de.extKey[:]...)
-	var sbytes [8]byte
-	binary.BigEndian.PutUint64(sbytes[:], de.extSeq)
-	out = append(out, sbytes[:]...)
-	return de.bootstrap.encode(out)
-}
-
-func (de *dhtExtension) decode(data []byte) error {
-	var tmp dhtExtension
-	if !wireChopSlice(tmp.extKey[:], &data) {
-		return wireDecodeError
-	} else if len(data) < 8 {
-		return wireDecodeError
-	}
-	tmp.extSeq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	if err := tmp.bootstrap.decode(data); err != nil {
-		return err
-	}
-	*de = tmp
 	return nil
 }
 
@@ -1666,154 +876,6 @@ func (st *dhtSetupToken) decode(data []byte) error {
 		return wireDecodeError
 	}
 	return st.dest.decode(data)
-}
-
-/*******************
- * dhtBootstrapAck *
- *******************/
-
-type dhtBootstrapAck struct {
-	bootstrap dhtBootstrap
-	response  dhtSetupToken
-}
-
-func (ack *dhtBootstrapAck) check() bool {
-	return ack.bootstrap.check() && ack.response.check()
-}
-
-func (ack *dhtBootstrapAck) encode(out []byte) ([]byte, error) {
-	var bootBytes, resBytes []byte // TODO get rid of these
-	var err error
-	if bootBytes, err = ack.bootstrap.encode(nil); err != nil {
-		return nil, err
-	} else if resBytes, err = ack.response.encode(nil); err != nil {
-		return nil, err
-	}
-	out = wireEncodeUint(out, uint64(len(bootBytes)))
-	out = append(out, bootBytes...)
-	out = append(out, resBytes...)
-	return out, nil
-}
-
-func (ack *dhtBootstrapAck) decode(data []byte) error {
-	bootLen, begin := wireDecodeUint(data)
-	end := begin + int(bootLen)
-	var tmp dhtBootstrapAck
-	if end > len(data) {
-		return wireDecodeError
-	} else if err := tmp.bootstrap.decode(data[begin:end]); err != nil {
-		return err
-	} else if err := tmp.response.decode(data[end:]); err != nil {
-		return err
-	}
-	*ack = tmp
-	return nil
-}
-
-/************
- * dhtSetup *
- ************/
-
-type dhtSetup struct {
-	sig   signature
-	seq   uint64
-	token dhtSetupToken
-}
-
-func (s *dhtSetup) bytesForSig() []byte {
-	bs := make([]byte, 8)
-	binary.BigEndian.PutUint64(bs, s.seq)
-	var err error
-	if bs, err = s.token.encode(bs); err != nil {
-		panic("this should never happen")
-	}
-	return bs
-}
-
-func (s *dhtSetup) check() bool {
-	if !s.token.check() {
-		return false
-	}
-	bs := s.bytesForSig()
-	return s.token.source.verify(bs, &s.sig)
-}
-
-func (s *dhtSetup) getTeardown() *dhtTeardown {
-	return &dhtTeardown{
-		seq:     s.seq,
-		key:     s.token.source,
-		root:    s.token.dest.root,
-		rootSeq: s.token.dest.seq,
-	}
-}
-
-func (s *dhtSetup) encode(out []byte) ([]byte, error) {
-	seq := make([]byte, 8)
-	binary.BigEndian.PutUint64(seq, s.seq)
-	out = append(out, s.sig[:]...)
-	out = append(out, seq...)
-	return s.token.encode(out)
-}
-
-func (s *dhtSetup) decode(data []byte) error {
-	var tmp dhtSetup
-	if !wireChopSlice(tmp.sig[:], &data) {
-		return wireDecodeError
-	}
-	if len(data) < 8 {
-		return wireDecodeError
-	}
-	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	if err := tmp.token.decode(data); err != nil {
-		return err
-	}
-	*s = tmp
-	return nil
-}
-
-/***************
- * dhtTeardown *
- ***************/
-
-type dhtTeardown struct {
-	seq     uint64
-	key     publicKey
-	root    publicKey
-	rootSeq uint64
-}
-
-func (t *dhtTeardown) getMapKey() dhtMapKey {
-	return dhtMapKey{t.key, t.root, t.rootSeq}
-}
-
-func (t *dhtTeardown) encode(out []byte) ([]byte, error) {
-	seq := make([]byte, 8)
-	binary.BigEndian.PutUint64(seq, t.seq)
-	out = append(out, seq...)
-	out = append(out, t.key[:]...)
-	out = append(out, t.root[:]...)
-	rseq := make([]byte, 8)
-	binary.BigEndian.PutUint64(rseq, t.rootSeq)
-	out = append(out, rseq...)
-	return out, nil
-}
-
-func (t *dhtTeardown) decode(data []byte) error {
-	var tmp dhtTeardown
-	if len(data) < 8 {
-		return wireDecodeError
-	}
-	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	if !wireChopSlice(tmp.key[:], &data) {
-		return wireDecodeError
-	} else if !wireChopSlice(tmp.root[:], &data) {
-		return wireDecodeError
-	} else if len(data) != 8 {
-		return wireDecodeError
-	}
-	tmp.rootSeq = binary.BigEndian.Uint64(data)
-	*t = tmp
-	return nil
 }
 
 /**************

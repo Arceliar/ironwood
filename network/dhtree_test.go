@@ -108,34 +108,3 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 		panic("failed to check new bootstrap")
 	}
 }
-
-func TestMarshalDHTSetup(t *testing.T) {
-	_, destPriv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		panic(err)
-	}
-	sourcePub, sourcePriv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		panic(err)
-	}
-	dpc, _ := NewPacketConn(destPriv)
-	spc, _ := NewPacketConn(sourcePriv)
-	var pk publicKey
-	copy(pk[:], sourcePub)
-	token := dpc.core.dhtree._getToken(pk)
-	setup := spc.core.dhtree._newSetup(token)
-	if !setup.check() {
-		panic("initial check failed")
-	}
-	bs, err := setup.encode(nil)
-	if err != nil {
-		panic(err)
-	}
-	newSetup := new(dhtSetup)
-	if err = newSetup.decode(bs); err != nil {
-		panic(err)
-	}
-	if !newSetup.check() {
-		panic("final check failed")
-	}
-}
