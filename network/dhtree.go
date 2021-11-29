@@ -331,6 +331,9 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		if !info.isActive {
 			return
 		}
+		if isBootstrap && !(info.root.equal(t.self.root) || info.rootSeq != t.self.seq) {
+			return
+		}
 		doCheckedUpdate(info.key, info.peer, info) // updates if the source is better
 		if bestInfo != nil && info.key.equal(bestInfo.key) {
 			if treeLess(info.root, bestInfo.root) {

@@ -36,7 +36,18 @@ The routing logic in `network` is still undocumented. The basic idea is:
 
 There are a ton of technical details about building the spanning tree, bootstrapping the DHT, responding to link failures, etc., all of which is beyond the scope of a readme file. All of those protocol level details are subject to change, so don't expect adequate documentation any earlier than the late alpha or early beta stage.
 
-# TODO
+# New TODO
+
+1. Get rid of activation timer for prev. Instead, if you ever find yourself in a state where you have no active (current or old) prev, then activate the current one.
+2. Get rid of the bootstrap ack? Instead, just tear down any old next, this should do the right thing (eventually)... additionally, extend could activate the parent path.
+3. Add a prevNotify that you send to your next, along with something like a setupToken, that basically lets them set up a path to their prev's prev.
+4. Make really sure that the extend stuff is working right. Among other things, initially-inactive bootstraps should start off by pointing at the root (not the self key) and ignore basically everything that isn't a DHT path with the current root (and rootSeq?).
+5. Make really sure that the pathfinder paths actually work right everywhere they're needed, including as opportunistic shortcuts when routing dhtTraffic.
+6. Double queue system. Queue traffic based on destination at the outer layer, and source on the inner layer. When a queue is full, select the dest with the most traffic, then from that select the sender with the most traffic, and then finally drop the oldest packet from that queue. Other general queue work wouldn't hurt.
+7. Cleanup (obsolete code, fix things like MTU(), maybe improve error handling / returned errors in general).
+8. Add any pure debug functions that would help gather analytics to validate things in-the-wild (e.g. something like a traceroute?).
+
+# Old TODO (Still applicable, mostly, but long-term)
 
 The following is a very rough TODO of what still needs to be implemented before this project is feature complete enough that it's worth calling it alpha / tagging whenever backwards compatibility breaks.
 
