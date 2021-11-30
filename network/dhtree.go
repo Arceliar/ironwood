@@ -37,6 +37,8 @@ type dhtree struct {
 	wait       bool                   // FIXME this shouldn't be needed
 	hseq       uint64                 // used to track the order treeInfo updates are handled
 	bwait      bool                   // wait before sending another bootstrap
+	delay      uint8                  // delay between sending bootstraps
+	dcount     uint8                  // counter, used it delay scaling
 }
 
 type treeExpiredInfo struct {
@@ -61,6 +63,7 @@ func (t *dhtree) init(c *core) {
 	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t._fix()                                // Initialize t.self and start announce and timeout timers
 	t.pathfinder.init(t)
+	t.Act(nil, t._doBootstrap) // Start the bootstrap loop
 }
 
 func (t *dhtree) _sendTree() {
@@ -108,6 +111,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 				// Set self to root, send, then process things correctly 1 second later
 				t.wait = true
 				t.self = &treeInfo{root: t.core.crypto.publicKey}
+				t._resetBootstrapState()
 				t._sendTree() // send bad news immediately
 				time.AfterFunc(time.Second, func() {
 					t.Act(nil, func() {
@@ -121,7 +125,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 		}
 		if !t.wait {
 			t._fix()
-			t._doBootstrap()
+			//t._doBootstrap()
 		}
 	})
 }
@@ -134,7 +138,9 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 		if t.self == oldInfo {
 			t.self = nil
 			t.parent = nil
+			t._resetBootstrapState()
 			t._fix()
+			t._doBootstrap()
 		}
 		for key, dinfo := range t.dinfos {
 			if dinfo.peer == p {
@@ -215,7 +221,7 @@ func (t *dhtree) _fix() {
 					t.self = nil
 					t.parent = nil
 					t._fix()
-					t._doBootstrap()
+					//t._doBootstrap()
 				}
 			})
 		})
@@ -402,6 +408,7 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 		root:    t.self.root,
 		rootSeq: t.self.seq,
 		seq:     t.seq,
+		delay:   t._getBootstrapDelay(),
 	}
 	dbs.sig = t.core.crypto.privateKey.sign(dbs.bytesForSig())
 	return dbs
@@ -437,8 +444,18 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		// We failed to add the dinfo to the DHT for some reason
 		return nil
 	}
+	// TODO re-evaluate existing dhtInfos
+	// Would dinfo be a better next hop for anything we've already forwarded before?
+	// If so, we should probably do that now... Plugs keyspace holes faster than waiting for more bootstraps
 	// Setup timer for cleanup
-	dinfo.timer = time.AfterFunc(3*time.Second, func() {
+	delay := bootstrap.delay
+	if delay < 1 {
+		delay = 1
+	}
+	if delay > 10 {
+		delay = 10
+	}
+	dinfo.timer = time.AfterFunc(time.Duration(delay+2)*time.Second, func() {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
 			if info := t.dinfos[dinfo.key]; info == dinfo {
@@ -470,21 +487,37 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
-	if !t.bwait && t.btimer != nil {
+	if t.btimer != nil {
+		delay := t._getBootstrapDelay()
 		if t.parent != nil {
+			// Adjust delay for future bootstraps
+			t.dcount++
+			if t.dcount > 6 {
+				t.dcount = 0
+				t.delay++
+				if t.delay > 9 {
+					t.delay = 9
+				}
+			}
 			t._handleBootstrap(nil, t._newBootstrap())
-			// Don't immediately send more bootstraps if called again too quickly
-			// This helps prevent traffic spikes in some mobility scenarios
-			t.bwait = true // TODO test without this, if things get stuck in a broken state then it signals a problem somewhere
 		}
 		t.btimer.Stop()
-		t.btimer = time.AfterFunc(1*time.Second, func() {
-			t.Act(nil, func() {
-				t.bwait = false
-				t._doBootstrap()
-			})
+		t.btimer = time.AfterFunc(time.Duration(delay)*time.Second, func() {
+			t.Act(nil, t._doBootstrap)
 		})
 	}
+}
+
+func (t *dhtree) _getBootstrapDelay() uint8 {
+	return t.delay + 1
+}
+
+func (t *dhtree) _resetBootstrapState() {
+	if t.btimer != nil {
+		t.btimer.Stop()
+	}
+	t.delay = 0
+	t.dcount = 0
 }
 
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
@@ -789,6 +822,7 @@ type dhtBootstrap struct {
 	root    publicKey
 	rootSeq uint64
 	seq     uint64
+	delay   uint8
 }
 
 func (dbs *dhtBootstrap) bytesForSig() []byte {
@@ -799,6 +833,7 @@ func (dbs *dhtBootstrap) bytesForSig() []byte {
 	bs = bs[:size]
 	binary.BigEndian.PutUint64(bs[len(bs)-16:len(bs)-8], dbs.rootSeq)
 	binary.BigEndian.PutUint64(bs[len(bs)-8:], dbs.seq)
+	bs = append(bs, dbs.delay)
 	return bs
 }
 
@@ -821,11 +856,12 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.root[:], &data) {
 		return wireDecodeError
-	} else if len(data) != 16 { // TODO? < 16, in case it's embedded in something?
+	} else if len(data) != 17 { // TODO? < 16, in case it's embedded in something?
 		return wireDecodeError
 	}
 	tmp.rootSeq = binary.BigEndian.Uint64(data[:8])
-	tmp.seq = binary.BigEndian.Uint64(data[8:])
+	tmp.seq = binary.BigEndian.Uint64(data[8:16])
+	tmp.delay = data[16]
 	*dbs = tmp
 	return nil
 }
