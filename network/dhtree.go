@@ -308,7 +308,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		case !isBootstrap && key.equal(dest) && !best.equal(dest):
 			fallthrough
 		case dhtOrdered(best, key, dest):
-			doUpdate(key, p, nil)
+			doUpdate(key, p, d)
 		}
 	}
 	// doAncestry updates based on the ancestry information in a treeInfo
@@ -366,6 +366,14 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			doUpdate(p.key, p, nil)
 		}
 	}
+	// Update DHT watermark before checking paths
+	if mark != nil {
+		if treeLess(mark.dht, best) {
+			mark.dht = best
+		} else if treeLess(best, mark.dht) {
+			bestPeer = nil
+		}
+	}
 	// Update based on pathfinder paths
 	if false && mark != nil {
 		for key, pinfo := range t.pathfinder.paths {
@@ -400,10 +408,10 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	for _, dinfo := range t.dinfos {
 		doDHT(dinfo)
 	}
-	if false && mark != nil {
-		if treeLess(mark.next, best) {
-			mark.next = best
-		} else if treeLess(best, mark.next) {
+	if mark != nil && bestInfo != nil {
+		if treeLess(mark.dht, bestInfo.key) {
+			mark.dht = bestInfo.key
+		} else if treeLess(bestInfo.key, mark.dht) {
 			bestPeer = nil
 		}
 	}
@@ -454,8 +462,8 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	*/
 	source := bootstrap.key
 	next, target := t._dhtLookup(source, true, nil)
-	if prev == nil && next == nil {
-		// This is our own bootstrap and we don't have anywhere to send it
+	if next == prev {
+		// This would loop for some reason, e.g. it's our own bootstrap and we don't have anywhere to send it
 		return nil
 	}
 	dinfo := &dhtInfo{
@@ -490,26 +498,25 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 				delete(t.dinfos, dinfo.key)
 			}
 			for _, dfo := range t.dinfos {
-				break // TODO decide if we should do this
+				//break // FIXME this leads to huge traffic spikes, possibly loops?
+				if dfo.rest != dinfo.peer {
+					continue
+				}
 				if dfo.target != dinfo.key {
 					continue
 				}
-				t._redirectPath(dfo)
+				next, target := t._dhtLookup(dfo.key, true, nil)
+				if next != dfo.rest {
+					dfo.rest = next
+					dfo.target = target
+					if dfo.rest != nil {
+						dfo.rest.sendBootstrap(t, &dfo.dhtBootstrap)
+					}
+				}
 			}
 		})
 	})
 	return dinfo
-}
-
-func (t *dhtree) _redirectPath(dinfo *dhtInfo) {
-	next, target := t._dhtLookup(dinfo.key, true, nil)
-	if next != dinfo.rest {
-		dinfo.rest = next
-		dinfo.target = target
-		if dinfo.rest != nil {
-			dinfo.rest.sendBootstrap(t, &dinfo.dhtBootstrap)
-		}
-	}
 }
 
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
@@ -520,25 +527,20 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		if dinfo.rest != nil {
 			dinfo.rest.sendBootstrap(t, bootstrap)
 		}
-		for _, dfo := range t.dinfos {
-			break // TODO decide if we should do this
-			if dfo.target == dinfo.key || dhtOrdered(dfo.target, dinfo.key, dfo.key) {
-				t._redirectPath(dfo)
+		if dinfo.peer != nil {
+			for _, dfo := range t.dinfos {
+				//break // FIXME this leads to traffic spikes
+				if dfo.peer == dinfo.peer || dfo.rest == dinfo.peer {
+					continue
+				}
+				if dfo.target == dinfo.key || dhtOrdered(dfo.target, dinfo.key, dfo.key) {
+					// If we had known about dinfo earlier, then we should have sent dfo towards dinfo.peer
+					// Better late than never
+					dfo.rest = dinfo.peer
+					dfo.target = dinfo.key
+					dinfo.peer.sendBootstrap(t, &dfo.dhtBootstrap)
+				}
 			}
-		}
-		for _, dfo := range t.dinfos {
-			if prev == nil {
-				break
-			}
-			if dfo.peer == prev || dfo.rest == prev {
-				continue
-			}
-			next, _ := t._dhtLookup(dfo.key, true, nil)
-			if next != prev {
-				continue
-			}
-			dfo.rest = prev
-			prev.sendBootstrap(t, &dfo.dhtBootstrap)
 		}
 	}
 }
@@ -982,13 +984,8 @@ func (st *dhtSetupToken) decode(data []byte) error {
 }
 
 /**************
- * dhtTraffic *
+ * baseTraffic *
  **************/
-
-type dhtWatermark struct {
-	prev publicKey
-	next publicKey
-}
 
 type baseTraffic struct {
 	source  publicKey
@@ -1020,12 +1017,23 @@ func (t *baseTraffic) decode(data []byte) error {
 	return nil
 }
 
+/**************
+ * dhtTraffic *
+ **************/
+
+type dhtWatermark struct {
+	dht  publicKey
+	prev publicKey
+	next publicKey
+}
+
 type dhtTraffic struct {
 	mark dhtWatermark
 	baseTraffic
 }
 
 func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
+	out = append(out, t.mark.dht[:]...)
 	out = append(out, t.mark.prev[:]...)
 	out = append(out, t.mark.next[:]...)
 	return t.baseTraffic.encode(out)
@@ -1033,7 +1041,9 @@ func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
 
 func (t *dhtTraffic) decode(data []byte) error {
 	var tmp dhtTraffic
-	if !wireChopSlice(tmp.mark.prev[:], &data) {
+	if !wireChopSlice(tmp.mark.dht[:], &data) {
+		return wireDecodeError
+	} else if !wireChopSlice(tmp.mark.prev[:], &data) {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.mark.next[:], &data) {
 		return wireDecodeError

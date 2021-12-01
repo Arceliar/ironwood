@@ -3,6 +3,7 @@ package network
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -202,6 +203,7 @@ func (p *peer) _handlePacket(bs []byte) error {
 	if len(bs) == 0 {
 		return errors.New("empty packet")
 	}
+	fmt.Println("DEBUG: handlePacket", bs[0])
 	switch pType := bs[0]; pType {
 	case wireDummy:
 		return nil
