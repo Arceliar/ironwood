@@ -209,8 +209,6 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
 		return p._handleBootstrap(bs[1:])
-	case wireProtoDHTTeardown:
-		return p._handleTeardown(bs[1:])
 	case wireProtoPathNotify:
 		return p._handlePathNotify(bs[1:])
 	case wireProtoPathRequest:
@@ -270,21 +268,6 @@ func (p *peer) _handleBootstrap(bs []byte) error {
 func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoDHTBootstrap, bootstrap)
-	})
-}
-
-func (p *peer) _handleTeardown(bs []byte) error {
-	teardown := new(dhtTeardown)
-	if err := teardown.decode(bs); err != nil {
-		return err
-	}
-	p.peers.core.dhtree.teardown(p, p, teardown)
-	return nil
-}
-
-func (p *peer) sendTeardown(from phony.Actor, teardown *dhtTeardown) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoDHTTeardown, teardown)
 	})
 }
 

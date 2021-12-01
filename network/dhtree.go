@@ -19,8 +19,8 @@ const (
 )
 
 const (
-	dhtDELAY_MIN       = 180
-	dhtDELAY_MAX       = 180
+	dhtDELAY_MIN       = 1
+	dhtDELAY_MAX       = 10
 	dhtDELAY_TOLERANCE = 2
 	dhtDELAY_COUNT     = 6
 )
@@ -143,12 +143,11 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 	t.Act(from, func() {
 		for _, dinfo := range t.dinfos {
 			if dinfo.peer == p || dinfo.rest == p {
-				//dinfo.peer = nil
+				dinfo.peer = nil
 				/* TODO remove completely? That seems to loop in the DHT...
 				dinfo.timer.Stop()
 				delete(t.dinfos, dinfo.key)
 				*/
-				t._teardown(p, &dhtTeardown{dinfo.dhtBootstrap})
 			}
 		}
 		var reboot bool
@@ -498,32 +497,10 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
-	oldInfo := t.dinfos[bootstrap.key]
 	if dinfo := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
 		if dinfo.rest != nil {
 			dinfo.rest.sendBootstrap(t, bootstrap)
-		} else {
-			// TODO save the one best dhtInfo at all times, to skip the loop here
-			for _, dfo := range t.dinfos {
-				if dfo == dinfo || dfo.rest != nil {
-					continue
-				}
-				t._teardown(dfo.rest, &dhtTeardown{dfo.dhtBootstrap})
-			}
 		}
-		// tear down expired paths
-		// TODO something else?
-		if oldInfo != nil {
-			if oldInfo.peer != nil && oldInfo.peer != dinfo.peer {
-				oldInfo.peer.sendTeardown(t, &dhtTeardown{oldInfo.dhtBootstrap})
-			}
-			if oldInfo.rest != nil && oldInfo.rest != dinfo.rest {
-				oldInfo.rest.sendTeardown(t, &dhtTeardown{oldInfo.dhtBootstrap})
-			}
-		}
-		// TODO "tear down" paths that used to end at us, if they're no longer useful, so they can reroute
-	} else if prev != nil {
-		prev.sendTeardown(t, &dhtTeardown{*bootstrap})
 	}
 }
 
@@ -568,50 +545,6 @@ func (t *dhtree) _resetBootstrapState() {
 	}
 	t.delay = dhtDELAY_MIN
 	t.dcount = 0
-}
-
-// _teardown removes the path associated with the teardown from our dht and forwards it to the next hop along that path (or does nothing if the teardown doesn't match a known path)
-func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
-	if dinfo, isIn := t.dinfos[teardown.key]; isIn {
-		if dinfo.dhtBootstrap != teardown.dhtBootstrap {
-			//panic("DEBUG")
-			return // Nothing to do
-		}
-		if from == dinfo.peer {
-			//* TODO? actually tear down paths in this case?
-			delete(t.dinfos, teardown.key)
-			if dinfo.rest != nil {
-				dinfo.rest.sendTeardown(t, teardown)
-			}
-			//*/
-		} else if from == dinfo.rest {
-			if next := t._dhtLookup(dinfo.key, true, nil); next != nil && next != dinfo.rest && next != dinfo.peer {
-				// We can forward the path somewhere else, so we should try
-				dinfo.rest = next
-				dinfo.rest.sendBootstrap(t, &teardown.dhtBootstrap)
-			} else {
-				// We couldn't find a next hop, so tear down
-				// TODO this is still a good path back to the source, so keep it, just mark it as bad or something
-				// TODO testing, don't actually delete the path yet, just trigger a new path to be sent / reset bootstrap state stuff
-				delete(t.dinfos, teardown.key)
-				if dinfo.peer != nil {
-					dinfo.peer.sendTeardown(t, teardown)
-				} else if dinfo.key == t.core.crypto.publicKey {
-					// TODO actually do something here?
-					// It was our own path that failed, so we should try to bootstrap again or something
-					t._resetBootstrapState()
-					t._doBootstrap()
-				}
-			}
-		}
-	}
-}
-
-// teardown is the dhtinfo actor behavior that sends a message to _teardown
-func (t *dhtree) teardown(from phony.Actor, p *peer, teardown *dhtTeardown) {
-	t.Act(from, func() {
-		t._teardown(p, teardown)
-	})
 }
 
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
@@ -1006,14 +939,6 @@ func (st *dhtSetupToken) decode(data []byte) error {
 		return wireDecodeError
 	}
 	return st.dest.decode(data)
-}
-
-/***************
- * dhtTeardown *
- ***************/
-
-type dhtTeardown struct {
-	dhtBootstrap
 }
 
 /**************
