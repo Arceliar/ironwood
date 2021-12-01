@@ -293,7 +293,7 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 // _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
 // this only uses the source direction of paths through the dht
 // bootstraps use slightly different logic, since they need to stop short of the destination key
-func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark) *peer {
+func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark) (*peer, publicKey) {
 	// Start by defining variables and helper functions
 	best := t.core.crypto.publicKey
 	var bestPeer *peer
@@ -407,7 +407,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			bestPeer = nil
 		}
 	}
-	return bestPeer
+	return bestPeer, best
 }
 
 // _dhtAdd adds a dhtInfo to the dht and returns true
@@ -453,7 +453,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	}
 	*/
 	source := bootstrap.key
-	next := t._dhtLookup(source, true, nil)
+	next, target := t._dhtLookup(source, true, nil)
 	if prev == nil && next == nil {
 		// This is our own bootstrap and we don't have anywhere to send it
 		return nil
@@ -464,8 +464,9 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		//seq:     bootstrap.seq, // TODO add a seq to bootstraps (like setups)
 		//root:    bootstrap.root,
 		//rootSeq: bootstrap.rootSeq,
-		peer: prev,
-		rest: next, // TODO either don't keep this, or monitor when it goes offline and try to send again?
+		peer:   prev,
+		rest:   next,   // TODO either don't keep this, or monitor when it goes offline and try to send again?
+		target: target, // Key we are trying to route towards
 	}
 	if !t._dhtAdd(dinfo) {
 		// We failed to add the dinfo to the DHT for some reason
@@ -488,9 +489,27 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 			if info := t.dinfos[dinfo.key]; info == dinfo {
 				delete(t.dinfos, dinfo.key)
 			}
+			for _, dfo := range t.dinfos {
+				break // TODO decide if we should do this
+				if dfo.target != dinfo.key {
+					continue
+				}
+				t._redirectPath(dfo)
+			}
 		})
 	})
 	return dinfo
+}
+
+func (t *dhtree) _redirectPath(dinfo *dhtInfo) {
+	next, target := t._dhtLookup(dinfo.key, true, nil)
+	if next != dinfo.rest {
+		dinfo.rest = next
+		dinfo.target = target
+		if dinfo.rest != nil {
+			dinfo.rest.sendBootstrap(t, &dinfo.dhtBootstrap)
+		}
+	}
 }
 
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
@@ -500,6 +519,26 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 	if dinfo := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
 		if dinfo.rest != nil {
 			dinfo.rest.sendBootstrap(t, bootstrap)
+		}
+		for _, dfo := range t.dinfos {
+			break // TODO decide if we should do this
+			if dfo.target == dinfo.key || dhtOrdered(dfo.target, dinfo.key, dfo.key) {
+				t._redirectPath(dfo)
+			}
+		}
+		for _, dfo := range t.dinfos {
+			if prev == nil {
+				break
+			}
+			if dfo.peer == prev || dfo.rest == prev {
+				continue
+			}
+			next, _ := t._dhtLookup(dfo.key, true, nil)
+			if next != prev {
+				continue
+			}
+			dfo.rest = prev
+			prev.sendBootstrap(t, &dfo.dhtBootstrap)
 		}
 	}
 }
@@ -551,7 +590,7 @@ func (t *dhtree) _resetBootstrapState() {
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
 func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
 	t.Act(from, func() {
-		next := t._dhtLookup(tr.dest, false, &tr.mark)
+		next, _ := t._dhtLookup(tr.dest, false, &tr.mark)
 		if next == nil {
 			if false && tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
@@ -832,8 +871,9 @@ type dhtInfo struct {
 	dhtBootstrap
 	//seq     uint64
 	//key     publicKey
-	peer *peer
-	rest *peer
+	peer   *peer
+	rest   *peer
+	target publicKey
 	//root    publicKey
 	//rootSeq uint64
 	timer *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown

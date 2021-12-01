@@ -234,7 +234,7 @@ func (pf *pathfinder) _getPath(dest publicKey) *peer {
 
 func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 	pf.dhtree.Act(from, func() {
-		if next := pf.dhtree._dhtLookup(n.dest, false, nil); next != nil {
+		if next, _ := pf.dhtree._dhtLookup(n.dest, false, nil); next != nil {
 			next.sendPathNotify(pf.dhtree, n)
 		} else if req := pf._getRequest(n); req != nil {
 			pf.handleRequest(nil, req)
@@ -245,7 +245,7 @@ func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 func (pf *pathfinder) handleRequest(from phony.Actor, req *pathRequest) {
 	pf.dhtree.Act(from, func() {
 		// TODO? check the treeLabel at some point
-		if next := pf.dhtree._dhtLookup(req.source, false, nil); next != nil {
+		if next, _ := pf.dhtree._dhtLookup(req.source, false, nil); next != nil {
 			next.sendPathRequest(pf.dhtree, req)
 		} else if res := pf._getResponse(req); res != nil {
 			pf.handleResponse(nil, nil, res)
