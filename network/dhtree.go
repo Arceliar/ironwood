@@ -3,6 +3,7 @@ package network
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -19,8 +20,8 @@ const (
 )
 
 const (
-	dhtDELAY_MIN       = 1
-	dhtDELAY_MAX       = 10
+	dhtDELAY_MIN       = 3
+	dhtDELAY_MAX       = 3
 	dhtDELAY_TOLERANCE = 2
 	dhtDELAY_COUNT     = 6
 )
@@ -87,6 +88,7 @@ func (t *dhtree) _sendTree() {
 //  this avoids the tons of traffic generated when nodes race to use each other as parents
 func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 	t.Act(from, func() {
+		//defer t._redirectPaths()
 		// The tree info should have been checked before this point
 		info.time = time.Now() // Order by processing time, not receiving time...
 		t.hseq++
@@ -119,14 +121,14 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 				// Set self to root, send, then process things correctly 1 second later
 				t.wait = true
 				t.self = &treeInfo{root: t.core.crypto.publicKey}
-				t._resetBootstrapState()
+				//t._resetBootstrapState()
 				t._sendTree() // send bad news immediately
 				time.AfterFunc(time.Second, func() {
 					t.Act(nil, func() {
 						t.wait = false
 						t.self, t.parent = nil, nil
 						t._fix()
-						t._doBootstrap()
+						//t._doBootstrap()
 					})
 				})
 			}
@@ -141,13 +143,21 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 // remove removes a peer from the tree, along with any paths through that peer in the dht
 func (t *dhtree) remove(from phony.Actor, p *peer) {
 	t.Act(from, func() {
+		//defer t._redirectPaths()
 		for _, dinfo := range t.dinfos {
-			if dinfo.peer == p || dinfo.rest == p {
+			//if dinfo.peer == p || dinfo.rest == p {
+			//	dinfo.peer = nil
+			//	/* TODO remove completely? That seems to loop in the DHT...
+			//	dinfo.timer.Stop()
+			//	delete(t.dinfos, dinfo.key)
+			//	*/
+			//}
+			if dinfo.peer == p {
 				dinfo.peer = nil
-				/* TODO remove completely? That seems to loop in the DHT...
-				dinfo.timer.Stop()
-				delete(t.dinfos, dinfo.key)
-				*/
+				dinfo.isExpired = true // Well no, but actually yes
+			}
+			if dinfo.rest == p {
+				dinfo.rest = nil
 			}
 		}
 		var reboot bool
@@ -177,6 +187,7 @@ func (t *dhtree) _fix() {
 		return // closed
 	}
 	oldSelf := t.self
+	oldParent := t.parent
 	if t.self == nil || treeLess(t.core.crypto.publicKey, t.self.root) {
 		// Note that seq needs to be non-decreasing for the node to function as a root
 		//  a timestamp it used to partly mitigate rollbacks from restarting
@@ -244,6 +255,25 @@ func (t *dhtree) _fix() {
 			})
 		})
 		t._sendTree() // Send the tree update to our peers
+		// Delete obsolete stuff
+		if oldSelf == nil || !t.self.root.equal(oldSelf.root) || t.self.seq != oldSelf.seq {
+			for key, dinfo := range t.dinfos {
+				break // FIXME DEBUG, just never delete any old paths
+				// If we delete a path, then change root again (mobility), we may hear about that same path again from a node that hasn't expired it yet
+				// Routing loops actually happen in the lab tests, and I *think* this is why
+				// So a different root/seq is not sufficient cause to delete the old paths...
+				// Same root and higher seq is probably good enough
+				// The question is what to do when the root is different... when is it safe to delete the path?
+				if dinfo.isExpired {
+					delete(t.dinfos, key)
+				}
+			}
+		}
+		if oldSelf == nil || t.parent != oldParent || !t.self.root.equal(oldSelf.root) {
+			// We updated t.self, and it's not just a seq update from the same parent
+			t._resetBootstrapState()
+			t._doBootstrap()
+		}
 	}
 	// Clean up t.expired (remove anything worse than the current root)
 	for skey := range t.expired {
@@ -366,14 +396,16 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			doUpdate(p.key, p, nil)
 		}
 	}
-	// Update DHT watermark before checking paths
-	if mark != nil {
-		if treeLess(mark.dht, best) {
-			mark.dht = best
-		} else if treeLess(best, mark.dht) {
-			bestPeer = nil
+	// Update tree watermark before checking paths
+	/*
+		if mark != nil {
+			if treeLess(mark.tree, best) {
+				mark.dht = best
+			} else if treeLess(best, mark.tree) {
+				bestPeer = nil
+			}
 		}
-	}
+	*/
 	// Update based on pathfinder paths
 	if false && mark != nil {
 		for key, pinfo := range t.pathfinder.paths {
@@ -406,14 +438,29 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	}
 	// Update based on our DHT infos
 	for _, dinfo := range t.dinfos {
+		if dinfo.isExpired {
+			continue
+		}
 		doDHT(dinfo)
 	}
-	if mark != nil && bestInfo != nil {
-		if treeLess(mark.dht, bestInfo.key) {
-			mark.dht = bestInfo.key
-		} else if treeLess(bestInfo.key, mark.dht) {
+	// Update DHT watermark
+	/*
+		if mark != nil && bestInfo != nil {
+			if treeLess(mark.dht, bestInfo.key) {
+				mark.dht = bestInfo.key
+			} else if treeLess(bestInfo.key, mark.dht) {
+				bestPeer = nil
+			}
+		}
+	*/
+	if mark != nil {
+		fmt.Println("DEBUG1", best, bestPeer != nil, bestInfo != nil, mark.dht)
+		if treeLess(mark.dht, best) {
+			mark.dht = best
+		} else if treeLess(best, mark.dht) {
 			bestPeer = nil
 		}
+		fmt.Println("DEBUG2", best, bestPeer != nil, bestInfo != nil, mark.dht)
 	}
 	return bestPeer, best
 }
@@ -460,8 +507,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		return nil
 	}
 	*/
-	source := bootstrap.key
-	next, target := t._dhtLookup(source, true, nil)
+	next, target := t._dhtLookup(bootstrap.key, true, nil)
 	if next == prev {
 		// This would loop for some reason, e.g. it's our own bootstrap and we don't have anywhere to send it
 		return nil
@@ -475,6 +521,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		peer:   prev,
 		rest:   next,   // TODO either don't keep this, or monitor when it goes offline and try to send again?
 		target: target, // Key we are trying to route towards
+		time:   time.Now(),
 	}
 	if !t._dhtAdd(dinfo) {
 		// We failed to add the dinfo to the DHT for some reason
@@ -492,13 +539,18 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		delay = dhtDELAY_MAX
 	}
 	dinfo.timer = time.AfterFunc(time.Duration(delay+dhtDELAY_TOLERANCE)*time.Second, func() {
+		//return // TODO actual cleanup
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
 			if info := t.dinfos[dinfo.key]; info == dinfo {
-				delete(t.dinfos, dinfo.key)
+				// TODO either delete the path, or mark it as bad
+				//delete(t.dinfos, dinfo.key)
+				dinfo.isExpired = true
+			} else {
+				return
 			}
 			for _, dfo := range t.dinfos {
-				//break // FIXME this leads to huge traffic spikes, possibly loops?
+				break // FIXME this leads to huge traffic spikes, possibly loops?
 				if dfo.rest != dinfo.peer {
 					continue
 				}
@@ -514,9 +566,32 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 					}
 				}
 			}
+			t._redirectPaths()
 		})
 	})
 	return dinfo
+}
+
+func (t *dhtree) _redirectPaths() {
+	// TODO do something efficient, this scales O(n**2)
+	for _, dinfo := range t.dinfos {
+		if dinfo.isExpired {
+			continue
+		}
+		t._redirectPath(dinfo)
+	}
+}
+
+func (t *dhtree) _redirectPath(dinfo *dhtInfo) {
+	if next, target := t._dhtLookup(dinfo.key, true, nil); next != nil && next != dinfo.rest && next != dinfo.peer {
+		// TODO next != dinfo.peer isn't sufficient to prevent all possible loops, if nodes delete paths
+		// Need to e.g. hold on to paths until it's "safe" to delete them, whatever that means
+		// A newer timestamp from the same root would probably be sufficient...
+		// A *different* root is generally probably not...
+		dinfo.rest = next
+		dinfo.target = target
+		dinfo.rest.sendBootstrap(t, &dinfo.dhtBootstrap)
+	}
 }
 
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
@@ -529,7 +604,7 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		}
 		if dinfo.peer != nil {
 			for _, dfo := range t.dinfos {
-				//break // FIXME this leads to traffic spikes
+				break // FIXME this leads to traffic spikes
 				if dfo.peer == dinfo.peer || dfo.rest == dinfo.peer {
 					continue
 				}
@@ -542,6 +617,7 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 				}
 			}
 		}
+		t._redirectPaths()
 	}
 }
 
@@ -878,7 +954,9 @@ type dhtInfo struct {
 	target publicKey
 	//root    publicKey
 	//rootSeq uint64
-	timer *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
+	timer     *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
+	time      time.Time   // time when this info was added
+	isExpired bool
 }
 
 /****************
@@ -1022,6 +1100,7 @@ func (t *baseTraffic) decode(data []byte) error {
  **************/
 
 type dhtWatermark struct {
+	tree publicKey
 	dht  publicKey
 	prev publicKey
 	next publicKey
@@ -1033,6 +1112,7 @@ type dhtTraffic struct {
 }
 
 func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
+	out = append(out, t.mark.tree[:]...)
 	out = append(out, t.mark.dht[:]...)
 	out = append(out, t.mark.prev[:]...)
 	out = append(out, t.mark.next[:]...)
@@ -1041,7 +1121,9 @@ func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
 
 func (t *dhtTraffic) decode(data []byte) error {
 	var tmp dhtTraffic
-	if !wireChopSlice(tmp.mark.dht[:], &data) {
+	if !wireChopSlice(tmp.mark.tree[:], &data) {
+		return wireDecodeError
+	} else if !wireChopSlice(tmp.mark.dht[:], &data) {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.mark.prev[:], &data) {
 		return wireDecodeError

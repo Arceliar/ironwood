@@ -3,7 +3,7 @@ package network
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
+	//"fmt"
 	"io"
 	"math"
 	"net"
@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	peerENABLE_DELAY_SCALING = 1
+	peerENABLE_DELAY_SCALING = 0
 	peerRETRY_WINDOW         = 2 // seconds to wait between expected time and timeout
 	peerINIT_DELAY           = 4 // backwards compatibiity / historical reasons
 	peerINIT_TIMEOUT         = 6 // backwards compatiblity / historical reasons
@@ -203,7 +203,7 @@ func (p *peer) _handlePacket(bs []byte) error {
 	if len(bs) == 0 {
 		return errors.New("empty packet")
 	}
-	fmt.Println("DEBUG: handlePacket", bs[0])
+	//fmt.Println("DEBUG: handlePacket", bs[0])
 	switch pType := bs[0]; pType {
 	case wireDummy:
 		return nil
