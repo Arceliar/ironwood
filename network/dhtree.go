@@ -451,16 +451,21 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 // it may return false if the path associated with the dhtInfo isn't allowed for some reason
 //  e.g. we know a better prev/next for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
 // as of writing, that never happens, it always adds and returns true
-func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
+func (t *dhtree) _dhtAdd(dinfo *dhtInfo) bool {
 	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
-	if oldInfo, isIn := t.dinfos[info.key]; isIn {
-		if oldInfo.seq >= info.seq {
+	if oldInfo, isIn := t.dinfos[dinfo.key]; isIn {
+		if oldInfo.seq >= dinfo.seq {
 			return false
 		}
-		oldInfo.timer.Stop()
-		// TODO FIXME we need to tear down the old path, unless it's some edge case where we don't...
+		if oldInfo.oldInfo != nil {
+			// We only want to keep track of one old path, so tear down the older one
+			t._teardown(oldInfo.oldInfo.peer, &dhtTeardown{oldInfo.oldInfo.dhtBootstrap})
+			oldInfo.oldInfo = nil
+		}
+		// Hold on to the path until it expires, breaks, or we update paths again
+		dinfo.oldInfo = oldInfo
 	}
-	t.dinfos[info.key] = info
+	t.dinfos[dinfo.key] = dinfo
 	return true
 }
 
@@ -603,24 +608,37 @@ func (t *dhtree) _resetBootstrapState() {
 	t.dcount = 0
 }
 
-
 // _teardown removes the path associated with the teardown from our dht and forwards it to the next hop along that path (or does nothing if the teardown doesn't match a known path)
 func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 	if dinfo, isIn := t.dinfos[teardown.key]; isIn {
 		if dinfo.dhtBootstrap != teardown.dhtBootstrap {
+			if dinfo.oldInfo != nil && from == dinfo.oldInfo.peer && dinfo.oldInfo.dhtBootstrap == teardown.dhtBootstrap {
+				dinfo.oldInfo.timer.Stop()
+				if dinfo.oldInfo.rest != nil {
+					dinfo.oldInfo.rest.sendTeardown(t, teardown)
+				}
+			}
 			//panic("DEBUG")
 			return // Nothing to do
 		}
 		if from == dinfo.peer {
 			//* TODO? actually tear down paths in this case?
+			if dinfo.oldInfo != nil {
+				dinfo.oldInfo.timer.Stop()
+				if dinfo.oldInfo.rest != nil {
+					dinfo.oldInfo.rest.sendTeardown(t, &dhtTeardown{dinfo.oldInfo.dhtBootstrap})
+				}
+			}
+			dinfo.timer.Stop()
 			delete(t.dinfos, teardown.key)
 			if dinfo.rest != nil {
 				dinfo.rest.sendTeardown(t, teardown)
 			}
 			//*/
 		} else if from == dinfo.rest && !dinfo.isDown {
-		  // We just mark the path as down, and forward things on
-		  // If we reach the destination, then we'll send a new bootstrap
+			// We just mark the path as down, and forward things on
+			// If we reach the destination, then we'll send a new bootstrap
+			dinfo.isDown = true
 			if dinfo.peer != nil {
 				dinfo.peer.sendTeardown(t, teardown)
 			} else if dinfo.key == t.core.crypto.publicKey {
@@ -931,6 +949,7 @@ type dhtInfo struct {
 	//rootSeq uint64
 	timer     *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
 	time      time.Time   // time when this info was added
+	oldInfo   *dhtInfo
 	isExpired bool
 	isDown    bool
 }
