@@ -13,12 +13,12 @@ import (
 )
 
 const (
-	peerENABLE_DELAY_SCALING = 0
+	peerENABLE_DELAY_SCALING = 1
 	peerRETRY_WINDOW         = 2 // seconds to wait between expected time and timeout
 	peerINIT_DELAY           = 4 // backwards compatibiity / historical reasons
 	peerINIT_TIMEOUT         = 6 // backwards compatiblity / historical reasons
 	peerMIN_DELAY            = 1
-	peerMAX_DELAY            = 30 // TODO figure out what makes sense
+	peerMAX_DELAY            = 10 // TODO figure out what makes sense
 )
 
 type peerPort uint64
@@ -156,7 +156,7 @@ func (p *peer) handler() error {
 			}
 			// TODO figure out a good delay schedule, this is just a placeholder
 			uptime := time.Since(p.time)
-			delay := uint(math.Sqrt(uptime.Minutes()))
+			delay := uint(math.Sqrt(uptime.Seconds() / 6))
 			// Clamp to allowed range
 			switch {
 			case delay < peerMIN_DELAY:

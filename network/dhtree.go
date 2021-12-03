@@ -19,9 +19,10 @@ const (
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
 )
 
+// TODO figure out what kind of delay/schedule makes sense in practice
 const (
-	dhtDELAY_MIN       = 3
-	dhtDELAY_MAX       = 3
+	dhtDELAY_MIN       = 1
+	dhtDELAY_MAX       = 10
 	dhtDELAY_TOLERANCE = 2
 	dhtDELAY_COUNT     = 6
 )
@@ -396,18 +397,8 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			doUpdate(p.key, p, nil)
 		}
 	}
-	// Update tree watermark before checking paths
-	/*
-		if mark != nil {
-			if treeLess(mark.tree, best) {
-				mark.dht = best
-			} else if treeLess(best, mark.tree) {
-				bestPeer = nil
-			}
-		}
-	*/
 	// Update based on pathfinder paths
-	if false && mark != nil {
+	if mark != nil {
 		for key, pinfo := range t.pathfinder.paths {
 			if pinfo.peer == nil {
 				continue
@@ -444,16 +435,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		doDHT(dinfo)
 	}
 	// Update DHT watermark
-	/*
-		if mark != nil && bestInfo != nil {
-			if treeLess(mark.dht, bestInfo.key) {
-				mark.dht = bestInfo.key
-			} else if treeLess(bestInfo.key, mark.dht) {
-				bestPeer = nil
-			}
-		}
-	*/
-	if mark != nil {
+	if mark != nil /*&& bestInfo != nil*/ {
 		fmt.Println("DEBUG1", best, bestPeer != nil, bestInfo != nil, mark.dht)
 		if treeLess(mark.dht, best) {
 			mark.dht = best
@@ -539,59 +521,16 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		delay = dhtDELAY_MAX
 	}
 	dinfo.timer = time.AfterFunc(time.Duration(delay+dhtDELAY_TOLERANCE)*time.Second, func() {
-		//return // TODO actual cleanup
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
 			if info := t.dinfos[dinfo.key]; info == dinfo {
-				// TODO either delete the path, or mark it as bad
-				//delete(t.dinfos, dinfo.key)
 				dinfo.isExpired = true
-			} else {
-				return
+				// TODO start a new timer, and delete the path when it expires, or otherwise somehow delete paths eventually
+				// Maybe trigger cleanup on root seq update instead? Or something like that...
 			}
-			for _, dfo := range t.dinfos {
-				break // FIXME this leads to huge traffic spikes, possibly loops?
-				if dfo.rest != dinfo.peer {
-					continue
-				}
-				if dfo.target != dinfo.key {
-					continue
-				}
-				next, target := t._dhtLookup(dfo.key, true, nil)
-				if next != dfo.rest {
-					dfo.rest = next
-					dfo.target = target
-					if dfo.rest != nil {
-						dfo.rest.sendBootstrap(t, &dfo.dhtBootstrap)
-					}
-				}
-			}
-			t._redirectPaths()
 		})
 	})
 	return dinfo
-}
-
-func (t *dhtree) _redirectPaths() {
-	// TODO do something efficient, this scales O(n**2)
-	for _, dinfo := range t.dinfos {
-		if dinfo.isExpired {
-			continue
-		}
-		t._redirectPath(dinfo)
-	}
-}
-
-func (t *dhtree) _redirectPath(dinfo *dhtInfo) {
-	if next, target := t._dhtLookup(dinfo.key, true, nil); next != nil && next != dinfo.rest && next != dinfo.peer {
-		// TODO next != dinfo.peer isn't sufficient to prevent all possible loops, if nodes delete paths
-		// Need to e.g. hold on to paths until it's "safe" to delete them, whatever that means
-		// A newer timestamp from the same root would probably be sufficient...
-		// A *different* root is generally probably not...
-		dinfo.rest = next
-		dinfo.target = target
-		dinfo.rest.sendBootstrap(t, &dinfo.dhtBootstrap)
-	}
 }
 
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
@@ -602,22 +541,22 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		if dinfo.rest != nil {
 			dinfo.rest.sendBootstrap(t, bootstrap)
 		}
-		if dinfo.peer != nil {
+		if false && dinfo.peer != nil { // TODO try to get some version of this to work
 			for _, dfo := range t.dinfos {
-				break // FIXME this leads to traffic spikes
 				if dfo.peer == dinfo.peer || dfo.rest == dinfo.peer {
 					continue
 				}
 				if dfo.target == dinfo.key || dhtOrdered(dfo.target, dinfo.key, dfo.key) {
-					// If we had known about dinfo earlier, then we should have sent dfo towards dinfo.peer
-					// Better late than never
+					// This is either an updated path from the same target, or a path from a better target
+					// If that target is mobile, then they're sending bootstraps frequently to keep things working
+					// We should forward their successor's path to them right away, instead of waiting for another update
+					// TODO? Should we? Is there a better option? (Without complicating the protocol)
 					dfo.rest = dinfo.peer
 					dfo.target = dinfo.key
 					dinfo.peer.sendBootstrap(t, &dfo.dhtBootstrap)
 				}
 			}
 		}
-		t._redirectPaths()
 	}
 }
 
@@ -1100,7 +1039,6 @@ func (t *baseTraffic) decode(data []byte) error {
  **************/
 
 type dhtWatermark struct {
-	tree publicKey
 	dht  publicKey
 	prev publicKey
 	next publicKey
@@ -1112,7 +1050,6 @@ type dhtTraffic struct {
 }
 
 func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
-	out = append(out, t.mark.tree[:]...)
 	out = append(out, t.mark.dht[:]...)
 	out = append(out, t.mark.prev[:]...)
 	out = append(out, t.mark.next[:]...)
@@ -1121,9 +1058,7 @@ func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
 
 func (t *dhtTraffic) decode(data []byte) error {
 	var tmp dhtTraffic
-	if !wireChopSlice(tmp.mark.tree[:], &data) {
-		return wireDecodeError
-	} else if !wireChopSlice(tmp.mark.dht[:], &data) {
+	if !wireChopSlice(tmp.mark.dht[:], &data) {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.mark.prev[:], &data) {
 		return wireDecodeError
