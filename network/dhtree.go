@@ -21,7 +21,7 @@ const (
 
 // TODO figure out what kind of delay/schedule makes sense in practice
 const (
-	dhtDELAY_MIN       = 30
+	dhtDELAY_MIN       = 1
 	dhtDELAY_MAX       = 30
 	dhtDELAY_TOLERANCE = 2
 	dhtDELAY_COUNT     = 6
@@ -47,6 +47,7 @@ type dhtree struct {
 	hseq       uint64                 // used to track the order treeInfo updates are handled
 	bwait      bool                   // wait before sending another bootstrap
 	delay      uint8                  // delay between sending bootstraps
+	dstep      uint8                  // used by delay stuff
 	dcount     uint8                  // counter, used it delay scaling
 }
 
@@ -631,27 +632,41 @@ func (t *dhtree) _doBootstrap() {
 			  }
 		  }
 	*/
-	if t.btimer != nil {
-		delay := t._getBootstrapDelay()
+	if !t.bwait && t.btimer != nil {
+		// TODO actually delay things
+		//delay := t._getBootstrapDelay()
 		if t.parent != nil {
 			// Adjust delay for future bootstraps
-			t.dcount++
-			if t.dcount > dhtDELAY_COUNT {
-				t.dcount = 0
-				t.delay++
-				if t.delay > dhtDELAY_MAX {
-					t.delay = dhtDELAY_MAX
+			if t.dstep >= t.delay {
+				t.dstep = 0
+				t.dcount++
+				if t.dcount > dhtDELAY_COUNT {
+					t.dcount = 0
+					t.delay++
+					if t.delay > dhtDELAY_MAX {
+						t.delay = dhtDELAY_MAX
+					}
 				}
+				t._handleBootstrap(nil, t._newBootstrap())
+				t.bwait = true
+			} else {
+				t.dstep++
 			}
-			t._handleBootstrap(nil, t._newBootstrap())
-			t.bwait = true
 		}
 		t.btimer.Stop()
-		t.btimer = time.AfterFunc(time.Duration(delay)*time.Second, func() {
+		t.btimer = time.AfterFunc(time.Second, func() {
 			t.Act(nil, func() {
+				t.bwait = false
 				t._doBootstrap()
 			})
 		})
+		/*
+			t.btimer = time.AfterFunc(time.Duration(delay)*time.Second, func() {
+				t.Act(nil, func() {
+					t._doBootstrap()
+				})
+			})
+		*/
 	}
 }
 
@@ -660,10 +675,13 @@ func (t *dhtree) _getBootstrapDelay() uint8 {
 }
 
 func (t *dhtree) _resetBootstrapState() {
-	if t.btimer != nil {
-		t.btimer.Stop()
-	}
+	/*
+		if t.btimer != nil {
+			t.btimer.Stop()
+		}
+	*/
 	t.delay = dhtDELAY_MIN
+	t.dstep = 0
 	t.dcount = 0
 }
 
