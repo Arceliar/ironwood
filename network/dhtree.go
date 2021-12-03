@@ -22,8 +22,8 @@ const (
 // TODO figure out what kind of delay/schedule makes sense in practice
 const (
 	dhtDELAY_MIN       = 1
-	dhtDELAY_MAX       = 30
-	dhtDELAY_TOLERANCE = 2
+	dhtDELAY_MAX       = 180
+	dhtDELAY_TOLERANCE = 60
 	dhtDELAY_COUNT     = 6
 )
 
@@ -638,6 +638,7 @@ func (t *dhtree) _doBootstrap() {
 		if t.parent != nil {
 			// Adjust delay for future bootstraps
 			if t.dstep >= t.delay {
+				t.delay = dhtDELAY_MAX // FIXME DEBUG doing this until throttle stuff is reworked
 				t.dstep = 0
 				t.dcount++
 				if t.dcount > dhtDELAY_COUNT {
