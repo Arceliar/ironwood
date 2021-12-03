@@ -21,8 +21,8 @@ const (
 
 // TODO figure out what kind of delay/schedule makes sense in practice
 const (
-	dhtDELAY_MIN       = 1
-	dhtDELAY_MAX       = 10
+	dhtDELAY_MIN       = 30
+	dhtDELAY_MAX       = 30
 	dhtDELAY_TOLERANCE = 2
 	dhtDELAY_COUNT     = 6
 )
@@ -153,30 +153,35 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 			//	delete(t.dinfos, dinfo.key)
 			//	*/
 			//}
+			/*
+				if dinfo.peer == p {
+					dinfo.peer = nil
+					dinfo.isExpired = true // Well no, but actually yes
+				}
+				if dinfo.rest == p {
+					dinfo.rest = nil
+				}
+			*/
 			if dinfo.peer == p {
-				dinfo.peer = nil
-				dinfo.isExpired = true // Well no, but actually yes
+				// Tear down peer side paths first
+				t._teardown(p, dinfo.getTeardown())
 			}
+		}
+		for _, dinfo := range t.dinfos {
+			// Tear down rest side second, so they're not received first by the peer
 			if dinfo.rest == p {
-				dinfo.rest = nil
+				t._teardown(p, dinfo.getTeardown())
 			}
 		}
-		var reboot bool
-		if dinfo, isIn := t.dinfos[t.core.crypto.publicKey]; isIn && dinfo.rest == p {
-			reboot = true
-		}
+		t.pathfinder._remove(p)
 		oldInfo := t.tinfos[p]
 		delete(t.tinfos, p)
 		if t.self == oldInfo {
 			t.self = nil
 			t.parent = nil
 			t._fix()
-			reboot = true
-		}
-		t.pathfinder._remove(p)
-		if reboot {
-			t._resetBootstrapState()
-			t._doBootstrap()
+			//t._resetBootstrapState()
+			//t._doBootstrap()
 		}
 	})
 }
@@ -272,6 +277,7 @@ func (t *dhtree) _fix() {
 		}
 		if oldSelf == nil || t.parent != oldParent || !t.self.root.equal(oldSelf.root) {
 			// We updated t.self, and it's not just a seq update from the same parent
+			// TODO Figure out if that's the right condition to be doing this
 			t._resetBootstrapState()
 			t._doBootstrap()
 		}
@@ -459,7 +465,7 @@ func (t *dhtree) _dhtAdd(dinfo *dhtInfo) bool {
 		}
 		if oldInfo.oldInfo != nil {
 			// We only want to keep track of one old path, so tear down the older one
-			t._teardown(oldInfo.oldInfo.peer, &dhtTeardown{oldInfo.oldInfo.dhtBootstrap})
+			t._teardown(oldInfo.oldInfo.peer, oldInfo.oldInfo.getTeardown())
 			oldInfo.oldInfo = nil
 		}
 		// Hold on to the path until it expires, breaks, or we update paths again
@@ -532,6 +538,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 				dinfo.isExpired = true
 				// TODO start a new timer, and delete the path when it expires, or otherwise somehow delete paths eventually
 				// Maybe trigger cleanup on root seq update instead? Or something like that...
+				t._teardown(dinfo.peer, dinfo.getTeardown())
 			}
 		})
 	})
@@ -545,6 +552,31 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 	if dinfo := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
 		if dinfo.rest != nil {
 			dinfo.rest.sendBootstrap(t, bootstrap)
+		} else {
+			// We were the last node, so check if this is a better successor than our current best, and send teardowns as needed
+			for _, dfo := range t.dinfos {
+				if dfo == dinfo {
+					continue
+				}
+				if dfo.isDown {
+					continue
+				}
+				if dfo.rest != nil || dfo.peer == nil {
+					continue
+				}
+				if dhtOrdered(t.core.crypto.publicKey, dinfo.key, dfo.key) {
+					// Teardown to signal that the path needs replacing
+					//panic("DEBUG1")
+					fmt.Println("DEBUG1:", t.core.crypto.publicKey, dinfo.key, dfo.key)
+					t._teardown(dfo.rest, dfo.getTeardown())
+				} else {
+					// For some reason we hit a dead end, so teardown
+					// FIXME for some reason, this keeps happening. Why?
+					fmt.Println("DEBUG2:", t.core.crypto.publicKey, dinfo.key, dfo.key)
+					t._teardown(dinfo.rest, dinfo.getTeardown())
+					panic("DEBUG2")
+				}
+			}
 		}
 		if false && dinfo.peer != nil { // TODO try to get some version of this to work
 			for _, dfo := range t.dinfos {
@@ -562,6 +594,8 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 				}
 			}
 		}
+	} else if prev != nil {
+		prev.sendTeardown(t, bootstrap.getTeardown())
 	}
 }
 
@@ -575,6 +609,28 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
+	/*
+		  func (t *dhtree) _doBootstrap() {
+			  if !t.bwait && t.btimer != nil {
+				  if t.prev != nil && t.prev.root.equal(t.self.root) && t.prev.rootSeq == t.self.seq {
+					  return
+				  }
+				  if !t.self.root.equal(t.core.crypto.publicKey) {
+					  t._handleBootstrap(t._newBootstrap())
+					  // Don't immediately send more bootstraps if called again too quickly
+					  // This helps prevent traffic spikes in some mobility scenarios
+					  t.bwait = true
+				  }
+				  t.btimer.Stop()
+				  t.btimer = time.AfterFunc(time.Second, func() {
+					  t.Act(nil, func() {
+						  t.bwait = false
+						  t._doBootstrap()
+					  })
+				  })
+			  }
+		  }
+	*/
 	if t.btimer != nil {
 		delay := t._getBootstrapDelay()
 		if t.parent != nil {
@@ -588,10 +644,13 @@ func (t *dhtree) _doBootstrap() {
 				}
 			}
 			t._handleBootstrap(nil, t._newBootstrap())
+			t.bwait = true
 		}
 		t.btimer.Stop()
 		t.btimer = time.AfterFunc(time.Duration(delay)*time.Second, func() {
-			t.Act(nil, t._doBootstrap)
+			t.Act(nil, func() {
+				t._doBootstrap()
+			})
 		})
 	}
 }
@@ -626,7 +685,7 @@ func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
 			if dinfo.oldInfo != nil {
 				dinfo.oldInfo.timer.Stop()
 				if dinfo.oldInfo.rest != nil {
-					dinfo.oldInfo.rest.sendTeardown(t, &dhtTeardown{dinfo.oldInfo.dhtBootstrap})
+					dinfo.oldInfo.rest.sendTeardown(t, dinfo.oldInfo.getTeardown())
 				}
 			}
 			dinfo.timer.Stop()
@@ -982,6 +1041,10 @@ func (dbs *dhtBootstrap) bytesForSig() []byte {
 func (dbs *dhtBootstrap) check() bool {
 	bs := dbs.bytesForSig()
 	return dbs.key.verify(bs, &dbs.sig)
+}
+
+func (dbs *dhtBootstrap) getTeardown() *dhtTeardown {
+	return &dhtTeardown{*dbs}
 }
 
 func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
