@@ -603,6 +603,42 @@ func (t *dhtree) _resetBootstrapState() {
 	t.dcount = 0
 }
 
+
+// _teardown removes the path associated with the teardown from our dht and forwards it to the next hop along that path (or does nothing if the teardown doesn't match a known path)
+func (t *dhtree) _teardown(from *peer, teardown *dhtTeardown) {
+	if dinfo, isIn := t.dinfos[teardown.key]; isIn {
+		if dinfo.dhtBootstrap != teardown.dhtBootstrap {
+			//panic("DEBUG")
+			return // Nothing to do
+		}
+		if from == dinfo.peer {
+			//* TODO? actually tear down paths in this case?
+			delete(t.dinfos, teardown.key)
+			if dinfo.rest != nil {
+				dinfo.rest.sendTeardown(t, teardown)
+			}
+			//*/
+		} else if from == dinfo.rest && !dinfo.isDown {
+		  // We just mark the path as down, and forward things on
+		  // If we reach the destination, then we'll send a new bootstrap
+			if dinfo.peer != nil {
+				dinfo.peer.sendTeardown(t, teardown)
+			} else if dinfo.key == t.core.crypto.publicKey {
+				// It was our own path that failed, so we try to bootstrap again
+				t._resetBootstrapState()
+				t._doBootstrap()
+			}
+		}
+	}
+}
+
+// teardown is the dhtinfo actor behavior that sends a message to _teardown
+func (t *dhtree) teardown(from phony.Actor, p *peer, teardown *dhtTeardown) {
+	t.Act(from, func() {
+		t._teardown(p, teardown)
+	})
+}
+
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
 func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
@@ -896,6 +932,7 @@ type dhtInfo struct {
 	timer     *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
 	time      time.Time   // time when this info was added
 	isExpired bool
+	isDown    bool
 }
 
 /****************
@@ -998,6 +1035,14 @@ func (st *dhtSetupToken) decode(data []byte) error {
 		return wireDecodeError
 	}
 	return st.dest.decode(data)
+}
+
+/***************
+ * dhtTeardown *
+ ***************/
+
+type dhtTeardown struct {
+	dhtBootstrap
 }
 
 /**************
