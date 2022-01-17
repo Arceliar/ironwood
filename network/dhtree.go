@@ -250,6 +250,10 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 		case dist > bestDist:
 		case treeLess(info.from(), best.from()):
 			isBetter = true
+		case bestPeer != nil && bestPeer.key == p.key && p.prio < bestPeer.prio:
+			// It's another link to the same next-hop node, but this link has a
+			// higher priority than the chosen one, so prefer it instead
+			isBetter = true
 		}
 		if isBetter {
 			best = info
@@ -333,6 +337,15 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 	// Update based on our DHT infos
 	for _, info := range t.dinfos {
 		doDHT(info)
+	}
+	// If we have more than one peering to our next-hop, ensure we switch over to
+	// a higher priority link if one is available
+	if bestPeer != nil {
+		for p := range t.tinfos {
+			if p.key == bestPeer.key && p.prio < bestPeer.prio {
+				doUpdate(p.key, p, nil)
+			}
+		}
 	}
 	return bestPeer
 }

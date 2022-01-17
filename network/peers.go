@@ -28,7 +28,7 @@ func (ps *peers) init(c *core) {
 	ps.peers = make(map[peerPort]*peer)
 }
 
-func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
+func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error) {
 	var p *peer
 	var err error
 	ps.core.pconn.closeMutex.Lock()
@@ -54,6 +54,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		p.port = port
 		p.writer.peer = p
 		p.writer.timer = time.AfterFunc(0, func() {})
+		p.prio = prio
 		ps.peers[port] = p
 	})
 	return p, err
@@ -81,6 +82,7 @@ type peer struct {
 	queue       packetQueue
 	ready       bool // is the writer ready for traffic?
 	writer      peerWriter
+	prio        uint8 // lower is better, relative only to other peerings to the same peer
 }
 
 type peerWriter struct {
