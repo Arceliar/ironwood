@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Arceliar/phony"
+	"go.uber.org/atomic"
 )
 
 const (
@@ -21,6 +22,25 @@ type peers struct {
 	phony.Inbox // Used to create/remove peers
 	core        *core
 	peers       map[peerPort]*peer
+}
+
+type peerConn struct {
+	net.Conn
+	rx atomic.Uint64
+	tx atomic.Uint64
+	up time.Time
+}
+
+func (c *peerConn) Read(p []byte) (n int, err error) {
+	n, err = c.Conn.Read(p)
+	c.rx.Add(uint64(n))
+	return
+}
+
+func (c *peerConn) Write(p []byte) (n int, err error) {
+	n, err = c.Conn.Write(p)
+	c.tx.Add(uint64(n))
+	return
 }
 
 func (ps *peers) init(c *core) {
@@ -49,7 +69,10 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		}
 		p = new(peer)
 		p.peers = ps
-		p.conn = conn
+		p.conn = &peerConn{
+			Conn: conn,
+			up:   time.Now(),
+		}
 		p.key = key
 		p.port = port
 		p.writer.peer = p
@@ -74,7 +97,7 @@ func (ps *peers) removePeer(port peerPort) error {
 type peer struct {
 	phony.Inbox // Only used to process or send some protocol traffic
 	peers       *peers
-	conn        net.Conn
+	conn        *peerConn
 	key         publicKey
 	info        *treeInfo
 	port        peerPort

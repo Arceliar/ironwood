@@ -30,6 +30,9 @@ type DebugPeerInfo struct {
 	Port    uint64
 	Updated time.Time
 	Conn    net.Conn
+	Uptime  time.Duration
+	RXBytes uint64
+	TXBytes uint64
 }
 
 type DebugDHTInfo struct {
@@ -70,6 +73,9 @@ func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 			info.Port = uint64(p.port)
 			info.Updated = tinfo.time
 			info.Conn = p.conn
+			info.Uptime = time.Since(p.conn.up)
+			info.RXBytes = p.conn.rx.Load()
+			info.TXBytes = p.conn.tx.Load()
 			infos = append(infos, info)
 		}
 	})
