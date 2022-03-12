@@ -26,14 +26,14 @@ type dhtree struct {
 	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
 	dinfos     map[dhtMapKey]map[uint64]*dhtInfo
-	self       *treeInfo              // self info
-	parent     *peer                  // peer that sent t.self to us
-	seq        uint64                 // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
-	btimer     *time.Timer            // time.AfterFunc to send bootstrap packets
-	stimer     *time.Timer            // time.AfterFunc for self/parent expiration
-	wait       bool                   // FIXME this shouldn't be needed
-	hseq       uint64                 // used to track the order treeInfo updates are handled
-	bwait      bool                   // wait before sending another bootstrap
+	self       *treeInfo   // self info
+	parent     *peer       // peer that sent t.self to us
+	seq        uint64      // updated whenever we send a new setup, technically it doesn't need to increase (it just needs to be different)
+	btimer     *time.Timer // time.AfterFunc to send bootstrap packets
+	stimer     *time.Timer // time.AfterFunc for self/parent expiration
+	wait       bool        // FIXME this shouldn't be needed
+	hseq       uint64      // used to track the order treeInfo updates are handled
+	bwait      bool        // wait before sending another bootstrap
 }
 
 type treeExpiredInfo struct {
@@ -403,12 +403,12 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 			//}
 			if oldInfo.seq < info.seq {
 				// This path is newer than the old one, so tear down the old one (so we can replace it)
-        /*
-				if oldInfo.peer != nil {
-					oldInfo.peer.sendTeardown(t, oldInfo.getTeardown())
-				}
-				t._teardown(oldInfo.peer, oldInfo.getTeardown())
-        */
+				/*
+					if oldInfo.peer != nil {
+						oldInfo.peer.sendTeardown(t, oldInfo.getTeardown())
+					}
+					t._teardown(oldInfo.peer, oldInfo.getTeardown())
+				*/
 			} else {
 				// We already have a path that's either the same seq or better, so ignore this one
 				// TODO? keep the path, but don't forward it anywhere
@@ -464,10 +464,10 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 	return dbs
 }
 
-func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo {
+func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) (*dhtInfo, *peer) {
 	if !bootstrap.root.equal(t.self.root) || bootstrap.rootSeq != t.self.seq {
 		// Wrong root or rootSeq
-		return nil
+		return nil, nil
 	}
 	/* This is now checked by the peer actor instead
 	if !bootstrap.check() {
@@ -479,7 +479,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	next := t._dhtLookup(source, true, nil)
 	if prev == nil && next == nil {
 		// This is our own bootstrap and we don't have anywhere to send it
-		return nil
+		return nil, nil
 	}
 	dinfo := &dhtInfo{
 		dhtBootstrap: *bootstrap,
@@ -499,17 +499,17 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 			//  1. Tear down the new path, and let the source try again
 			//  2. Stitch the old path and the new path together, and remove the loop
 			// This is an attempt at option 2
-      /*
-			if dfo.rest != nil {
-				dfo.rest.sendTeardown(t, dfo.getTeardown())
-			}
-			dfo.rest = dinfo.rest
-			if t.prev == dfo {
-				// TODO figure out if this is really safe
-				t.prev = nil
-			}
+			/*
+				if dfo.rest != nil {
+					dfo.rest.sendTeardown(t, dfo.getTeardown())
+				}
+				dfo.rest = dinfo.rest
+				if t.prev == dfo {
+					// TODO figure out if this is really safe
+					t.prev = nil
+				}
 			*/
-			return dfo
+			return dfo, nil
 		}
 		/*
 			if altInfo, isIn := dinfos[dinfo.dhtPathState]; isIn && altInfo.seq < dinfo.seq {
@@ -534,7 +534,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	}
 	if !t._dhtAdd(dinfo) {
 		// We failed to add the dinfo to the DHT for some reason
-		return nil
+		return nil, nil
 	}
 	// Setup timer for cleanup
 	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
@@ -542,21 +542,21 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 			// Clean up path if it has timed out
 			if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
 				if info := dinfos[dinfo.seq]; info == dinfo {
-				  delete(dinfos, dinfo.seq)
-				  if len(dinfos) == 0 {
-            delete(t.dinfos, dinfo.getMapKey())
-				  }
-          /*
-					if info.peer != nil {
-						info.peer.sendTeardown(t, info.getTeardown())
+					delete(dinfos, dinfo.seq)
+					if len(dinfos) == 0 {
+						delete(t.dinfos, dinfo.getMapKey())
 					}
-					t._teardown(info.peer, info.getTeardown())
+					/*
+						if info.peer != nil {
+							info.peer.sendTeardown(t, info.getTeardown())
+						}
+						t._teardown(info.peer, info.getTeardown())
 					*/
 				}
 			}
 		})
 	})
-	return dinfo
+	return dinfo, next
 }
 
 /*
@@ -607,7 +607,7 @@ func (t *dhtree) _replaceNext(dinfo *dhtInfo) bool {
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
-	if dinfo := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
+	if dinfo, next := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
 		if dinfo.peer == nil {
 			// sanity checks, this should only happen when setting up our prev
 			if !bootstrap.key.equal(t.core.crypto.publicKey) {
@@ -623,26 +623,26 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 				}
 			}*/
 			/*
-			if t.ptimer == nil {
-				// TODO? something other than an arbitrary 1 minute timeout
-				t.ptimer = time.AfterFunc(time.Minute, func() {
-					t.Act(nil, func() {
-						if t.ptimer == nil {
-							return
-						}
-						t.ptimer.Stop()
-						t.ptimer = nil
-						//if false && t.prev != nil && !t.prev.isActive {
-						//	act := &dhtActivate{*bootstrap.getTeardown()}
-						//	t._handleActivate(prev, act)
-						//	t._cleanupOldPrevs()
-						//}
-						//t._cleanupOldPrevs()
+				if t.ptimer == nil {
+					// TODO? something other than an arbitrary 1 minute timeout
+					t.ptimer = time.AfterFunc(time.Minute, func() {
+						t.Act(nil, func() {
+							if t.ptimer == nil {
+								return
+							}
+							t.ptimer.Stop()
+							t.ptimer = nil
+							//if false && t.prev != nil && !t.prev.isActive {
+							//	act := &dhtActivate{*bootstrap.getTeardown()}
+							//	t._handleActivate(prev, act)
+							//	t._cleanupOldPrevs()
+							//}
+							//t._cleanupOldPrevs()
+						})
 					})
-				})
-			}
-			t.prev = dinfo
-			//t.dkeys[dinfo] = dest // N/A for bootstrap paths...
+				}
+				t.prev = dinfo
+				//t.dkeys[dinfo] = dest // N/A for bootstrap paths...
 			*/
 		}
 		// TODO remove this, debugging code
@@ -652,19 +652,22 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		*/
 		// End TODO
 		/*
-		if dinfo.rest != nil {
-			dinfo.rest.sendBootstrap(t, bootstrap)
-			return
-		}
+			if dinfo.rest != nil {
+				dinfo.rest.sendBootstrap(t, bootstrap)
+				return
+			}
 		*/
-		panic("TODO forward bootstrap")
-    /*
-		if t._replaceNext(dinfo) {
-			ack := new(dhtBootstrapAck)
-			ack.bootstrap = *bootstrap
-			ack.response = *t._getToken(bootstrap.key)
-			t._handleBootstrapAck(ack) // TODO FIXME enable this
+		if next != nil {
+			// TODO update bootstrap as needed
+			next.sendBootstrap(t, bootstrap)
 		}
+		/*
+			if t._replaceNext(dinfo) {
+				ack := new(dhtBootstrapAck)
+				ack.bootstrap = *bootstrap
+				ack.response = *t._getToken(bootstrap.key)
+				t._handleBootstrapAck(ack) // TODO FIXME enable this
+			}
 		*/
 	} else if prev != nil {
 		//prev.sendTeardown(t, bootstrap.getTeardown())

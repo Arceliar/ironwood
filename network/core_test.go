@@ -201,14 +201,14 @@ func TestLineNetwork(t *testing.T) {
 					//  FIXME this could race if the network is flapping for some reason, though it shouldn't be
 					var here, prev, next, root string
 					here = conn.LocalAddr().String()
-          /*
-					if dinfo := conn.core.dhtree.prev; dinfo != nil {
-						k := conn.core.dhtree.dkeys[dinfo]
-						prev = k.addr().String()
-					}
-					if dinfo := conn.core.dhtree.next; dinfo != nil {
-						next = dinfo.key.addr().String()
-					}
+					/*
+						if dinfo := conn.core.dhtree.prev; dinfo != nil {
+							k := conn.core.dhtree.dkeys[dinfo]
+							prev = k.addr().String()
+						}
+						if dinfo := conn.core.dhtree.next; dinfo != nil {
+							next = dinfo.key.addr().String()
+						}
 					*/
 					root = conn.core.dhtree.self.root.addr().String()
 					t.Log(prev, ":", here, ":", next, ":", root)
@@ -322,13 +322,13 @@ func TestRandomTreeNetwork(t *testing.T) {
 					var here, prev, next, root string
 					here = conn.LocalAddr().String()
 					/*
-					if dinfo := conn.core.dhtree.prev; dinfo != nil {
-						k := conn.core.dhtree.dkeys[dinfo]
-						prev = k.addr().String()
-					}
-					if dinfo := conn.core.dhtree.next; dinfo != nil {
-						next = dinfo.key.addr().String()
-					}
+						if dinfo := conn.core.dhtree.prev; dinfo != nil {
+							k := conn.core.dhtree.dkeys[dinfo]
+							prev = k.addr().String()
+						}
+						if dinfo := conn.core.dhtree.next; dinfo != nil {
+							next = dinfo.key.addr().String()
+						}
 					*/
 					root = conn.core.dhtree.self.root.addr().String()
 					t.Log(prev, ":", here, ":", next, ":", root)
