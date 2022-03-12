@@ -13,6 +13,8 @@ const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
+	dhtANNOUNCE = 2*time.Second
+	dhtTIMEOUT = 2*dhtANNOUNCE + time.Second
 )
 
 /**********
@@ -537,7 +539,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) (*dhtInf
 		return nil, nil
 	}
 	// Setup timer for cleanup
-	dinfo.timer = time.AfterFunc(2*treeTIMEOUT, func() {
+	dinfo.timer = time.AfterFunc(dhtTIMEOUT, func() {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
 			if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
@@ -711,7 +713,7 @@ func (t *dhtree) _doBootstrap() {
 			t.bwait = true // TODO test without this, if things get stuck in a broken state then it signals a problem somewhere
 		}
 		t.btimer.Stop()
-		t.btimer = time.AfterFunc(time.Second, func() {
+		t.btimer = time.AfterFunc(dhtANNOUNCE, func() {
 			t.Act(nil, func() {
 				t.bwait = false
 				t._doBootstrap()
@@ -1014,11 +1016,13 @@ type dhtInfo struct {
 	//dhtPathState
 }
 
+/*
 type dhtPathState struct {
 	isActive    bool // Path has been acknowledged from the remote side, or reached some activation timeout
 	isOrphaned  bool // Path has been torn down from the "rest" direction
 	isBootstrap bool // Path is a bootstrap
 }
+*/
 
 /*
 func (info *dhtInfo) getTeardown() *dhtTeardown {

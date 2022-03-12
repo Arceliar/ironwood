@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	peerENABLE_DELAY_SCALING = 1
+	peerENABLE_DELAY_SCALING = 0
 	peerRETRY_WINDOW         = 2 // seconds to wait between expected time and timeout
 	peerINIT_DELAY           = 4 // backwards compatibiity / historical reasons
 	peerINIT_TIMEOUT         = 6 // backwards compatiblity / historical reasons
