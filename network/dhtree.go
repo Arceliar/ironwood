@@ -37,7 +37,6 @@ type dhtree struct {
 	wait       bool        // FIXME this shouldn't be needed
 	hseq       uint64      // used to track the order treeInfo updates are handled
 	bwait      bool        // wait before sending another bootstrap
-	waiting    bool        // send something after the wait ends
 }
 
 type treeExpiredInfo struct {
@@ -115,14 +114,14 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 						t.wait = false
 						t.self, t.parent = nil, nil
 						t._fix()
-						t._doBootstrap()
+						t._doBootstrap(true)
 					})
 				})
 			}
 		}
 		if !t.wait {
 			t._fix()
-			t._doBootstrap()
+			t._doBootstrap(true)
 		}
 	})
 }
@@ -218,7 +217,7 @@ func (t *dhtree) _fix() {
 					t.self = nil
 					t.parent = nil
 					t._fix()
-					t._doBootstrap()
+					t._doBootstrap(true)
 				}
 			})
 		})
@@ -701,7 +700,7 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
-func (t *dhtree) _doBootstrap() {
+func (t *dhtree) _doBootstrap(prompt bool) {
 	if t.btimer == nil {
 		return
 	}
@@ -709,26 +708,21 @@ func (t *dhtree) _doBootstrap() {
 		//if t.prev != nil && t.prev.root.equal(t.self.root) && t.prev.rootSeq == t.self.seq {
 		//	return
 		//}
+		waitTime := dhtANNOUNCE
 		if t.parent != nil {
 			t._handleBootstrap(nil, t._newBootstrap())
 			// Don't immediately send more bootstraps if called again too quickly
 			// This helps prevent traffic spikes in some mobility scenarios
-			t.bwait = true // TODO test without this, if things get stuck in a broken state then it signals a problem somewhere
+			if prompt {
+				waitTime = dhtWAIT
+			}
+			t.bwait = prompt
 		}
 		t.btimer.Stop()
-		t.btimer = time.AfterFunc(dhtWAIT, func() {
+		t.btimer = time.AfterFunc(waitTime, func() {
 			t.Act(nil, func() {
 				t.bwait = false
-				if t.waiting {
-					t._doBootstrap()
-				} else {
-					t.btimer.Stop()
-					t.btimer = time.AfterFunc(dhtANNOUNCE-dhtWAIT, func() {
-						t.Act(nil, func() {
-							t._doBootstrap()
-						})
-					})
-				}
+				t._doBootstrap(false)
 			})
 		})
 	}
