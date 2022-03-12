@@ -13,8 +13,9 @@ const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
-	dhtANNOUNCE = 2*time.Second
-	dhtTIMEOUT = 2*dhtANNOUNCE + time.Second
+	dhtWAIT      = time.Second      // Should be less than dhtANNOUNCE
+	dhtANNOUNCE  = 2 * time.Second
+	dhtTIMEOUT   = 2*dhtANNOUNCE + time.Second
 )
 
 /**********
@@ -36,6 +37,7 @@ type dhtree struct {
 	wait       bool        // FIXME this shouldn't be needed
 	hseq       uint64      // used to track the order treeInfo updates are handled
 	bwait      bool        // wait before sending another bootstrap
+	waiting    bool        // send something after the wait ends
 }
 
 type treeExpiredInfo struct {
@@ -701,11 +703,13 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
-	if !t.bwait && t.btimer != nil {
+	if t.btimer == nil {
+		return
+	}
+	if !t.bwait {
 		//if t.prev != nil && t.prev.root.equal(t.self.root) && t.prev.rootSeq == t.self.seq {
 		//	return
 		//}
-		//if !t.self.root.equal(t.core.crypto.publicKey) {
 		if t.parent != nil {
 			t._handleBootstrap(nil, t._newBootstrap())
 			// Don't immediately send more bootstraps if called again too quickly
@@ -713,10 +717,19 @@ func (t *dhtree) _doBootstrap() {
 			t.bwait = true // TODO test without this, if things get stuck in a broken state then it signals a problem somewhere
 		}
 		t.btimer.Stop()
-		t.btimer = time.AfterFunc(dhtANNOUNCE, func() {
+		t.btimer = time.AfterFunc(dhtWAIT, func() {
 			t.Act(nil, func() {
 				t.bwait = false
-				t._doBootstrap()
+				if t.waiting {
+					t._doBootstrap()
+				} else {
+					t.btimer.Stop()
+					t.btimer = time.AfterFunc(dhtANNOUNCE-dhtWAIT, func() {
+						t.Act(nil, func() {
+							t._doBootstrap()
+						})
+					})
+				}
 			})
 		})
 	}
