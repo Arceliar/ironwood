@@ -123,6 +123,22 @@ func TestMarshalDHTSetup(t *testing.T) {
 	var pk publicKey
 	copy(pk[:], sourcePub)
 	token := dpc.core.dhtree._getToken(pk)
+  if !token.check() {
+    panic("token check failed")
+  }
+  bs, err := token.encode(nil)
+  if err != nil {
+    panic(err)
+  }
+  newToken := new(dhtSetupToken)
+  if err = newToken.decode(bs); err != nil {
+    panic(err)
+  }
+  if !newToken.check() {
+    panic("final token check failed")
+  }
+  _ = spc
+	/*
 	setup := spc.core.dhtree._newSetup(token)
 	if !setup.check() {
 		panic("initial check failed")
@@ -138,4 +154,5 @@ func TestMarshalDHTSetup(t *testing.T) {
 	if !newSetup.check() {
 		panic("final check failed")
 	}
+	*/
 }
