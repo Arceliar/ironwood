@@ -510,6 +510,19 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) (*dhtInf
 		peer: prev,
 		//rest: next,
 	}
+	for _, s := range bootstrap.bhs {
+		if prev != nil && dinfo.peer != prev {
+			break
+		}
+		// TODO something faster than this inner loop
+		for p := range t.tinfos {
+			if p.key.equal(s.key) {
+				dinfo.peer = p
+				break
+			}
+		}
+	}
+	dinfo.dhtBootstrap.bhs = nil
 	//dinfo.isActive = true // FIXME DEBUG, this should start false and switch to true when acked (or after some timeout)
 	//dinfo.isBootstrap = true
 	if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
@@ -679,6 +692,19 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		*/
 		if next != nil {
 			// TODO update bootstrap as needed
+			bhs := bootstrap.bhs
+			bootstrap.bhs = bootstrap.bhs[:0]
+			for _, s := range bhs {
+				if dinfo.peer == nil || dinfo.peer.key != s.key {
+					continue
+				}
+				bootstrap.bhs = append(bootstrap.bhs, s)
+				break
+			}
+			var s bootstrapHopSig
+			s.key = t.core.crypto.publicKey
+			s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
+			bootstrap.bhs = append(bootstrap.bhs, s)
 			next.sendBootstrap(t, bootstrap)
 		}
 		/*
@@ -1083,6 +1109,12 @@ type dhtBootstrap struct {
 	root    publicKey
 	rootSeq uint64
 	seq     uint64
+	bhs     []bootstrapHopSig
+}
+
+type bootstrapHopSig struct {
+	key publicKey
+	sig signature
 }
 
 func (dbs *dhtBootstrap) bytesForSig() []byte {
@@ -1097,8 +1129,23 @@ func (dbs *dhtBootstrap) bytesForSig() []byte {
 }
 
 func (dbs *dhtBootstrap) check() bool {
+	if len(dbs.bhs) > 2 {
+		return false
+	}
 	bs := dbs.bytesForSig()
+	for _, s := range dbs.bhs {
+		if !s.key.verify(bs, &s.sig) {
+			return false
+		}
+	}
 	return dbs.key.verify(bs, &dbs.sig)
+}
+
+func (dbs *dhtBootstrap) checkFrom(from publicKey) bool {
+	if len(dbs.bhs) < 1 || !from.equal(dbs.bhs[len(dbs.bhs)-1].key) {
+		return false
+	}
+	return dbs.check()
 }
 
 /*
@@ -1115,6 +1162,10 @@ func (dbs *dhtBootstrap) getTeardown() *dhtTeardown {
 func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
 	out = append(out, dbs.sig[:]...)
 	out = append(out, dbs.bytesForSig()...)
+	for _, s := range dbs.bhs {
+		out = append(out, s.key[:]...)
+		out = append(out, s.sig[:]...)
+	}
 	return out, nil
 }
 
@@ -1126,11 +1177,21 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.root[:], &data) {
 		return wireDecodeError
-	} else if len(data) != 16 { // TODO? < 16, in case it's embedded in something?
+	} else if len(data) < 16 { // TODO? < 16, in case it's embedded in something?
 		return wireDecodeError
 	}
 	tmp.rootSeq = binary.BigEndian.Uint64(data[:8])
-	tmp.seq = binary.BigEndian.Uint64(data[8:])
+	tmp.seq = binary.BigEndian.Uint64(data[8:16])
+	data = data[16:]
+	for len(data) > 0 {
+		var s bootstrapHopSig
+		if !wireChopSlice(s.key[:], &data) {
+			return wireDecodeError
+		} else if !wireChopSlice(s.sig[:], &data) {
+			return wireDecodeError
+		}
+		tmp.bhs = append(tmp.bhs, s)
+	}
 	*dbs = tmp
 	return nil
 }
