@@ -137,15 +137,14 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 			t.parent = nil
 			t._fix()
 		}
-		/* TODO? clean up dinfos?
 		for _, dinfos := range t.dinfos {
 			for _, dinfo := range dinfos {
-				if dinfo.peer == p || (!dinfo.isOrphaned && dinfo.rest == p) {
-					t._teardown(p, dinfo.getTeardown())
+				if dinfo.peer == p {
+					dinfo.peer = nil
+					//t._teardown(p, dinfo.getTeardown())
 				}
 			}
 		}
-		*/
 		t.pathfinder._remove(p)
 	})
 }
