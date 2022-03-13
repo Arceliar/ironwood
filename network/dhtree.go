@@ -340,13 +340,13 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			}
 		}
 		/*
-				if mark != nil && bestInfo == info {
-					mark.key = info.key
-					mark.seq = info.seq
-				}
-				if mark != nil && mark.seq != 0 {
-		      panic(mark.seq)
-				}
+					if mark != nil && bestInfo == info {
+						mark.key = info.key
+						mark.seq = info.seq
+					}
+					if mark != nil && mark.seq != 0 {
+			      panic(mark.seq)
+					}
 		*/
 	}
 	// Update the best key and peer
@@ -493,23 +493,23 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 	return dbs
 }
 
-func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) (*dhtInfo, *peer) {
+func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo {
 	if !bootstrap.root.equal(t.self.root) || bootstrap.rootSeq != t.self.seq {
 		// Wrong root or rootSeq
-		return nil, nil
+		return nil
 	}
 	/* This is now checked by the peer actor instead
 	if !bootstrap.check() {
 		// Signature check failed... TODO do this at peer level instead
 		return nil
 	}
-	*/
 	source := bootstrap.key
 	next := t._dhtLookup(source, true, &bootstrap.mark)
 	if prev == nil && next == nil {
 		// This is our own bootstrap and we don't have anywhere to send it
-		return nil, nil
+		return nil
 	}
+	*/
 	dinfo := &dhtInfo{
 		dhtBootstrap: *bootstrap,
 		//key:     source,
@@ -520,6 +520,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) (*dhtInf
 		//rest: next,
 	}
 	for _, s := range bootstrap.bhs {
+		break // TODO use bhs to optimize peer selection (triangle elimination)
 		if prev != nil && dinfo.peer != prev {
 			break
 		}
@@ -551,7 +552,8 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) (*dhtInf
 					t.prev = nil
 				}
 			*/
-			return dfo, nil
+			_ = dfo
+			return nil //dfo
 		}
 		/*
 			if altInfo, isIn := dinfos[dinfo.dhtPathState]; isIn && altInfo.seq < dinfo.seq {
@@ -576,7 +578,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) (*dhtInf
 	}
 	if !t._dhtAdd(dinfo) {
 		// We failed to add the dinfo to the DHT for some reason
-		return nil, nil
+		return nil
 	}
 	// Setup timer for cleanup
 	dinfo.timer = time.AfterFunc(dhtTIMEOUT, func() {
@@ -598,7 +600,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) (*dhtInf
 			}
 		})
 	})
-	return dinfo, next
+	return dinfo
 }
 
 /*
@@ -649,7 +651,7 @@ func (t *dhtree) _replaceNext(dinfo *dhtInfo) bool {
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
-	if dinfo, next := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
+	if dinfo := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
 		if dinfo.peer == nil {
 			// sanity checks, this should only happen when setting up our prev
 			if !bootstrap.key.equal(t.core.crypto.publicKey) {
@@ -699,7 +701,8 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 				return
 			}
 		*/
-		if next != nil {
+		oldMark := bootstrap.mark
+		if next := t._dhtLookup(bootstrap.key, true, &bootstrap.mark); next != nil {
 			// TODO update bootstrap as needed
 			bhs := bootstrap.bhs
 			bootstrap.bhs = bootstrap.bhs[:0]
@@ -715,6 +718,9 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 			s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 			bootstrap.bhs = append(bootstrap.bhs, s)
 			next.sendBootstrap(t, bootstrap)
+		}
+		if oldMark != bootstrap.mark {
+			// TODO send a dhtBranch as needed
 		}
 		/*
 			if t._replaceNext(dinfo) {
