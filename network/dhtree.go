@@ -409,9 +409,15 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			doDHT(dinfo)
 		}
 	}
-	if mark != nil && bestInfo != nil {
-		mark.key = bestInfo.key
-		mark.seq = bestInfo.seq
+	if mark != nil {
+		if bestInfo != nil {
+			mark.key = bestInfo.key
+			mark.seq = bestInfo.seq
+		}
+		if treeLess(best, mark.key) || (bestInfo != nil && bestInfo.seq < mark.seq) {
+			// The best isn't good enough
+			bestPeer = nil
+		}
 	}
 	return bestPeer
 }
@@ -520,7 +526,6 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		//rest: next,
 	}
 	for _, s := range bootstrap.bhs {
-		break // TODO use bhs to optimize peer selection (triangle elimination)
 		if prev != nil && dinfo.peer != prev {
 			break
 		}
