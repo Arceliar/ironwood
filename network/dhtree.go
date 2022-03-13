@@ -324,7 +324,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 				return
 			}
 		}
-		if isBootstrap && !(info.root.equal(t.self.root) || info.rootSeq != t.self.seq) {
+		if isBootstrap && !(info.root.equal(t.self.root) && info.rootSeq == t.self.seq) {
 			return
 		}
 		doCheckedUpdate(info.key, info.peer, info) // updates if the source is better
