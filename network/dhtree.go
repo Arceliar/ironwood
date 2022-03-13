@@ -293,7 +293,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		case !isBootstrap && key.equal(dest) && !best.equal(dest):
 			fallthrough
 		case dhtOrdered(best, key, dest):
-			doUpdate(key, p, nil)
+			doUpdate(key, p, d)
 		}
 	}
 	// doAncestry updates based on the ancestry information in a treeInfo
@@ -320,7 +320,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		//	return
 		//}
 		if mark != nil {
-			if treeLess(info.key, mark.key) || info.seq < mark.seq {
+			if treeLess(info.key, mark.key) || (info.key.equal(mark.key) && info.seq < mark.seq) {
 				return
 			}
 		}
@@ -339,10 +339,15 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 				doUpdate(info.key, info.peer, info) // same source/root/rootSeq, but newer seq
 			}
 		}
-		if mark != nil && bestInfo == info {
-			mark.key = info.key
-			mark.seq = info.seq
-		}
+		/*
+				if mark != nil && bestInfo == info {
+					mark.key = info.key
+					mark.seq = info.seq
+				}
+				if mark != nil && mark.seq != 0 {
+		      panic(mark.seq)
+				}
+		*/
 	}
 	// Update the best key and peer
 	// First check if the current best (ourself) is an invalid next hop
@@ -403,6 +408,10 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		for _, dinfo := range dinfos {
 			doDHT(dinfo)
 		}
+	}
+	if mark != nil && bestInfo != nil {
+		mark.key = bestInfo.key
+		mark.seq = bestInfo.seq
 	}
 	return bestPeer
 }
@@ -496,7 +505,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) (*dhtInf
 	}
 	*/
 	source := bootstrap.key
-	next := t._dhtLookup(source, true, nil)
+	next := t._dhtLookup(source, true, &bootstrap.mark)
 	if prev == nil && next == nil {
 		// This is our own bootstrap and we don't have anywhere to send it
 		return nil, nil
@@ -1109,6 +1118,7 @@ type dhtBootstrap struct {
 	root    publicKey
 	rootSeq uint64
 	seq     uint64
+	mark    dhtWatermark
 	bhs     []bootstrapHopSig
 }
 
@@ -1162,6 +1172,10 @@ func (dbs *dhtBootstrap) getTeardown() *dhtTeardown {
 func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
 	out = append(out, dbs.sig[:]...)
 	out = append(out, dbs.bytesForSig()...)
+	var err error
+	if out, err = dbs.mark.encode(out); err != nil {
+		return nil, err
+	}
 	for _, s := range dbs.bhs {
 		out = append(out, s.key[:]...)
 		out = append(out, s.sig[:]...)
@@ -1183,6 +1197,9 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 	tmp.rootSeq = binary.BigEndian.Uint64(data[:8])
 	tmp.seq = binary.BigEndian.Uint64(data[8:16])
 	data = data[16:]
+	if !tmp.mark.chop(&data) {
+		return wireDecodeError
+	}
 	for len(data) > 0 {
 		var s bootstrapHopSig
 		if !wireChopSlice(s.key[:], &data) {
@@ -1218,6 +1235,14 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 	return nil
 }
 */
+
+/*************
+ * dhtBranch *
+ *************/
+
+type dhtBranch struct {
+	dhtBootstrap
+}
 
 /*****************
  * dhtSetupToken *
@@ -1276,6 +1301,39 @@ type dhtWatermark struct {
 	seq uint64
 }
 
+func (m *dhtWatermark) encode(out []byte) ([]byte, error) {
+	out = append(out, m.key[:]...)
+	seq := make([]byte, 8)
+	binary.BigEndian.PutUint64(seq, m.seq)
+	out = append(out, seq...)
+	return out, nil
+}
+
+func (m *dhtWatermark) decode(data []byte) error {
+	var tmp dhtWatermark
+	if !wireChopSlice(tmp.key[:], &data) {
+		return wireDecodeError
+	}
+	if len(data) < 8 {
+		return wireDecodeError
+	}
+	tmp.seq = binary.BigEndian.Uint64(data[:8])
+	data = data[8:]
+	*m = tmp
+	return nil
+}
+
+func (m *dhtWatermark) chop(ptr *[]byte) bool {
+	if ptr == nil {
+		return false
+	}
+	if err := m.decode(*ptr); err != nil {
+		return false
+	}
+	*ptr = (*ptr)[len(m.key)+8:]
+	return true
+}
+
 type baseTraffic struct {
 	source  publicKey
 	dest    publicKey
@@ -1321,15 +1379,9 @@ func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
 
 func (t *dhtTraffic) decode(data []byte) error {
 	var tmp dhtTraffic
-	if !wireChopSlice(tmp.mark.key[:], &data) {
+	if !tmp.mark.chop(&data) {
 		return wireDecodeError
-	}
-	if len(data) < 8 {
-		return wireDecodeError
-	}
-	tmp.mark.seq = binary.BigEndian.Uint64(data[:8])
-	data = data[8:]
-	if err := tmp.baseTraffic.decode(data); err != nil {
+	} else if err := tmp.baseTraffic.decode(data); err != nil {
 		return err
 	}
 	*t = tmp

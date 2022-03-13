@@ -58,7 +58,7 @@ func TestTwoNodes(t *testing.T) {
 		break
 	}
 	timer.Stop()
-	timer = time.NewTimer(13 * time.Second)
+	timer = time.NewTimer(30 * time.Second)
 	addrA := a.LocalAddr()
 	addrB := b.LocalAddr()
 	done := make(chan struct{})
@@ -189,7 +189,7 @@ func TestLineNetwork(t *testing.T) {
 					}
 				}
 			}()
-			timer := time.NewTimer(13 * time.Second)
+			timer := time.NewTimer(30 * time.Second)
 			select {
 			case <-timer.C:
 				func() {
