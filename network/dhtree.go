@@ -706,56 +706,37 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 				return
 			}
 		*/
-		oldMark := bootstrap.mark
-		var updatedBHS bool
-		if next := t._dhtLookup(bootstrap.key, true, &bootstrap.mark); next != nil || oldMark != bootstrap.mark {
-			// TODO update bootstrap as needed
-			bhs := bootstrap.bhs
-			bootstrap.bhs = bootstrap.bhs[:0]
-			for _, s := range bhs {
-				if dinfo.peer == nil || dinfo.peer.key != s.key {
-					continue
-				}
-				bootstrap.bhs = append(bootstrap.bhs, s)
-				break
+		bhs := bootstrap.bhs
+		bootstrap.bhs = bootstrap.bhs[:0]
+		for _, s := range bhs {
+			if dinfo.peer == nil || dinfo.peer.key != s.key {
+				continue
 			}
-			var s bootstrapHopSig
-			s.key = t.core.crypto.publicKey
-			s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 			bootstrap.bhs = append(bootstrap.bhs, s)
+			break
+		}
+		var s bootstrapHopSig
+		s.key = t.core.crypto.publicKey
+		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
+		bootstrap.bhs = append(bootstrap.bhs, s)
+		oldMark := bootstrap.mark
+		if next := t._dhtLookup(bootstrap.key, true, &bootstrap.mark); next != nil || oldMark != bootstrap.mark {
 			next.sendBootstrap(t, bootstrap)
-			updatedBHS = true
+		}
+		branch := dhtBranch{*bootstrap}
+		more := make(map[*peer]struct{})
+		k := dinfo.getMapKey()
+		for _, dfo := range t.dinfos[k] {
+			if dfo.peer == nil || dfo.peer == prev {
+				continue
+			}
+			more[dfo.peer] = struct{}{}
 		}
 		if oldMark != bootstrap.mark {
-			// TODO send a dhtBranch as needed
-			// FIXME bootstrap.bhs may still needs updating in some cases, but the way this is done is messy / easy to accidentally make not thread safe
 			var newMark dhtWatermark
 			if next := t._dhtLookup(bootstrap.mark.key, true, &newMark); next != nil {
-				if !updatedBHS {
-					bhs := bootstrap.bhs
-					bootstrap.bhs = bootstrap.bhs[:0]
-					for _, s := range bhs {
-						if dinfo.peer == nil || dinfo.peer.key != s.key {
-							continue
-						}
-						bootstrap.bhs = append(bootstrap.bhs, s)
-						break
-					}
-					var s bootstrapHopSig
-					s.key = t.core.crypto.publicKey
-					s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
-					bootstrap.bhs = append(bootstrap.bhs, s)
-				}
-				branch := dhtBranch{*bootstrap}
-				next.sendBranch(t, &branch)
-				more := make(map[*peer]struct{})
-				k := dinfo.getMapKey()
-				for _, dfo := range t.dinfos[k] {
-					if dfo.peer == nil || dfo.peer == prev {
-						continue
-					}
-					more[dfo.peer] = struct{}{}
-				}
+				//branch := dhtBranch{*bootstrap}
+				//next.sendBranch(t, &branch)
 				k.key = newMark.key
 				for _, dfo := range t.dinfos[k] {
 					if dfo.peer == nil || dfo.peer == prev {
@@ -763,11 +744,11 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 					}
 					more[dfo.peer] = struct{}{}
 				}
-				for p := range more {
-					p.sendBranch(t, &branch)
-				}
 				//panic("DEBUG0")
 			}
+		}
+		for p := range more {
+			p.sendBranch(t, &branch)
 		}
 		/*
 			if t._replaceNext(dinfo) {
@@ -818,63 +799,45 @@ func (t *dhtree) _handleBranch(prev *peer, branch *dhtBranch) {
 				}
 			}
 		*/
+		bootstrap := &branch.dhtBootstrap
+		bhs := bootstrap.bhs
+		bootstrap.bhs = bootstrap.bhs[:0]
+		for _, s := range bhs {
+			if dinfo.peer == nil || dinfo.peer.key != s.key {
+				continue
+			}
+			bootstrap.bhs = append(bootstrap.bhs, s)
+			break
+		}
+		var s bootstrapHopSig
+		s.key = t.core.crypto.publicKey
+		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
+		bootstrap.bhs = append(bootstrap.bhs, s)
 		oldMark := branch.mark
+		more := make(map[*peer]struct{})
+		k := dinfo.getMapKey()
 		if next := t._dhtLookup(branch.key, true, &branch.mark); !branch.mark.key.equal(oldMark.key) && next != nil {
 			// branch.mark.key is better than the best thing we've seen so far
-			bootstrap := &branch.dhtBootstrap
-			bhs := bootstrap.bhs
-			bootstrap.bhs = bootstrap.bhs[:0]
-			for _, s := range bhs {
-				if dinfo.peer == nil || dinfo.peer.key != s.key {
+			next.sendBootstrap(t, bootstrap)
+		}
+		for _, dfo := range t.dinfos[k] {
+			if dfo.peer == nil || dfo.peer == prev {
+				continue
+			}
+			more[dfo.peer] = struct{}{}
+		}
+		var newMark dhtWatermark
+		if next := t._dhtLookup(branch.mark.key, true, &newMark); next != nil {
+			k.key = newMark.key
+			for _, dfo := range t.dinfos[k] {
+				if dfo.peer == nil || dfo.peer == prev {
 					continue
 				}
-				bootstrap.bhs = append(bootstrap.bhs, s)
-				break
+				more[dfo.peer] = struct{}{}
 			}
-			var s bootstrapHopSig
-			s.key = t.core.crypto.publicKey
-			s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
-			bootstrap.bhs = append(bootstrap.bhs, s)
-			next.sendBootstrap(t, bootstrap)
-			//panic("DEBUG1")
-		} else if oldMark.key.equal(branch.mark.key) {
-			// Forward the branch
-			var newMark dhtWatermark
-			if next := t._dhtLookup(branch.mark.key, true, &newMark); next != nil {
-				bootstrap := &branch.dhtBootstrap
-				bhs := bootstrap.bhs
-				bootstrap.bhs = bootstrap.bhs[:0]
-				for _, s := range bhs {
-					if dinfo.peer == nil || dinfo.peer.key != s.key {
-						continue
-					}
-					bootstrap.bhs = append(bootstrap.bhs, s)
-					break
-				}
-				var s bootstrapHopSig
-				s.key = t.core.crypto.publicKey
-				s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
-				bootstrap.bhs = append(bootstrap.bhs, s)
-				next.sendBranch(t, branch)
-				more := make(map[*peer]struct{})
-				k := dinfo.getMapKey()
-				for _, dfo := range t.dinfos[k] {
-					if dfo.peer == nil || dfo.peer == prev {
-						continue
-					}
-					more[dfo.peer] = struct{}{}
-				}
-				k.key = newMark.key
-				for _, dfo := range t.dinfos[k] {
-					if dfo.peer == nil || dfo.peer == prev {
-						continue
-					}
-					more[dfo.peer] = struct{}{}
-				}
-				for p := range more {
-					p.sendBranch(t, branch)
-				}
-			}
+		}
+		for p := range more {
+			p.sendBranch(t, branch)
 		}
 	}
 }
