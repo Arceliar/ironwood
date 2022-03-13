@@ -729,7 +729,8 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		if oldMark != bootstrap.mark {
 			// TODO send a dhtBranch as needed
 			// FIXME bootstrap.bhs may still needs updating in some cases, but the way this is done is messy / easy to accidentally make not thread safe
-			if next := t._dhtLookup(bootstrap.mark.key, true, nil); next != nil {
+			var newMark dhtWatermark
+			if next := t._dhtLookup(bootstrap.mark.key, true, &newMark); next != nil {
 				if !updatedBHS {
 					bhs := bootstrap.bhs
 					bootstrap.bhs = bootstrap.bhs[:0]
@@ -747,6 +748,25 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 				}
 				branch := dhtBranch{*bootstrap}
 				next.sendBranch(t, &branch)
+				more := make(map[*peer]struct{})
+				k := dinfo.getMapKey()
+				k.key = newMark.key
+				for _, dfo := range t.dinfos[k] {
+					if dfo.peer == nil || dfo.peer == prev {
+						continue
+					}
+					more[dfo.peer] = struct{}{}
+				}
+				k.key = branch.key
+				for _, dfo := range t.dinfos[k] {
+					if dfo.peer == nil || dfo.peer == prev {
+						continue
+					}
+					more[dfo.peer] = struct{}{}
+				}
+				for p := range more {
+					p.sendBranch(t, &branch)
+				}
 				//panic("DEBUG0")
 			}
 		}
@@ -820,7 +840,8 @@ func (t *dhtree) _handleBranch(prev *peer, branch *dhtBranch) {
 			//panic("DEBUG1")
 		} else if oldMark.key.equal(branch.mark.key) {
 			// Forward the branch
-			if next := t._dhtLookup(branch.mark.key, true, nil); next != nil {
+			var newMark dhtWatermark
+			if next := t._dhtLookup(branch.mark.key, true, &newMark); next != nil {
 				bootstrap := &branch.dhtBootstrap
 				bhs := bootstrap.bhs
 				bootstrap.bhs = bootstrap.bhs[:0]
@@ -837,6 +858,25 @@ func (t *dhtree) _handleBranch(prev *peer, branch *dhtBranch) {
 				bootstrap.bhs = append(bootstrap.bhs, s)
 				next.sendBranch(t, branch)
 				//panic("DEBUG2")
+				more := make(map[*peer]struct{})
+				k := dinfo.getMapKey()
+				k.key = newMark.key
+				for _, dfo := range t.dinfos[k] {
+					if dfo.peer == nil || dfo.peer == prev {
+						continue
+					}
+					more[dfo.peer] = struct{}{}
+				}
+				k.key = branch.key
+				for _, dfo := range t.dinfos[k] {
+					if dfo.peer == nil || dfo.peer == prev {
+						continue
+					}
+					more[dfo.peer] = struct{}{}
+				}
+				for p := range more {
+					p.sendBranch(t, branch)
+				}
 			}
 		}
 	}
