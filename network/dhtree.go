@@ -750,14 +750,13 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 				next.sendBranch(t, &branch)
 				more := make(map[*peer]struct{})
 				k := dinfo.getMapKey()
-				k.key = newMark.key
 				for _, dfo := range t.dinfos[k] {
 					if dfo.peer == nil || dfo.peer == prev {
 						continue
 					}
 					more[dfo.peer] = struct{}{}
 				}
-				k.key = branch.key
+				k.key = newMark.key
 				for _, dfo := range t.dinfos[k] {
 					if dfo.peer == nil || dfo.peer == prev {
 						continue
@@ -857,17 +856,15 @@ func (t *dhtree) _handleBranch(prev *peer, branch *dhtBranch) {
 				s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 				bootstrap.bhs = append(bootstrap.bhs, s)
 				next.sendBranch(t, branch)
-				//panic("DEBUG2")
 				more := make(map[*peer]struct{})
 				k := dinfo.getMapKey()
-				k.key = newMark.key
 				for _, dfo := range t.dinfos[k] {
 					if dfo.peer == nil || dfo.peer == prev {
 						continue
 					}
 					more[dfo.peer] = struct{}{}
 				}
-				k.key = branch.key
+				k.key = newMark.key
 				for _, dfo := range t.dinfos[k] {
 					if dfo.peer == nil || dfo.peer == prev {
 						continue
