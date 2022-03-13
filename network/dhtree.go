@@ -707,7 +707,8 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 			}
 		*/
 		oldMark := bootstrap.mark
-		if next := t._dhtLookup(bootstrap.key, true, &bootstrap.mark); next != nil {
+		var updatedBHS bool
+		if next := t._dhtLookup(bootstrap.key, true, &bootstrap.mark); next != nil || oldMark != bootstrap.mark {
 			// TODO update bootstrap as needed
 			bhs := bootstrap.bhs
 			bootstrap.bhs = bootstrap.bhs[:0]
@@ -723,9 +724,31 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 			s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 			bootstrap.bhs = append(bootstrap.bhs, s)
 			next.sendBootstrap(t, bootstrap)
+			updatedBHS = true
 		}
 		if oldMark != bootstrap.mark {
 			// TODO send a dhtBranch as needed
+			// FIXME bootstrap.bhs may still needs updating in some cases, but the way this is done is messy / easy to accidentally make not thread safe
+			if next := t._dhtLookup(bootstrap.mark.key, true, nil); next != nil {
+				if !updatedBHS {
+					bhs := bootstrap.bhs
+					bootstrap.bhs = bootstrap.bhs[:0]
+					for _, s := range bhs {
+						if dinfo.peer == nil || dinfo.peer.key != s.key {
+							continue
+						}
+						bootstrap.bhs = append(bootstrap.bhs, s)
+						break
+					}
+					var s bootstrapHopSig
+					s.key = t.core.crypto.publicKey
+					s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
+					bootstrap.bhs = append(bootstrap.bhs, s)
+				}
+				branch := dhtBranch{*bootstrap}
+				next.sendBranch(t, &branch)
+				//panic("DEBUG0")
+			}
 		}
 		/*
 			if t._replaceNext(dinfo) {
@@ -761,6 +784,72 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 		t._handleBootstrap(prev, bootstrap)
 	})
 }
+
+///// TODO
+
+func (t *dhtree) _handleBranch(prev *peer, branch *dhtBranch) {
+	if dinfo := t._addBootstrapPath(&branch.dhtBootstrap, prev); dinfo != nil {
+		/*
+			if dinfo.peer == nil {
+				// sanity checks, this should only happen when setting up our prev
+				if !branch.key.equal(t.core.crypto.publicKey) {
+					panic("wrong key")
+				} else if branch.seq != t.seq {
+					panic("wrong seq")
+				}
+			}
+		*/
+		oldMark := branch.mark
+		if next := t._dhtLookup(branch.key, true, &branch.mark); !branch.mark.key.equal(oldMark.key) && next != nil {
+			// branch.mark.key is better than the best thing we've seen so far
+			bootstrap := &branch.dhtBootstrap
+			bhs := bootstrap.bhs
+			bootstrap.bhs = bootstrap.bhs[:0]
+			for _, s := range bhs {
+				if dinfo.peer == nil || dinfo.peer.key != s.key {
+					continue
+				}
+				bootstrap.bhs = append(bootstrap.bhs, s)
+				break
+			}
+			var s bootstrapHopSig
+			s.key = t.core.crypto.publicKey
+			s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
+			bootstrap.bhs = append(bootstrap.bhs, s)
+			next.sendBootstrap(t, bootstrap)
+			//panic("DEBUG1")
+		} else if oldMark.key.equal(branch.mark.key) {
+			// Forward the branch
+			if next := t._dhtLookup(branch.mark.key, true, nil); next != nil {
+				bootstrap := &branch.dhtBootstrap
+				bhs := bootstrap.bhs
+				bootstrap.bhs = bootstrap.bhs[:0]
+				for _, s := range bhs {
+					if dinfo.peer == nil || dinfo.peer.key != s.key {
+						continue
+					}
+					bootstrap.bhs = append(bootstrap.bhs, s)
+					break
+				}
+				var s bootstrapHopSig
+				s.key = t.core.crypto.publicKey
+				s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
+				bootstrap.bhs = append(bootstrap.bhs, s)
+				next.sendBranch(t, branch)
+				//panic("DEBUG2")
+			}
+		}
+	}
+}
+
+func (t *dhtree) handleBranch(from phony.Actor, prev *peer, branch *dhtBranch) {
+	//return // DEBUG branch stuff disabled
+	t.Act(from, func() {
+		t._handleBranch(prev, branch)
+	})
+}
+
+///// END TODO
 
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point

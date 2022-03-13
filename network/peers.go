@@ -209,6 +209,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
 		return p._handleBootstrap(bs[1:])
+	case wireProtoDHTBranch:
+		return p._handleBranch(bs[1:])
 	case wireProtoPathNotify:
 		return p._handlePathNotify(bs[1:])
 	case wireProtoPathRequest:
@@ -268,6 +270,24 @@ func (p *peer) _handleBootstrap(bs []byte) error {
 func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoDHTBootstrap, bootstrap)
+	})
+}
+
+func (p *peer) _handleBranch(bs []byte) error {
+	branch := new(dhtBranch)
+	if err := branch.decode(bs); err != nil {
+		return err
+	}
+	if !branch.check() {
+		return errors.New("invalid branch")
+	}
+	p.peers.core.dhtree.handleBranch(p, p, branch)
+	return nil
+}
+
+func (p *peer) sendBranch(from phony.Actor, branch *dhtBranch) {
+	p.Act(from, func() {
+		p.writer.sendPacket(wireProtoDHTBranch, branch)
 	})
 }
 
