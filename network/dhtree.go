@@ -652,6 +652,36 @@ func (t *dhtree) _replaceNext(dinfo *dhtInfo) bool {
 }
 */
 
+// _getNexts returns a set of all next hops that would route to exactly the given key.
+func (t *dhtree) _getNexts(key publicKey) map[*peer]struct{} {
+	nexts := make(map[*peer]struct{})
+	for p, tinfo := range t.tinfos {
+		break // TODO? forward over the tree if it makes sense to do so?
+		if tinfo.root.equal(key) {
+			nexts[p] = struct{}{}
+			continue
+		}
+		for _, hop := range tinfo.hops {
+			if hop.next.equal(key) {
+				nexts[p] = struct{}{}
+				break
+			}
+		}
+	}
+	mk := dhtMapKey{
+		key:     key,
+		root:    t.self.root,
+		rootSeq: t.self.seq,
+	}
+	dinfos := t.dinfos[mk]
+	for _, dinfo := range dinfos {
+		if dinfo.peer != nil {
+			nexts[dinfo.peer] = struct{}{}
+		}
+	}
+	return nexts
+}
+
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
@@ -720,34 +750,40 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 		bootstrap.bhs = append(bootstrap.bhs, s)
 		oldMark := bootstrap.mark
+		sentTo := make(map[*peer]struct{})
+		if prev != nil {
+			sentTo[prev] = struct{}{}
+		}
 		if next := t._dhtLookup(bootstrap.key, true, &bootstrap.mark); next != nil || oldMark != bootstrap.mark {
 			next.sendBootstrap(t, bootstrap)
+			sentTo[next] = struct{}{}
+			for p := range t._getNexts(bootstrap.mark.key) {
+				if _, isIn := sentTo[p]; isIn {
+					continue
+				}
+				sentTo[p] = struct{}{}
+				p.sendBootstrap(t, bootstrap)
+			}
 		}
 		branch := dhtBranch{*bootstrap}
-		more := make(map[*peer]struct{})
-		k := dinfo.getMapKey()
-		for _, dfo := range t.dinfos[k] {
-			if dfo.peer == nil || dfo.peer == prev {
-				continue
-			}
-			more[dfo.peer] = struct{}{}
-		}
+		// TODO? set a bootstrap watermark for the ones sent to bootstrap.key, or otherwise limit how they can route?
+		// Ideally yes, but not sure if that's anycast safe, needs further investigation.
+		more := t._getNexts(bootstrap.key)
 		if oldMark != bootstrap.mark {
 			var newMark dhtWatermark
 			if next := t._dhtLookup(bootstrap.mark.key, true, &newMark); next != nil {
 				//branch := dhtBranch{*bootstrap}
 				//next.sendBranch(t, &branch)
-				k.key = newMark.key
-				for _, dfo := range t.dinfos[k] {
-					if dfo.peer == nil || dfo.peer == prev {
-						continue
-					}
-					more[dfo.peer] = struct{}{}
+				for p := range t._getNexts(newMark.key) {
+					more[p] = struct{}{}
 				}
-				//panic("DEBUG0")
 			}
 		}
 		for p := range more {
+			if _, isIn := sentTo[p]; isIn {
+				continue
+			}
+			// TODO also skip if p == anywhere we forwarded the full bootstrap to?
 			p.sendBranch(t, &branch)
 		}
 		/*
@@ -814,29 +850,33 @@ func (t *dhtree) _handleBranch(prev *peer, branch *dhtBranch) {
 		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 		bootstrap.bhs = append(bootstrap.bhs, s)
 		oldMark := branch.mark
-		more := make(map[*peer]struct{})
-		k := dinfo.getMapKey()
+		sentTo := make(map[*peer]struct{})
+		if prev != nil {
+			sentTo[prev] = struct{}{}
+		}
 		if next := t._dhtLookup(branch.key, true, &branch.mark); !branch.mark.key.equal(oldMark.key) && next != nil {
 			// branch.mark.key is better than the best thing we've seen so far
 			next.sendBootstrap(t, bootstrap)
-		}
-		for _, dfo := range t.dinfos[k] {
-			if dfo.peer == nil || dfo.peer == prev {
-				continue
-			}
-			more[dfo.peer] = struct{}{}
-		}
-		var newMark dhtWatermark
-		if next := t._dhtLookup(branch.mark.key, true, &newMark); next != nil {
-			k.key = newMark.key
-			for _, dfo := range t.dinfos[k] {
-				if dfo.peer == nil || dfo.peer == prev {
+			sentTo[next] = struct{}{}
+			for p := range t._getNexts(bootstrap.mark.key) {
+				if _, isIn := sentTo[p]; isIn {
 					continue
 				}
-				more[dfo.peer] = struct{}{}
+				sentTo[p] = struct{}{}
+				p.sendBootstrap(t, bootstrap)
+			}
+		}
+		more := t._getNexts(branch.mark.key)
+		var newMark dhtWatermark
+		if next := t._dhtLookup(branch.mark.key, true, &newMark); next != nil {
+			for p := range t._getNexts(newMark.key) {
+				more[p] = struct{}{}
 			}
 		}
 		for p := range more {
+			if _, isIn := sentTo[p]; isIn {
+				continue
+			}
 			p.sendBranch(t, branch)
 		}
 	}
