@@ -750,41 +750,14 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 		bootstrap.bhs = append(bootstrap.bhs, s)
 		oldMark := bootstrap.mark
-		sentTo := make(map[*peer]struct{})
-		if prev != nil {
-			sentTo[prev] = struct{}{}
-		}
 		if next := t._dhtLookup(bootstrap.key, true, &bootstrap.mark); next != nil || oldMark != bootstrap.mark {
 			next.sendBootstrap(t, bootstrap)
-			sentTo[next] = struct{}{}
 			for p := range t._getNexts(bootstrap.mark.key) {
-				if _, isIn := sentTo[p]; isIn {
+				if p == prev || p == next {
 					continue
 				}
-				sentTo[p] = struct{}{}
 				p.sendBootstrap(t, bootstrap)
 			}
-		}
-		branch := dhtBranch{*bootstrap}
-		// TODO? set a bootstrap watermark for the ones sent to bootstrap.key, or otherwise limit how they can route?
-		// Ideally yes, but not sure if that's anycast safe, needs further investigation.
-		more := t._getNexts(bootstrap.key)
-		if oldMark != bootstrap.mark {
-			var newMark dhtWatermark
-			if next := t._dhtLookup(bootstrap.mark.key, true, &newMark); next != nil {
-				//branch := dhtBranch{*bootstrap}
-				//next.sendBranch(t, &branch)
-				for p := range t._getNexts(newMark.key) {
-					more[p] = struct{}{}
-				}
-			}
-		}
-		for p := range more {
-			if _, isIn := sentTo[p]; isIn {
-				continue
-			}
-			// TODO also skip if p == anywhere we forwarded the full bootstrap to?
-			p.sendBranch(t, &branch)
 		}
 		/*
 			if t._replaceNext(dinfo) {
@@ -820,76 +793,6 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 		t._handleBootstrap(prev, bootstrap)
 	})
 }
-
-///// TODO
-
-func (t *dhtree) _handleBranch(prev *peer, branch *dhtBranch) {
-	if dinfo := t._addBootstrapPath(&branch.dhtBootstrap, prev); dinfo != nil {
-		/*
-			if dinfo.peer == nil {
-				// sanity checks, this should only happen when setting up our prev
-				if !branch.key.equal(t.core.crypto.publicKey) {
-					panic("wrong key")
-				} else if branch.seq != t.seq {
-					panic("wrong seq")
-				}
-			}
-		*/
-		bootstrap := &branch.dhtBootstrap
-		bhs := bootstrap.bhs
-		bootstrap.bhs = bootstrap.bhs[:0]
-		for _, s := range bhs {
-			if dinfo.peer == nil || dinfo.peer.key != s.key {
-				continue
-			}
-			bootstrap.bhs = append(bootstrap.bhs, s)
-			break
-		}
-		var s bootstrapHopSig
-		s.key = t.core.crypto.publicKey
-		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
-		bootstrap.bhs = append(bootstrap.bhs, s)
-		oldMark := branch.mark
-		sentTo := make(map[*peer]struct{})
-		if prev != nil {
-			sentTo[prev] = struct{}{}
-		}
-		if next := t._dhtLookup(branch.key, true, &branch.mark); !branch.mark.key.equal(oldMark.key) && next != nil {
-			// branch.mark.key is better than the best thing we've seen so far
-			next.sendBootstrap(t, bootstrap)
-			sentTo[next] = struct{}{}
-			for p := range t._getNexts(bootstrap.mark.key) {
-				if _, isIn := sentTo[p]; isIn {
-					continue
-				}
-				sentTo[p] = struct{}{}
-				p.sendBootstrap(t, bootstrap)
-			}
-		}
-		more := t._getNexts(branch.mark.key)
-		var newMark dhtWatermark
-		if next := t._dhtLookup(branch.mark.key, true, &newMark); next != nil {
-			for p := range t._getNexts(newMark.key) {
-				more[p] = struct{}{}
-			}
-		}
-		for p := range more {
-			if _, isIn := sentTo[p]; isIn {
-				continue
-			}
-			p.sendBranch(t, branch)
-		}
-	}
-}
-
-func (t *dhtree) handleBranch(from phony.Actor, prev *peer, branch *dhtBranch) {
-	//return // DEBUG branch stuff disabled
-	t.Act(from, func() {
-		t._handleBranch(prev, branch)
-	})
-}
-
-///// END TODO
 
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
@@ -1375,14 +1278,6 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 	return nil
 }
 */
-
-/*************
- * dhtBranch *
- *************/
-
-type dhtBranch struct {
-	dhtBootstrap
-}
 
 /*****************
  * dhtSetupToken *
