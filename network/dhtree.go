@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	//"fmt"
+	"math/big"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -779,6 +780,28 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 			}
 			p.sendBootstrap(t, bootstrap)
 			//sentTo[p] = struct{}{}
+		}
+		// Also send to 1/2 key, as a way to break out of subnets
+		// TODO make sure this really works, skip if it does not
+		target := big.NewInt(0)
+		target.SetBytes(bootstrap.key[:])
+		two := big.NewInt(2)
+		target.Div(target, two)
+		var targetKey publicKey
+		target.FillBytes(targetKey[:])
+		var newMark dhtWatermark
+		if next := t._dhtLookup(targetKey, true, &newMark); next != nil {
+			if _, isIn := sentTo[next]; !isIn {
+				next.sendBootstrap(t, bootstrap)
+				sentTo[next] = struct{}{}
+			}
+		}
+		for p := range t._getNexts(newMark.key) {
+			if _, isIn := sentTo[p]; isIn {
+				continue
+			}
+			p.sendBootstrap(t, bootstrap)
+			sentTo[p] = struct{}{}
 		}
 		/*
 			if t._replaceNext(dinfo) {
