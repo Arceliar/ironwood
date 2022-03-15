@@ -16,6 +16,7 @@ const (
 	dhtWAIT      = time.Second      // Should be less than dhtANNOUNCE
 	dhtANNOUNCE  = 2 * time.Second
 	dhtTIMEOUT   = 2*dhtANNOUNCE + time.Second
+	dhtCLEANUP   = 2 * dhtTIMEOUT
 )
 
 /**********
@@ -319,6 +320,9 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		//if !info.isActive {
 		//	return
 		//}
+		if isBootstrap && time.Since(info.time) > dhtTIMEOUT {
+			return
+		}
 		if mark != nil {
 			if treeLess(info.key, mark.key) || (info.key.equal(mark.key) && info.seq < mark.seq) {
 				return
@@ -523,6 +527,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		//root:    bootstrap.root,
 		//rootSeq: bootstrap.rootSeq,
 		peer: prev,
+		time: time.Now(),
 		//rest: next,
 	}
 	for _, s := range bootstrap.bhs {
@@ -586,7 +591,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		return nil
 	}
 	// Setup timer for cleanup
-	dinfo.timer = time.AfterFunc(dhtTIMEOUT, func() {
+	dinfo.timer = time.AfterFunc(dhtCLEANUP, func() {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
 			if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
@@ -675,6 +680,9 @@ func (t *dhtree) _getNexts(key publicKey) map[*peer]struct{} {
 	}
 	dinfos := t.dinfos[mk]
 	for _, dinfo := range dinfos {
+		if time.Since(dinfo.time) > dhtTIMEOUT {
+			continue
+		}
 		if dinfo.peer != nil {
 			nexts[dinfo.peer] = struct{}{}
 		}
@@ -749,15 +757,28 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		s.key = t.core.crypto.publicKey
 		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 		bootstrap.bhs = append(bootstrap.bhs, s)
-		oldMark := bootstrap.mark
-		if next := t._dhtLookup(bootstrap.key, true, &bootstrap.mark); next != nil || oldMark != bootstrap.mark {
+		sentTo := make(map[*peer]struct{})
+		sentTo[prev] = struct{}{}
+		var mark dhtWatermark
+		next := t._dhtLookup(bootstrap.key, true, &mark)
+		if next != nil {
 			next.sendBootstrap(t, bootstrap)
-			for p := range t._getNexts(bootstrap.mark.key) {
-				if p == prev || p == next {
-					continue
-				}
-				p.sendBootstrap(t, bootstrap)
+			sentTo[next] = struct{}{}
+		}
+		// TODO? Only do the following if next != nil?
+		for p := range t._getNexts(mark.key) {
+			if _, isIn := sentTo[p]; isIn {
+				continue
 			}
+			p.sendBootstrap(t, bootstrap)
+			sentTo[p] = struct{}{}
+		}
+		for p := range t._getNexts(bootstrap.key) {
+			if _, isIn := sentTo[p]; isIn {
+				continue
+			}
+			p.sendBootstrap(t, bootstrap)
+			//sentTo[p] = struct{}{}
 		}
 		/*
 			if t._replaceNext(dinfo) {
@@ -1114,6 +1135,7 @@ type dhtInfo struct {
 	//rest *peer
 	//root    publicKey
 	//rootSeq uint64
+	time  time.Time
 	timer *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
 	//dhtPathState
 }
@@ -1161,7 +1183,6 @@ type dhtBootstrap struct {
 	root    publicKey
 	rootSeq uint64
 	seq     uint64
-	mark    dhtWatermark
 	bhs     []bootstrapHopSig
 }
 
@@ -1215,10 +1236,6 @@ func (dbs *dhtBootstrap) getTeardown() *dhtTeardown {
 func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
 	out = append(out, dbs.sig[:]...)
 	out = append(out, dbs.bytesForSig()...)
-	var err error
-	if out, err = dbs.mark.encode(out); err != nil {
-		return nil, err
-	}
 	for _, s := range dbs.bhs {
 		out = append(out, s.key[:]...)
 		out = append(out, s.sig[:]...)
@@ -1240,9 +1257,6 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 	tmp.rootSeq = binary.BigEndian.Uint64(data[:8])
 	tmp.seq = binary.BigEndian.Uint64(data[8:16])
 	data = data[16:]
-	if !tmp.mark.chop(&data) {
-		return wireDecodeError
-	}
 	for len(data) > 0 {
 		var s bootstrapHopSig
 		if !wireChopSlice(s.key[:], &data) {
