@@ -3,8 +3,6 @@ package network
 import (
 	"crypto/rand"
 	"encoding/binary"
-	//"fmt"
-	"math/big"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -762,73 +760,37 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		sentTo[prev] = struct{}{}
 		var mark dhtWatermark
 		next := t._dhtLookup(bootstrap.key, true, &mark)
-		if next != nil {
+		if _, isIn := sentTo[next]; !isIn && next != nil {
 			next.sendBootstrap(t, bootstrap)
 			sentTo[next] = struct{}{}
+			for p := range t._getNexts(mark.key) {
+				// FIXME this is wrong, we still need to send this even if next == nil (at least sometimes...)
+				if _, isIn := sentTo[p]; isIn {
+					continue
+				}
+				p.sendBootstrap(t, bootstrap)
+				sentTo[p] = struct{}{}
+			}
 		}
 		// TODO? Only do the following if next != nil?
-		for p := range t._getNexts(mark.key) {
-			if _, isIn := sentTo[p]; isIn {
-				continue
+		// TODO+FIXME do something with mark.seq, in case we have only older paths to this key (which we should avoid...?)
+		/*
+			for p := range t._getNexts(bootstrap.mark.key) {
+				if _, isIn := sentTo[p]; isIn {
+					continue
+				}
+				p.sendBootstrap(t, bootstrap)
+				sentTo[p] = struct{}{}
 			}
-			p.sendBootstrap(t, bootstrap)
-			sentTo[p] = struct{}{}
-		}
+		*/
 		for p := range t._getNexts(bootstrap.key) {
 			if _, isIn := sentTo[p]; isIn {
 				continue
 			}
 			p.sendBootstrap(t, bootstrap)
-			//sentTo[p] = struct{}{}
-		}
-		// Also send to 1/2 key, as a way to break out of subnets
-		// TODO make sure this really works, skip if it does not
-		target := big.NewInt(0)
-		target.SetBytes(bootstrap.key[:])
-		two := big.NewInt(2)
-		target.Div(target, two)
-		var targetKey publicKey
-		target.FillBytes(targetKey[:])
-		var newMark dhtWatermark
-		if next := t._dhtLookup(targetKey, true, &newMark); next != nil {
-			if _, isIn := sentTo[next]; !isIn {
-				next.sendBootstrap(t, bootstrap)
-				sentTo[next] = struct{}{}
-			}
-		}
-		for p := range t._getNexts(newMark.key) {
-			if _, isIn := sentTo[p]; isIn {
-				continue
-			}
-			p.sendBootstrap(t, bootstrap)
 			sentTo[p] = struct{}{}
 		}
-		/*
-			if t._replaceNext(dinfo) {
-				ack := new(dhtBootstrapAck)
-				ack.bootstrap = *bootstrap
-				ack.response = *t._getToken(bootstrap.key)
-				t._handleBootstrapAck(ack) // TODO FIXME enable this
-			}
-		*/
-	} else if prev != nil {
-		//prev.sendTeardown(t, bootstrap.getTeardown())
 	}
-	/*
-		source := bootstrap.label.key
-		if next := t._dhtLookup(source, true); next != nil {
-			next.sendBootstrap(t, bootstrap)
-			return
-		} else if source.equal(t.core.crypto.publicKey) {
-			return
-		} else if !bootstrap.check() {
-			return
-		}
-		ack := new(dhtBootstrapAck)
-		ack.bootstrap = *bootstrap
-		ack.response = *t._getToken(source)
-		t._handleBootstrapAck(ack)
-	*/
 }
 
 // handleBootstrap is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrap
