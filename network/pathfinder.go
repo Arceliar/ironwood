@@ -31,7 +31,7 @@ func (pf *pathfinder) handlePathTraffic(from phony.Actor, pt *pathTraffic) {
 		if pt.root.equal(pf.dhtree.self.root) {
 			label.rootSeq = pf.dhtree.self.seq
 		}
-		label.path = pt.path
+		label.path = pt.path[:len(pt.path)-1]
 		label.key = pt.dest
 		if next := pf.dhtree._treeLookup(&label); next != nil {
 			next.sendPathTraffic(pf.dhtree, pt)
@@ -50,7 +50,7 @@ func (pf *pathfinder) _getNotify(dest publicKey) *pathNotify {
 	if info, isIn := pf.paths[dest]; isIn && time.Since(info.ntime) > pathfinderTHROTTLE {
 		n := &pathNotify{
 			dest:  dest,
-			label: pf.dhtree._getLabel(),
+			label: *pf.dhtree._getLabel(),
 		}
 		info.ntime = time.Now()
 		return n
@@ -93,14 +93,13 @@ func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 
 func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 	pf.dhtree.Act(from, func() {
-		if next := pf.dhtree._dhtLookup(n.dest, false, nil); next != nil {
+		if next := pf.dhtree._dhtLookup(n.dest, false, &n.mark); next != nil {
 			next.sendPathNotify(pf.dhtree, n)
 			return
 		}
 		if !n.dest.equal(pf.dhtree.core.crypto.publicKey) {
 			return
 		}
-		// TODO check seq (and if we even have a pinfo)
 		if pinfo, isIn := pf.paths[n.label.key]; isIn {
 			if n.label.destSeq > pinfo.seq && n.check() {
 				pinfo.path = n.label.path
@@ -112,20 +111,9 @@ func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 
 func (pf *pathfinder) _doNotify(dest publicKey) {
 	if n := pf._getNotify(dest); n != nil {
-		pf.handleNotify(nil, n) // TODO pf._handleNotify
+		pf.handleNotify(nil, n)
 	}
 }
-
-/* TODO actually bother to run this
-The basic logic is:
-  0. Add a placeholder to pathfinder.paths for nodes we care about (make sure nil path is handled)
-  1. Send a pathNotify whenever we receive a non-source-routed packet
-  2. Possibly send a pathRequest when we receive a pathNotify
-    Check that we care about the path (pathInfo exists)
-    Check that we haven't sent a lookup too recently (e.g. within the last second)
-  3. Reply to pathRequest with pathResponse
-  4. If we receive a pathResponse from a node we care about, save the path to pathfinder.paths
-*/
 
 /************
  * pathInfo *
@@ -143,8 +131,9 @@ type pathInfo struct {
  **************/
 
 type pathNotify struct {
+	mark  dhtWatermark
 	dest  publicKey // Who to send the notify to
-	label *treeLabel
+	label treeLabel
 }
 
 func (pn *pathNotify) check() bool {
@@ -152,22 +141,23 @@ func (pn *pathNotify) check() bool {
 }
 
 func (pn *pathNotify) encode(out []byte) ([]byte, error) {
-	if pn.label == nil {
-		return nil, wireEncodeError
-	}
-	var bs []byte
 	var err error
-	if bs, err = pn.label.encode(nil); err != nil { // TODO non-nil
-		return out, err
+	if out, err = pn.mark.encode(out); err != nil {
+		return nil, err
 	}
 	out = append(out, pn.dest[:]...)
-	out = append(out, bs...)
+	if out, err = pn.label.encode(out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
 func (pn *pathNotify) decode(data []byte) error {
 	var tmp pathNotify
-	tmp.label = new(treeLabel)
+	if err := tmp.mark.decode(data); err != nil {
+		return err
+	}
+	data = data[publicKeySize+8:]
 	if !wireChopSlice(tmp.dest[:], &data) {
 		return wireDecodeError
 	} else if err := tmp.label.decode(data); err != nil {

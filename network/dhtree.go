@@ -366,13 +366,13 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		}
 	}
 	if mark != nil {
-		if bestInfo != nil {
-			mark.key = bestInfo.key
-			mark.seq = bestInfo.seq
-		}
-		if treeLess(best, mark.key) || (bestInfo != nil && bestInfo.seq < mark.seq) {
+		if treeLess(best, mark.key) || (bestInfo != nil && best.equal(mark.key) && bestInfo.seq < mark.seq) {
 			// The best isn't good enough
 			bestPeer = nil
+		} else if bestInfo != nil {
+			// Update the watermark
+			mark.key = bestInfo.key
+			mark.seq = bestInfo.seq
 		}
 	}
 	return bestPeer
