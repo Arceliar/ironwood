@@ -235,6 +235,7 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 	}
 	best := t.self
 	bestDist := best.dist(dest)
+	distCut := bestDist
 	var bestPeer *peer
 	for p, info := range t.tinfos {
 		if !info.root.equal(dest.root) || info.seq != dest.rootSeq {
@@ -245,10 +246,14 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 		dist := tmp.dist(dest)
 		var isBetter bool
 		switch {
+		case dist >= distCut:
 		case dist < bestDist:
 			isBetter = true
 		case dist > bestDist:
-		case treeLess(info.from(), best.from()):
+		case info.time.Before(best.time):
+			isBetter = true
+		case best.time.Before(info.time):
+		case treeLess(info.from(), best.from()): // Matters on platforms where time resolution is bad
 			isBetter = true
 		}
 		if isBetter {
@@ -576,7 +581,7 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 	t.Act(from, func() {
 		next := t._dhtLookup(tr.dest, false, &tr.mark)
 		if next == nil {
-			if true && tr.dest.equal(t.core.crypto.publicKey) {
+			if tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
 				if doNotify {
 					t.pathfinder._doNotify(dest)
@@ -616,6 +621,7 @@ func (t *dhtree) _getLabel() *treeLabel {
 	for _, hop := range t.self.hops {
 		label.path = append(label.path, hop.port)
 	}
+	label.path = append(label.path, 0)
 	label.sig = t.core.crypto.privateKey.sign(label.bytesForSig())
 	return label
 }

@@ -233,7 +233,7 @@ func (pc *PacketConn) MTU() uint64 {
 	const maxPortSize = 10 // maximum vuint size in bytes
 	const treeHopSize = publicKeySize + maxPortSize + signatureSize
 	const maxHops = (maxPeerMessageSize - treeUpdateOverhead) / treeHopSize
-	const maxPathBytes = maxPortSize*maxHops + 1 // treespace coords plus the 0 at the end
+	const maxPathBytes = publicKeySize + maxPortSize*maxHops + 1 // root + treespace coords + 0 (terminate coords)
 	const pathTrafficOverhead = messageTypeSize + maxPathBytes + publicKeySize + publicKeySize + messageTypeSize
 	const MTU = maxPeerMessageSize - pathTrafficOverhead
 	return MTU

@@ -27,8 +27,10 @@ func (pf *pathfinder) handlePathTraffic(from phony.Actor, pt *pathTraffic) {
 		// TODO save path back to res.req.source in a local path cache
 		// If a path already exists, replace it if (and only if) this is higher res.seq
 		var label treeLabel
-		label.root = pf.dhtree.self.root
-		label.rootSeq = pf.dhtree.self.seq
+		label.root = pt.root
+		if pt.root.equal(pf.dhtree.self.root) {
+			label.rootSeq = pf.dhtree.self.seq
+		}
 		label.path = pt.path
 		label.key = pt.dest
 		if next := pf.dhtree._treeLookup(&label); next != nil {
@@ -86,12 +88,7 @@ func (pf *pathfinder) _updateTimer(dest publicKey, info *pathInfo) {
 func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 	info := pf._getPathInfo(dest)
 	pf._updateTimer(dest, info)
-	var path []peerPort
-	if info.path != nil {
-		path = append(path, info.path...)
-		path = append(path, 0)
-	}
-	return path
+	return info.path
 }
 
 func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
@@ -185,18 +182,22 @@ func (pn *pathNotify) decode(data []byte) error {
  ***************/
 
 type pathTraffic struct {
+	root publicKey
 	path []peerPort
 	baseTraffic
 }
 
 func (pt *pathTraffic) encode(out []byte) ([]byte, error) {
+	out = append(out, pt.root[:]...)
 	out = wireEncodePath(out, pt.path)
 	return pt.baseTraffic.encode(out)
 }
 
 func (pt *pathTraffic) decode(data []byte) error {
 	var tmp pathTraffic
-	if !wireChopPath(&tmp.path, &data) {
+	if !wireChopSlice(tmp.root[:], &data) {
+		return wireDecodeError
+	} else if !wireChopPath(&tmp.path, &data) {
 		return wireDecodeError
 	} else if err := tmp.baseTraffic.decode(data); err != nil {
 		return err
