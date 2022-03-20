@@ -154,11 +154,9 @@ func (pn *pathNotify) encode(out []byte) ([]byte, error) {
 
 func (pn *pathNotify) decode(data []byte) error {
 	var tmp pathNotify
-	if err := tmp.mark.decode(data); err != nil {
-		return err
-	}
-	data = data[publicKeySize+8:]
-	if !wireChopSlice(tmp.dest[:], &data) {
+	if !tmp.mark.chop(&data) {
+		return wireDecodeError
+	} else if !wireChopSlice(tmp.dest[:], &data) {
 		return wireDecodeError
 	} else if err := tmp.label.decode(data); err != nil {
 		return err

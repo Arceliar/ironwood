@@ -514,29 +514,23 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		s.key = t.core.crypto.publicKey
 		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 		bootstrap.bhs = append(bootstrap.bhs, s)
-		sentTo := make(map[*peer]struct{})
-		sentTo[prev] = struct{}{}
-		sentTo[dinfo.peer] = struct{}{} // In case its not prev, after the bhs stuff
+		sendTo := make(map[*peer]struct{})
 		var mark dhtWatermark
 		next := t._dhtLookup(bootstrap.key, true, &mark)
-		if _, isIn := sentTo[next]; !isIn && next != nil {
-			next.sendBootstrap(t, bootstrap)
-			sentTo[next] = struct{}{}
+		if next != nil {
+			sendTo[next] = struct{}{}
+			// TODO? do this unconditionally
 			for p := range t._getNexts(mark.key) {
-				// FIXME? this is wrong? we still need to send this even if next == nil (at least sometimes...)
-				if _, isIn := sentTo[p]; isIn {
-					continue
-				}
-				p.sendBootstrap(t, bootstrap)
-				sentTo[p] = struct{}{}
+				sendTo[p] = struct{}{}
 			}
 		}
 		for p := range t._getNexts(bootstrap.key) {
-			if _, isIn := sentTo[p]; isIn {
-				continue
-			}
+			sendTo[p] = struct{}{}
+		}
+		delete(sendTo, prev)
+		delete(sendTo, dinfo.peer)
+		for p := range sendTo {
 			p.sendBootstrap(t, bootstrap)
-			sentTo[p] = struct{}{}
 		}
 	}
 }
