@@ -10,8 +10,6 @@ const (
 	wireProtoTree
 	wireProtoDHTBootstrap
 	wireProtoPathNotify
-	wireProtoPathRequest
-	wireProtoPathResponse
 	wireDHTTraffic
 	wirePathTraffic
 	wireKeepAlive

@@ -211,10 +211,6 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleBootstrap(bs[1:])
 	case wireProtoPathNotify:
 		return p._handlePathNotify(bs[1:])
-	case wireProtoPathRequest:
-		return p._handlePathRequest(bs[1:])
-	case wireProtoPathResponse:
-		return p._handlePathResponse(bs[1:])
 	case wireDHTTraffic:
 		return p._handleDHTTraffic(bs[1:])
 	case wirePathTraffic:
@@ -274,7 +270,6 @@ func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 func (p *peer) _handlePathNotify(bs []byte) error {
 	notify := new(pathNotify)
 	if err := notify.decode(bs); err != nil {
-		panic("DEBUG")
 		return err
 	}
 	p.peers.core.dhtree.pathfinder.handleNotify(p, notify)
@@ -284,61 +279,6 @@ func (p *peer) _handlePathNotify(bs []byte) error {
 func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoPathNotify, notify)
-	})
-}
-
-func (p *peer) _handlePathRequest(bs []byte) error {
-	req := new(pathRequest)
-	if err := req.decode(bs); err != nil {
-		panic("DEBUG")
-		return err
-	}
-	//req.rpath = append(req.rpath, p.port)
-	p.peers.core.dhtree.pathfinder.handleRequest(p, req)
-	return nil
-}
-
-func (p *peer) sendPathRequest(from phony.Actor, req *pathRequest) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoPathRequest, req)
-	})
-}
-
-func (p *peer) _handlePathResponse(bs []byte) error {
-	res := new(pathResponse)
-	if err := res.decode(bs); err != nil {
-		panic("DEBUG")
-		return err
-	}
-	if !res.check() {
-		panic("DEBUG")
-		return errors.New("invalid path response")
-	}
-	//response.rpath = append(response.rpath, p.port)
-	p.peers.core.dhtree.pathfinder.handleResponse(p, p, res)
-	return nil
-}
-
-/*
-func (ps *peers) handlePathResponse(from phony.Actor, response *pathResponse) {
-	ps.Act(from, func() {
-		var nextPort peerPort
-		if len(response.path) > 0 {
-			nextPort = response.path[0]
-			response.path = response.path[1:]
-		}
-		if next, isIn := ps.peers[nextPort]; isIn {
-			next.sendPathResponse(ps, response)
-		} else {
-			ps.core.dhtree.pathfinder.handleResponse(ps, response)
-		}
-	})
-}
-*/
-
-func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoPathResponse, response)
 	})
 }
 
