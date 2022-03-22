@@ -373,20 +373,14 @@ func (p *peer) _push(packet wireEncodeable) {
 		return
 	}
 	// We're waiting, so queue the packet up for later
-	var id pqStreamID
+	var sKey, dKey publicKey
 	var size int
 	switch tr := packet.(type) {
 	case *dhtTraffic:
-		id = pqStreamID{
-			source: tr.source,
-			dest:   tr.dest,
-		}
+		sKey, dKey = tr.source, tr.dest
 		size = len(tr.payload)
 	case *pathTraffic:
-		id = pqStreamID{
-			source: tr.source,
-			dest:   tr.dest,
-		}
+		sKey, dKey = tr.source, tr.dest
 		size = len(tr.payload)
 	default:
 		panic("this should never happen")
@@ -397,7 +391,7 @@ func (p *peer) _push(packet wireEncodeable) {
 		p.queue.drop()
 	}
 	// Add the packet to the queue
-	p.queue.push(id, packet, size)
+	p.queue.push(sKey, dKey, packet, size)
 }
 
 func (p *peer) pop() {
