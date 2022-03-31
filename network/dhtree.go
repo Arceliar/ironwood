@@ -12,7 +12,7 @@ const (
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
 	dhtWAIT      = time.Second      // Should be less than dhtANNOUNCE
-	dhtANNOUNCE  = 2 * time.Second
+	dhtANNOUNCE  = 3 * time.Second
 	dhtTIMEOUT   = 2*dhtANNOUNCE + time.Second
 	dhtCLEANUP   = 2 * dhtTIMEOUT
 )
@@ -292,6 +292,9 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	}
 	// doAncestry updates based on the ancestry information in a treeInfo
 	doAncestry := func(info *treeInfo, p *peer) {
+		if info.root != t.self.root || !info.root.equal(t.self.root) {
+			return
+		}
 		doCheckedUpdate(info.root, p, nil) // updates if the root is better
 		if isBootstrap {
 			// TODO: don't count nodes that aren't the root or from a DHT path
