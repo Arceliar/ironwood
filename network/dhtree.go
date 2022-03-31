@@ -27,7 +27,7 @@ type dhtree struct {
 	pathfinder pathfinder
 	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
-	dinfos     map[dhtMapKey]map[uint64]*dhtInfo
+	dinfos     map[publicKey]map[uint64]*dhtInfo
 	self       *treeInfo   // self info
 	parent     *peer       // peer that sent t.self to us
 	btimer     *time.Timer // time.AfterFunc to send bootstrap packets
@@ -46,7 +46,7 @@ func (t *dhtree) init(c *core) {
 	t.core = c
 	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
-	t.dinfos = make(map[dhtMapKey]map[uint64]*dhtInfo)
+	t.dinfos = make(map[publicKey]map[uint64]*dhtInfo)
 	t.btimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t._fix()                                // Initialize t.self and start announce and timeout timers
@@ -384,7 +384,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
-	if dinfos, isIn := t.dinfos[info.getMapKey()]; isIn {
+	if dinfos, isIn := t.dinfos[info.key]; isIn {
 		if _, isIn = dinfos[info.seq]; isIn {
 			return false
 		}
@@ -399,10 +399,10 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 			}
 		}
 	}
-	if _, isIn := t.dinfos[info.getMapKey()]; !isIn {
-		t.dinfos[info.getMapKey()] = make(map[uint64]*dhtInfo)
+	if _, isIn := t.dinfos[info.key]; !isIn {
+		t.dinfos[info.key] = make(map[uint64]*dhtInfo)
 	}
-	dinfos := t.dinfos[info.getMapKey()]
+	dinfos := t.dinfos[info.key]
 	dinfos[info.seq] = info
 	return true
 }
@@ -457,11 +457,11 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	dinfo.timer = time.AfterFunc(dhtCLEANUP, func() {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
-			if dinfos, isIn := t.dinfos[dinfo.getMapKey()]; isIn {
+			if dinfos, isIn := t.dinfos[dinfo.key]; isIn {
 				if info := dinfos[dinfo.seq]; info == dinfo {
 					delete(dinfos, dinfo.seq)
 					if len(dinfos) == 0 {
-						delete(t.dinfos, dinfo.getMapKey())
+						delete(t.dinfos, dinfo.key)
 					}
 				}
 			}
@@ -473,12 +473,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 // _getNexts returns a set of all next hops, from the DHT only, that would route to exactly the given key.
 func (t *dhtree) _getNexts(key publicKey) map[*peer]struct{} {
 	nexts := make(map[*peer]struct{})
-	mk := dhtMapKey{
-		key:     key,
-		root:    t.self.root,
-		rootSeq: t.self.seq,
-	}
-	dinfos := t.dinfos[mk]
+	dinfos := t.dinfos[key]
 	for _, dinfo := range dinfos {
 		if time.Since(dinfo.time) > dhtTIMEOUT {
 			continue
@@ -854,20 +849,6 @@ type dhtInfo struct {
 	peer  *peer
 	time  time.Time
 	timer *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
-}
-
-type dhtMapKey struct {
-	key     publicKey
-	root    publicKey
-	rootSeq uint64
-}
-
-func (info *dhtInfo) getMapKey() dhtMapKey {
-	return dhtMapKey{
-		key:     info.key,
-		root:    info.root,
-		rootSeq: info.rootSeq,
-	}
 }
 
 /****************
