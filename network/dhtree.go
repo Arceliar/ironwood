@@ -618,15 +618,6 @@ func (t *dhtree) _getLabel() *treeLabel {
 	return label
 }
 
-// TODO get rid of this, it's currently reused by the pathfinder
-func (t *dhtree) _getToken(source publicKey) *dhtSetupToken {
-	token := new(dhtSetupToken)
-	token.source = source
-	token.dest = *t._getLabel()
-	token.sig = t.core.crypto.privateKey.sign(token.bytesForSig())
-	return token
-}
-
 /************
  * treeInfo *
  ************/
@@ -938,54 +929,6 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 	}
 	*dbs = tmp
 	return nil
-}
-
-/*****************
- * dhtSetupToken *
- *****************/
-
-// When you send a bootstrap, this is the thing you're trying to get back in a response.
-// It's what lets you open a path to a keyspace neighbor.
-
-// TODO? change the token format? The dest part contains a redundant sig inside of the treeLabel... technically we could reuse it, but that seems weird?
-// Maybe remove the sig from treeLabel, put that in a signedTreeLabel?
-
-type dhtSetupToken struct {
-	sig    signature // Signed by dest
-	source publicKey // Who the dest permits a path from
-	dest   treeLabel // Path to dest
-}
-
-func (st *dhtSetupToken) bytesForSig() []byte {
-	var bs []byte
-	bs = append(bs, st.source[:]...)
-	var err error
-	if bs, err = st.dest.encode(bs); err != nil {
-		panic("this should never happen")
-	}
-	return bs
-}
-
-// TODO? remove the redundant sig and check? both from same node, one should be a superset of the other...
-
-func (st *dhtSetupToken) check() bool {
-	bs := st.bytesForSig()
-	return st.dest.key.verify(bs, &st.sig) && st.dest.check()
-}
-
-func (st *dhtSetupToken) encode(out []byte) ([]byte, error) {
-	out = append(out, st.sig[:]...)
-	out = append(out, st.source[:]...)
-	return st.dest.encode(out)
-}
-
-func (st *dhtSetupToken) decode(data []byte) error {
-	if !wireChopSlice(st.sig[:], &data) {
-		return wireDecodeError
-	} else if !wireChopSlice(st.source[:], &data) {
-		return wireDecodeError
-	}
-	return st.dest.decode(data)
 }
 
 /**************
