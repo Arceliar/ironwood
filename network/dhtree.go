@@ -2,6 +2,7 @@ package network
 
 import (
 	"encoding/binary"
+	"math/rand"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -11,7 +12,6 @@ const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
-	dhtWAIT      = time.Second      // Should be less than dhtANNOUNCE
 	dhtANNOUNCE  = 3 * time.Second
 	dhtTIMEOUT   = 2*dhtANNOUNCE + time.Second
 	dhtCLEANUP   = 2 * dhtTIMEOUT
@@ -34,7 +34,6 @@ type dhtree struct {
 	stimer     *time.Timer // time.AfterFunc for self/parent expiration
 	wait       bool        // FIXME this shouldn't be needed
 	hseq       uint64      // used to track the order treeInfo updates are handled
-	bwait      bool        // wait before sending another bootstrap
 }
 
 type treeExpiredInfo struct {
@@ -50,6 +49,7 @@ func (t *dhtree) init(c *core) {
 	t.btimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t._fix()                                // Initialize t.self and start announce and timeout timers
+	t.Act(nil, t._doBootstrap)
 	t.pathfinder.init(t)
 }
 
@@ -104,14 +104,12 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 						t.wait = false
 						t.self, t.parent = nil, nil
 						t._fix()
-						t._doBootstrap(true)
 					})
 				})
 			}
 		}
 		if !t.wait {
 			t._fix()
-			t._doBootstrap(true)
 		}
 	})
 }
@@ -213,7 +211,6 @@ func (t *dhtree) _fix() {
 					t.self = nil
 					t.parent = nil
 					t._fix()
-					t._doBootstrap(true)
 				}
 			})
 		})
@@ -542,29 +539,18 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
-func (t *dhtree) _doBootstrap(prompt bool) {
+func (t *dhtree) _doBootstrap() {
 	if t.btimer == nil {
 		return
 	}
-	if !t.bwait {
-		waitTime := dhtANNOUNCE
-		if t.parent != nil {
-			t._handleBootstrap(nil, t._newBootstrap())
-			// Don't immediately send more bootstraps if called again too quickly
-			// This helps prevent traffic spikes in some mobility scenarios
-			if prompt {
-				waitTime = dhtWAIT
-			}
-			t.bwait = prompt
-		}
-		t.btimer.Stop()
-		t.btimer = time.AfterFunc(waitTime, func() {
-			t.Act(nil, func() {
-				t.bwait = false
-				t._doBootstrap(false)
-			})
-		})
+	if t.parent != nil {
+		t._handleBootstrap(nil, t._newBootstrap())
 	}
+	t.btimer.Stop()
+	waitTime := dhtANNOUNCE - 250*time.Millisecond + time.Duration(rand.Intn(500))*time.Millisecond
+	t.btimer = time.AfterFunc(waitTime, func() {
+		t.Act(nil, t._doBootstrap)
+	})
 }
 
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
