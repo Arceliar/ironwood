@@ -24,7 +24,7 @@ func TestTwoNodes(t *testing.T) {
 	defer cB.Close()
 	go a.HandleConn(pubB, cA)
 	go b.HandleConn(pubA, cB)
-	waitForRoot([]*PacketConn{a, b}, 10*time.Second)
+	waitForRoot([]*PacketConn{a, b}, 30*time.Second)
 	timer := time.NewTimer(time.Second)
 	defer func() { timer.Stop() }()
 	tA := &a.core.dhtree
@@ -134,7 +134,7 @@ func TestLineNetwork(t *testing.T) {
 		}()
 	}
 	close(wait)
-	waitForRoot(conns, 10*time.Second)
+	waitForRoot(conns, 30*time.Second)
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
@@ -254,7 +254,7 @@ func TestRandomTreeNetwork(t *testing.T) {
 		conns = append(conns, conn)
 	}
 	close(wait)
-	waitForRoot(conns, 10*time.Second)
+	waitForRoot(conns, 30*time.Second)
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
@@ -309,7 +309,7 @@ func TestRandomTreeNetwork(t *testing.T) {
 					}
 				}
 			}()
-			timer := time.NewTimer(13 * time.Second)
+			timer := time.NewTimer(30 * time.Second)
 			select {
 			case <-timer.C:
 				func() {
