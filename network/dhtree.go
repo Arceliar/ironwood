@@ -289,7 +289,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	}
 	// doAncestry updates based on the ancestry information in a treeInfo
 	doAncestry := func(info *treeInfo, p *peer) {
-		if info.root != t.self.root || !info.root.equal(t.self.root) {
+		if info.seq != t.self.seq || !info.root.equal(t.self.root) {
 			return
 		}
 		doCheckedUpdate(info.root, p, nil) // updates if the root is better
@@ -503,7 +503,6 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 				continue
 			}
 			bootstrap.bhs = append(bootstrap.bhs, s)
-			break
 		}
 		var s bootstrapHopSig
 		s.key = t.core.crypto.publicKey
@@ -861,9 +860,6 @@ func (dbs *dhtBootstrap) bytesForSig() []byte {
 }
 
 func (dbs *dhtBootstrap) check() bool {
-	if len(dbs.bhs) > 2 {
-		return false
-	}
 	bs := dbs.bytesForSig()
 	for _, s := range dbs.bhs {
 		if !s.key.verify(bs, &s.sig) {
