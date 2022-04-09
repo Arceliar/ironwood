@@ -14,7 +14,7 @@ const (
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
 	dhtANNOUNCE  = 3 * time.Second
 	dhtTIMEOUT   = 2*dhtANNOUNCE + time.Second
-	dhtCLEANUP   = 2 * dhtTIMEOUT
+	dhtCLEANUP   = dhtANNOUNCE + dhtTIMEOUT + time.Second
 )
 
 /**********
