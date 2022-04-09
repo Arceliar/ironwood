@@ -1,3 +1,7 @@
+# Version
+
+This branch is an archive version for Yggdrasil v0.4.X compatibility. As of writing, ongoing developments happen in the `main` branch.
+
 # Ironwood
 
 Ironwood is a routing library with a `net.PacketConn`-compatible interface using `ed25519.PublicKey`s as addresses. Basically, you use it when you want to communicate with some other nodes in a network, but you can't guarantee that you can directly connect to every node in that network. It was written to test improvements to / replace the routing logic in [Yggdrasil](https://github.com/yggdrasil-network/yggdrasil-go), but it may be useful for other network applications.
@@ -36,6 +40,7 @@ The routing logic in `network` is still undocumented. The basic idea is:
 
 There are a ton of technical details about building the spanning tree, bootstrapping the DHT, responding to link failures, etc., all of which is beyond the scope of a readme file. All of those protocol level details are subject to change, so don't expect adequate documentation any earlier than the late alpha or early beta stage.
 
+<<<<<<< HEAD
 # New TODO
 
 1. Get rid of activation timer for prev. Instead, if you ever find yourself in a state where you have no active (current or old) prev, then activate the current one.
@@ -82,6 +87,8 @@ Done, traffic ephemeral keys are kept out of cleartext, among other improvements
 ~Some sort of debug interface is needed, to get read access to the low level internals. This (probably) doesn't need to be a stable API endpoint. It would be useful (in the ygg context) to e.g. check a node's coords, get a list of peers (with ports), dump out the full set of DHT info, etc.~
 Done, but there's still some room for improvement.
 
+=======
+>>>>>>> b7f71f05435a086357b2abe86a7c5ae0136a32d9
 # Known Issues
 
 Ironwood is an R&D project. As such, testing certain aspects of the routing scheme sometimes require making compromises in other areas, for the sake of development time. There would be no point in engineering a secure and efficient implementation of something that turns out not to solve the problem.
