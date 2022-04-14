@@ -71,7 +71,7 @@ func (q *packetQueue) drop() bool {
 	return true
 }
 
-// push addsa  packet with the provided size to a queue for the provided source and destination keys
+// push adds a packet with the provided size to a queue for the provided source and destination keys
 // a new queue will be created if needed
 func (q *packetQueue) push(sKey, dKey publicKey, packet wireEncodeable, size int) {
 	info := pqPacketInfo{packet: packet, size: uint64(size), time: time.Now()}
