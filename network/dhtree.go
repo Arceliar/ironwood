@@ -25,6 +25,7 @@ type dhtree struct {
 	phony.Inbox
 	core       *core
 	pathfinder pathfinder
+	peers      map[*peer]struct{}
 	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
 	dinfos     map[publicKey]map[uint64]*dhtInfo
@@ -43,6 +44,7 @@ type treeExpiredInfo struct {
 
 func (t *dhtree) init(c *core) {
 	t.core = c
+	t.peers = make(map[*peer]struct{})
 	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
 	t.dinfos = make(map[publicKey]map[uint64]*dhtInfo)
@@ -114,9 +116,16 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 	})
 }
 
+func (t *dhtree) addPeer(from phony.Actor, p *peer) {
+	t.Act(from, func() {
+		t.peers[p] = struct{}{}
+	})
+}
+
 // remove removes a peer from the tree, along with any paths through that peer in the dht
 func (t *dhtree) remove(from phony.Actor, p *peer) {
 	t.Act(from, func() {
+		delete(t.peers, p)
 		oldInfo := t.tinfos[p]
 		delete(t.tinfos, p)
 		if t.self == oldInfo {
@@ -295,25 +304,9 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		if isBootstrap && time.Since(info.time) > dhtTIMEOUT {
 			return
 		}
-		if mark != nil {
-			if treeLess(info.key, mark.key) || (info.key.equal(mark.key) && info.seq < mark.seq) {
-				return
-			}
-		}
-		if isBootstrap && !(info.root.equal(t.self.root) && info.rootSeq == t.self.seq) {
-			return
-		}
 		doCheckedUpdate(info.key, info.peer, info) // updates if the source is better
-		if bestInfo != nil && info.key.equal(bestInfo.key) {
-			if treeLess(info.root, bestInfo.root) {
-				doUpdate(info.key, info.peer, info) // same source, but the root is better
-			} else if info.root.equal(bestInfo.root) && info.rootSeq > bestInfo.rootSeq {
-				doUpdate(info.key, info.peer, info) // same source, same root, but the rootSeq is newer
-			} else if !info.root.equal(bestInfo.root) || info.rootSeq != bestInfo.rootSeq {
-				// skip any non-matches
-			} else if info.seq > bestInfo.seq {
-				doUpdate(info.key, info.peer, info) // same source/root/rootSeq, but newer seq
-			}
+		if bestInfo != nil && info.key.equal(bestInfo.key) && info.seq > bestInfo.seq {
+			doUpdate(info.key, info.peer, info) // newer seq
 		}
 	}
 	// TODO forward to the lowest key if there's no valid entry (to make the DHT complete)
@@ -372,20 +365,14 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 // _newBootstrap returns a *dhtBootstrap for this node, using t.self, with a signature
 func (t *dhtree) _newBootstrap() *dhtBootstrap {
 	dbs := &dhtBootstrap{
-		key:     t.core.crypto.publicKey,
-		root:    t.self.root,
-		rootSeq: t.self.seq,
-		seq:     uint64(time.Now().Unix()),
+		key: t.core.crypto.publicKey,
+		seq: uint64(time.Now().Unix()),
 	}
 	dbs.sig = t.core.crypto.privateKey.sign(dbs.bytesForSig())
 	return dbs
 }
 
 func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo {
-	if !bootstrap.root.equal(t.self.root) || bootstrap.rootSeq != t.self.seq {
-		// Wrong root or rootSeq
-		return nil
-	}
 	dinfo := &dhtInfo{
 		dhtBootstrap: *bootstrap,
 		peer:         prev,
@@ -398,7 +385,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 			break
 		}
 		// TODO something faster than this inner loop
-		for p := range t.tinfos {
+		for p := range t.peers {
 			if p.key.equal(s.key) {
 				dinfo.peer = p
 				break
@@ -504,7 +491,7 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		// Check if this needs to be broadcast, and fix some things if so
 		if t._isBroadcast(bootstrap) {
 			dinfo.peer = prev // In case it was set to something from bhs
-			for p := range t.tinfos {
+			for p := range t.peers {
 				sendTo[p] = struct{}{}
 			}
 		}
@@ -819,12 +806,10 @@ type dhtInfo struct {
  ****************/
 
 type dhtBootstrap struct {
-	sig     signature
-	key     publicKey
-	root    publicKey
-	rootSeq uint64
-	seq     uint64
-	bhs     []bootstrapHopSig
+	sig signature
+	key publicKey
+	seq uint64
+	bhs []bootstrapHopSig
 }
 
 type bootstrapHopSig struct {
@@ -833,12 +818,10 @@ type bootstrapHopSig struct {
 }
 
 func (dbs *dhtBootstrap) bytesForSig() []byte {
-	const size = len(dbs.key) + len(dbs.root) + 8 + 8
+	const size = len(dbs.key) + 8
 	bs := make([]byte, 0, size)
 	bs = append(bs, dbs.key[:]...)
-	bs = append(bs, dbs.root[:]...)
 	bs = bs[:size]
-	binary.BigEndian.PutUint64(bs[len(bs)-16:len(bs)-8], dbs.rootSeq)
 	binary.BigEndian.PutUint64(bs[len(bs)-8:], dbs.seq)
 	return bs
 }
@@ -876,14 +859,11 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.key[:], &data) {
 		return wireDecodeError
-	} else if !wireChopSlice(tmp.root[:], &data) {
-		return wireDecodeError
-	} else if len(data) < 16 { // TODO? < 16, in case it's embedded in something?
+	} else if len(data) < 8 { // TODO? < 16, in case it's embedded in something?
 		return wireDecodeError
 	}
-	tmp.rootSeq = binary.BigEndian.Uint64(data[:8])
-	tmp.seq = binary.BigEndian.Uint64(data[8:16])
-	data = data[16:]
+	tmp.seq = binary.BigEndian.Uint64(data[:8])
+	data = data[8:]
 	for len(data) > 0 {
 		var s bootstrapHopSig
 		if !wireChopSlice(s.key[:], &data) {

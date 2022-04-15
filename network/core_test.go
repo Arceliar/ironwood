@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -30,6 +31,7 @@ func TestTwoNodes(t *testing.T) {
 	tA := &a.core.dhtree
 	tB := &b.core.dhtree
 	for {
+		break // FIXME DEBUG testing without a tree
 		select {
 		case <-timer.C:
 			panic("timeout")
@@ -95,6 +97,22 @@ func TestTwoNodes(t *testing.T) {
 	}()
 	select {
 	case <-timer.C:
+		phony.Block(tA, func() {
+			for p := range tA.peers {
+				fmt.Println("DEBUG1:", tA.core.crypto.publicKey, p.key)
+			}
+			for k := range tA.dinfos {
+				fmt.Println("DEBUG2:", tA.core.crypto.publicKey, k)
+			}
+		})
+		phony.Block(tB, func() {
+			for p := range tB.peers {
+				fmt.Println("DEBUG1:", tB.core.crypto.publicKey, p.key)
+			}
+			for k := range tB.dinfos {
+				fmt.Println("DEBUG2:", tB.core.crypto.publicKey, k)
+			}
+		})
 		panic("timeout")
 	case <-done:
 	}
@@ -345,6 +363,7 @@ func TestRandomTreeNetwork(t *testing.T) {
 // waitForRoot is a helper function that waits until all nodes are using the same root
 // that should usually mean the network has settled into a stable state, at least for static network tests
 func waitForRoot(conns []*PacketConn, timeout time.Duration) {
+	return // FIXME DEBUG testing without a tree
 	begin := time.Now()
 	for {
 		if time.Since(begin) > timeout {
