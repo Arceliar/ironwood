@@ -12,9 +12,9 @@ const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
-	dhtANNOUNCE  = 3 * time.Second
-	dhtTIMEOUT   = 2*dhtANNOUNCE + time.Second
-	dhtCLEANUP   = dhtANNOUNCE + dhtTIMEOUT + time.Second
+	dhtANNOUNCE  = 5 * time.Second  //3 * time.Second
+	dhtTIMEOUT   = 10 * time.Second //2*dhtANNOUNCE + time.Second
+	dhtCLEANUP   = dhtTIMEOUT       //dhtANNOUNCE + dhtTIMEOUT + time.Second
 )
 
 /**********
@@ -34,6 +34,7 @@ type dhtree struct {
 	stimer     *time.Timer // time.AfterFunc for self/parent expiration
 	wait       bool        // FIXME this shouldn't be needed
 	hseq       uint64      // used to track the order treeInfo updates are handled
+	btime      time.Time   // time the last bootstrap was sent
 }
 
 type treeExpiredInfo struct {
@@ -49,6 +50,7 @@ func (t *dhtree) init(c *core) {
 	t.btimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t._fix()                                // Initialize t.self and start announce and timeout timers
+	t.btime = time.Now()
 	t.Act(nil, t._doBootstrap)
 	t.pathfinder.init(t)
 }
@@ -215,6 +217,7 @@ func (t *dhtree) _fix() {
 			})
 		})
 		t._sendTree() // Send the tree update to our peers
+		t.btime.Add(-dhtANNOUNCE)
 	}
 	// Clean up t.expired (remove anything worse than the current root)
 	for skey := range t.expired {
@@ -322,7 +325,8 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			}
 		}
 		if isBootstrap && !(info.root.equal(t.self.root) && info.rootSeq == t.self.seq) {
-			return
+			// Allow old info to be used, to smooth out the transition between root updates
+			//return
 		}
 		doCheckedUpdate(info.key, info.peer, info) // updates if the source is better
 		if bestInfo != nil && info.key.equal(bestInfo.key) {
@@ -373,6 +377,10 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			// Update the watermark
 			mark.key = bestInfo.key
 			mark.seq = bestInfo.seq
+		} else if treeLess(mark.key, best) {
+			// This is from tree/ancestry info, so seq = 0
+			mark.key = best
+			mark.seq = 0
 		}
 	}
 	return bestPeer
@@ -413,7 +421,7 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 		key:     t.core.crypto.publicKey,
 		root:    t.self.root,
 		rootSeq: t.self.seq,
-		seq:     uint64(time.Now().Unix()),
+		seq:     uint64(time.Now().UnixMilli()),
 	}
 	dbs.sig = t.core.crypto.privateKey.sign(dbs.bytesForSig())
 	return dbs
@@ -472,6 +480,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 
 // _getNexts returns a set of all next hops, from the DHT only, that would route to exactly the given key.
 func (t *dhtree) _getNexts(key publicKey) map[*peer]struct{} {
+	return nil // FIXME DEBUG remove this
 	nexts := make(map[*peer]struct{})
 	dinfos := t.dinfos[key]
 	for _, dinfo := range dinfos {
@@ -542,11 +551,12 @@ func (t *dhtree) _doBootstrap() {
 	if t.btimer == nil {
 		return
 	}
-	if t.parent != nil {
+	if t.parent != nil && dhtANNOUNCE < time.Since(t.btime) {
 		t._handleBootstrap(nil, t._newBootstrap())
+		t.btime = time.Now()
 	}
 	t.btimer.Stop()
-	waitTime := dhtANNOUNCE - 250*time.Millisecond + time.Duration(rand.Intn(500))*time.Millisecond
+	waitTime := time.Duration(rand.Intn(1000)) * time.Millisecond
 	t.btimer = time.AfterFunc(waitTime, func() {
 		t.Act(nil, t._doBootstrap)
 	})
