@@ -271,7 +271,7 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 // bootstraps use slightly different logic, since they need to stop short of the destination key
 func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark) *peer {
 	// Start by defining variables and helper functions
-	best := t.core.crypto.publicKey
+	var best publicKey
 	var bestPeer *peer
 	var bestInfo *dhtInfo
 	// doUpdate is just to make sure we don't forget to update something
@@ -285,27 +285,6 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			fallthrough
 		case dhtOrdered(best, key, dest):
 			doUpdate(key, p, d)
-		}
-	}
-	// doAncestry updates based on the ancestry information in a treeInfo
-	doAncestry := func(info *treeInfo, p *peer) {
-		if info.seq != t.self.seq || !info.root.equal(t.self.root) {
-			return
-		}
-		doCheckedUpdate(info.root, p, nil) // updates if the root is better
-		if isBootstrap {
-			// TODO: don't count nodes that aren't the root or from a DHT path
-			// There are DoS / security reasons to avoid them
-			// This is temporarily disabled for testing
-			//return
-		}
-		for _, hop := range info.hops {
-			doCheckedUpdate(hop.next, p, nil) // updates if this hop is better
-			tinfo := t.tinfos[bestPeer]       // may be nil if we're in the middle of a remove
-			if tinfo != nil && best.equal(hop.next) && info.hseq < tinfo.hseq {
-				// This ancestor matches our current next hop, but this peer's treeInfo is better, so switch to it
-				doUpdate(hop.next, p, nil)
-			}
 		}
 	}
 	// doDHT updates best based on a DHT path
@@ -337,27 +316,10 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			}
 		}
 	}
+	// TODO forward to the lowest key if there's no valid entry (to make the DHT complete)
 	// Update the best key and peer
-	// First check if the current best (ourself) is an invalid next hop
-	if (isBootstrap && best.equal(dest)) || dhtOrdered(t.self.root, dest, best) {
-		// We're the current best, and we're already too far through keyspace
-		// That means we need to default to heading towards the root
-		doUpdate(t.self.root, t.parent, nil)
-	}
-	// Update based on the ancestry of our own treeInfo
-	doAncestry(t.self, t.parent)
-	// Update based on the ancestry of our peers
-	for p, info := range t.tinfos {
-		doAncestry(info, p)
-	}
-	// Check peers
-	for p := range t.tinfos {
-		if best.equal(p.key) {
-			// The best next hop is one of our peers
-			// We may have stumbled upon them too early, as the ancestor of another peer
-			// Switch to using the direct route to this peer, just in case
-			doUpdate(p.key, p, nil)
-		}
+	if (!isBootstrap && dest.equal(t.core.crypto.publicKey)) || treeLess(t.core.crypto.publicKey, dest) {
+		doUpdate(t.core.crypto.publicKey, nil, nil)
 	}
 	// Update based on our DHT infos
 	for _, dinfos := range t.dinfos {
@@ -485,6 +447,20 @@ func (t *dhtree) _getNexts(key publicKey) map[*peer]struct{} {
 	return nexts
 }
 
+func (t *dhtree) _isBroadcast(bootstrap *dhtBootstrap) bool {
+	for k, dinfos := range t.dinfos {
+		if treeLess(k, bootstrap.key) {
+			for _, dinfo := range dinfos {
+				if time.Since(dinfo.time) > dhtTIMEOUT {
+					continue
+				}
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
@@ -496,18 +472,6 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 				panic("wrong key")
 			}
 		}
-		bhs := bootstrap.bhs
-		bootstrap.bhs = bootstrap.bhs[:0]
-		for _, s := range bhs {
-			if dinfo.peer == nil || dinfo.peer.key != s.key {
-				continue
-			}
-			bootstrap.bhs = append(bootstrap.bhs, s)
-		}
-		var s bootstrapHopSig
-		s.key = t.core.crypto.publicKey
-		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
-		bootstrap.bhs = append(bootstrap.bhs, s)
 		sendTo := make(map[*peer]struct{})
 		var mark dhtWatermark
 		next := t._dhtLookup(bootstrap.key, true, &mark)
@@ -521,8 +485,30 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		for p := range t._getNexts(bootstrap.key) {
 			sendTo[p] = struct{}{}
 		}
-		delete(sendTo, prev)
-		delete(sendTo, dinfo.peer)
+		// Now fix the bootstrap hop sigs before sending
+		bhs := bootstrap.bhs
+		bootstrap.bhs = bootstrap.bhs[:0]
+		for _, s := range bhs {
+			for _, dfo := range t.dinfos[s.key] {
+				delete(sendTo, dfo.peer)
+			}
+			if dinfo.peer == nil || dinfo.peer.key != s.key {
+				continue
+			}
+			bootstrap.bhs = append(bootstrap.bhs, s)
+		}
+		var s bootstrapHopSig
+		s.key = t.core.crypto.publicKey
+		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
+		bootstrap.bhs = append(bootstrap.bhs, s)
+		// Check if this needs to be broadcast, and fix some things if so
+		if t._isBroadcast(bootstrap) {
+			dinfo.peer = prev // In case it was set to something from bhs
+			for p := range t.tinfos {
+				sendTo[p] = struct{}{}
+			}
+		}
+		// Send to peers
 		for p := range sendTo {
 			p.sendBootstrap(t, bootstrap)
 		}
@@ -542,9 +528,7 @@ func (t *dhtree) _doBootstrap() {
 	if t.btimer == nil {
 		return
 	}
-	if t.parent != nil {
-		t._handleBootstrap(nil, t._newBootstrap())
-	}
+	t._handleBootstrap(nil, t._newBootstrap())
 	t.btimer.Stop()
 	waitTime := dhtANNOUNCE - 250*time.Millisecond + time.Duration(rand.Intn(500))*time.Millisecond
 	t.btimer = time.AfterFunc(waitTime, func() {
