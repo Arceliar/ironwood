@@ -34,7 +34,6 @@ type dhtree struct {
 	stimer     *time.Timer // time.AfterFunc for self/parent expiration
 	wait       bool        // FIXME this shouldn't be needed
 	hseq       uint64      // used to track the order treeInfo updates are handled
-	btime      time.Time   // time the last bootstrap was sent
 }
 
 type treeExpiredInfo struct {
@@ -50,7 +49,6 @@ func (t *dhtree) init(c *core) {
 	t.btimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t._fix()                                // Initialize t.self and start announce and timeout timers
-	t.btime = time.Now()
 	t.Act(nil, t._doBootstrap)
 	t.pathfinder.init(t)
 }
@@ -217,7 +215,7 @@ func (t *dhtree) _fix() {
 			})
 		})
 		t._sendTree() // Send the tree update to our peers
-		t.btime.Add(-dhtANNOUNCE)
+		t._doBootstrap()
 	}
 	// Clean up t.expired (remove anything worse than the current root)
 	for skey := range t.expired {
@@ -377,7 +375,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			// Update the watermark
 			mark.key = bestInfo.key
 			mark.seq = bestInfo.seq
-		} else if treeLess(mark.key, best) {
+		} else if false && treeLess(mark.key, best) {
 			// This is from tree/ancestry info, so seq = 0
 			mark.key = best
 			mark.seq = 0
@@ -551,12 +549,11 @@ func (t *dhtree) _doBootstrap() {
 	if t.btimer == nil {
 		return
 	}
-	if t.parent != nil && dhtANNOUNCE < time.Since(t.btime) {
-		t._handleBootstrap(nil, t._newBootstrap())
-		t.btime = time.Now()
-	}
 	t.btimer.Stop()
-	waitTime := time.Duration(rand.Intn(1000)) * time.Millisecond
+	if t.parent != nil {
+		t._handleBootstrap(nil, t._newBootstrap())
+	}
+	waitTime := dhtANNOUNCE - 250*time.Millisecond + time.Duration(rand.Intn(500))*time.Millisecond
 	t.btimer = time.AfterFunc(waitTime, func() {
 		t.Act(nil, t._doBootstrap)
 	})
