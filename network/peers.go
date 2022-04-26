@@ -84,7 +84,6 @@ type peer struct {
 	peers       *peers
 	conn        net.Conn
 	key         publicKey
-	info        *treeInfo
 	port        peerPort
 	queue       packetQueue
 	ready       bool // is the writer ready for traffic?
@@ -136,10 +135,9 @@ func (w *peerWriter) sendPacket(pType byte, data wireEncodeable) {
 
 func (p *peer) handler() error {
 	defer func() {
-		if p.info != nil {
-			p.peers.core.dhtree.remove(nil, p)
-		}
+		p.peers.core.dhtree.remove(nil, p)
 	}()
+	p.peers.core.dhtree.addPeer(nil, p)
 	done := make(chan struct{})
 	defer close(done)
 	p.writer.keepAlive = func() {
@@ -237,12 +235,12 @@ func (p *peer) _handleTree(bs []byte) error {
 	if !p.peers.core.crypto.publicKey.equal(dest) {
 		return errors.New("incorrect destination")
 	}
-	p.info = info
 	p.peers.core.dhtree.update(p, info, p)
 	return nil
 }
 
 func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
+	return // TODO DEBUG testing with no tree
 	p.Act(from, func() {
 		info = info.add(p.peers.core.crypto.privateKey, p)
 		p.writer.sendPacket(wireProtoTree, info)
@@ -277,6 +275,7 @@ func (p *peer) _handlePathNotify(bs []byte) error {
 }
 
 func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
+	return // TODO DEBUG testing with no tree or pathfinder
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoPathNotify, notify)
 	})
