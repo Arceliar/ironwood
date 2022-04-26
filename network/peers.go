@@ -335,6 +335,7 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 */
 
 func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
+	return // DEBUG disable pathfinder
 	p.Act(from, func() {
 		p._push(tr)
 	})

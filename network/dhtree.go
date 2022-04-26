@@ -218,7 +218,6 @@ func (t *dhtree) _fix() {
 			})
 		})
 		t._sendTree() // Send the tree update to our peers
-		t._doBootstrap()
 	}
 	// Clean up t.expired (remove anything worse than the current root)
 	for skey := range t.expired {
@@ -278,6 +277,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	var best publicKey
 	var bestPeer *peer
 	var bestInfo *dhtInfo
+	var firstInfo *dhtInfo
 	// doUpdate is just to make sure we don't forget to update something
 	doUpdate := func(key publicKey, p *peer, d *dhtInfo) {
 		best, bestPeer, bestInfo = key, p, d
@@ -293,26 +293,26 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	}
 	// doDHT updates best based on a DHT path
 	doDHT := func(info *dhtInfo) {
-		//if !info.isActive {
-		//	return
-		//}
 		if isBootstrap && time.Since(info.time) > dhtTIMEOUT {
 			return
 		}
 		doCheckedUpdate(info.key, info.peer, info) // updates if the source is better
-		if bestInfo != nil && info.key.equal(bestInfo.key) && info.seq > bestInfo.seq {
-			doUpdate(info.key, info.peer, info) // newer seq
+		if firstInfo == nil || treeLess(info.key, firstInfo.key) {
+			firstInfo = info
 		}
-	}
-	// TODO forward to the lowest key if there's no valid entry (to make the DHT complete)
-	// Update the best key and peer
-	if (!isBootstrap && dest.equal(t.core.crypto.publicKey)) || treeLess(t.core.crypto.publicKey, dest) {
-		doUpdate(t.core.crypto.publicKey, nil, nil)
 	}
 	// Update based on our DHT infos
 	for _, dinfo := range t.dinfos {
+		// Note that this includes the self dht entry, so no special logic is needed if we're the destination
 		doDHT(dinfo)
 	}
+	// Escape hatch:
+	// If the target is even lower than the lowest known key, forward towards that key
+	// This is just to make the DHT complete (otherwise, keys lower than the lowest known key would route to nowhere)
+	if bestPeer == nil && firstInfo != nil && treeLess(dest, firstInfo.key) {
+		doUpdate(firstInfo.key, firstInfo.peer, firstInfo)
+	}
+	// Check high water mark (loop avoidance)
 	if mark != nil {
 		if treeLess(best, mark.key) || (bestInfo != nil && best.equal(mark.key) && bestInfo.seq < mark.seq) {
 			// The best isn't good enough
@@ -321,10 +321,6 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			// Update the watermark
 			mark.key = bestInfo.key
 			mark.seq = bestInfo.seq
-		} else if treeLess(mark.key, best) {
-			// This is from tree/ancestry info, so seq = 0
-			mark.key = best
-			mark.seq = 0
 		}
 	}
 	return bestPeer
@@ -364,7 +360,7 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 func (t *dhtree) _newBootstrap() *dhtBootstrap {
 	dbs := &dhtBootstrap{
 		key: t.core.crypto.publicKey,
-		seq: uint64(time.Now().UnixMilli()),
+		seq: uint64(time.Now().Unix()),
 	}
 	dbs.sig = t.core.crypto.privateKey.sign(dbs.bytesForSig())
 	return dbs
@@ -406,10 +402,10 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 
 func (t *dhtree) _isBroadcast(bootstrap *dhtBootstrap) bool {
 	for k, dinfo := range t.dinfos {
+		if time.Since(dinfo.time) > dhtTIMEOUT {
+			continue
+		}
 		if treeLess(k, bootstrap.key) {
-			if time.Since(dinfo.time) > dhtTIMEOUT {
-				continue
-			}
 			return false
 		}
 	}
@@ -429,14 +425,13 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		}
 		// Get the next hop(s)
 		sendTo := make(map[*peer]struct{})
-		var mark dhtWatermark
 		// Check if this needs to be broadcast, and fix some things if so
 		if t._isBroadcast(bootstrap) {
-			dinfo.peer = prev // In case it was set to something from bhs
+			//dinfo.peer = prev // In case it was set to something from bhs
 			for p := range t.peers {
 				sendTo[p] = struct{}{}
 			}
-		} else if next := t._dhtLookup(bootstrap.key, true, &mark); next != nil {
+		} else if next := t._dhtLookup(bootstrap.key, true, nil); next != nil {
 			sendTo[next] = struct{}{}
 		}
 		// Fix the bootstrap hop sigs before sending
