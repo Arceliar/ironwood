@@ -12,9 +12,9 @@ const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
-	dhtANNOUNCE  = 5 * time.Second  //3 * time.Second
-	dhtTIMEOUT   = 10 * time.Second //2*dhtANNOUNCE + time.Second
-	dhtCLEANUP   = dhtTIMEOUT       //dhtANNOUNCE + dhtTIMEOUT + time.Second
+	dhtANNOUNCE  = 3 * time.Second
+	dhtTIMEOUT   = 2*dhtANNOUNCE + time.Second
+	dhtCLEANUP   = dhtANNOUNCE + dhtTIMEOUT + time.Second
 )
 
 /**********
@@ -27,7 +27,7 @@ type dhtree struct {
 	pathfinder pathfinder
 	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
-	dinfos     map[publicKey]map[uint64]*dhtInfo
+	dinfos     map[publicKey]*dhtInfo
 	self       *treeInfo   // self info
 	parent     *peer       // peer that sent t.self to us
 	btimer     *time.Timer // time.AfterFunc to send bootstrap packets
@@ -45,7 +45,7 @@ func (t *dhtree) init(c *core) {
 	t.core = c
 	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
-	t.dinfos = make(map[publicKey]map[uint64]*dhtInfo)
+	t.dinfos = make(map[publicKey]*dhtInfo)
 	t.btimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t._fix()                                // Initialize t.self and start announce and timeout timers
@@ -124,19 +124,13 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 			t.parent = nil
 			t._fix()
 		}
-		for mk, dinfos := range t.dinfos {
-			for s, dinfo := range dinfos {
-				if dinfo.peer == p {
-					//dinfo.peer = nil
-					//continue
-					//t._teardown(p, dinfo.getTeardown())
-					dinfo.timer.Stop()
-					delete(dinfos, s)
-				}
-			}
-			//continue
-			if len(dinfos) == 0 {
-				delete(t.dinfos, mk)
+		for k, dinfo := range t.dinfos {
+			if dinfo.peer == p {
+				//dinfo.peer = nil
+				//continue
+				//t._teardown(p, dinfo.getTeardown())
+				dinfo.timer.Stop()
+				delete(t.dinfos, k)
 			}
 		}
 	})
@@ -362,10 +356,8 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		}
 	}
 	// Update based on our DHT infos
-	for _, dinfos := range t.dinfos {
-		for _, dinfo := range dinfos {
-			doDHT(dinfo)
-		}
+	for _, dinfo := range t.dinfos {
+		doDHT(dinfo)
 	}
 	if mark != nil {
 		if treeLess(best, mark.key) || (bestInfo != nil && best.equal(mark.key) && bestInfo.seq < mark.seq) {
@@ -375,7 +367,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 			// Update the watermark
 			mark.key = bestInfo.key
 			mark.seq = bestInfo.seq
-		} else if false && treeLess(mark.key, best) {
+		} else if treeLess(mark.key, best) {
 			// This is from tree/ancestry info, so seq = 0
 			mark.key = best
 			mark.seq = 0
@@ -390,26 +382,27 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
-	if dinfos, isIn := t.dinfos[info.key]; isIn {
-		if _, isIn = dinfos[info.seq]; isIn {
+	if dinfo, isIn := t.dinfos[info.key]; isIn {
+		if dinfo.seq < info.seq {
+			dinfo.timer.Stop()
+			delete(t.dinfos, dinfo.key)
+		} else {
+			// We already have a path that's either the same seq or better, so ignore this one
+			// TODO? keep the path, but don't forward it anywhere
+			// This is very delicate (needed for anycast to not break the network, etc)
 			return false
 		}
-		for _, oldInfo := range dinfos {
-			if oldInfo.seq < info.seq {
-				// Older paths are allowed
-			} else {
-				// We already have a path that's either the same seq or better, so ignore this one
-				// TODO? keep the path, but don't forward it anywhere
-				// This is very delicate (needed for anycast to not break the network, etc)
-				return false
+	}
+	t.dinfos[info.key] = info
+	// Setup timer for cleanup
+	info.timer = time.AfterFunc(dhtCLEANUP, func() {
+		t.Act(nil, func() {
+			// Clean up path if it has timed out
+			if nfo := t.dinfos[info.key]; nfo == info {
+				delete(t.dinfos, nfo.key)
 			}
-		}
-	}
-	if _, isIn := t.dinfos[info.key]; !isIn {
-		t.dinfos[info.key] = make(map[uint64]*dhtInfo)
-	}
-	dinfos := t.dinfos[info.key]
-	dinfos[info.seq] = info
+		})
+	})
 	return true
 }
 
@@ -459,37 +452,8 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		// We failed to add the dinfo to the DHT for some reason
 		return nil
 	}
-	// Setup timer for cleanup
-	dinfo.timer = time.AfterFunc(dhtCLEANUP, func() {
-		t.Act(nil, func() {
-			// Clean up path if it has timed out
-			if dinfos, isIn := t.dinfos[dinfo.key]; isIn {
-				if info := dinfos[dinfo.seq]; info == dinfo {
-					delete(dinfos, dinfo.seq)
-					if len(dinfos) == 0 {
-						delete(t.dinfos, dinfo.key)
-					}
-				}
-			}
-		})
-	})
-	return dinfo
-}
 
-// _getNexts returns a set of all next hops, from the DHT only, that would route to exactly the given key.
-func (t *dhtree) _getNexts(key publicKey) map[*peer]struct{} {
-	return nil // FIXME DEBUG remove this
-	nexts := make(map[*peer]struct{})
-	dinfos := t.dinfos[key]
-	for _, dinfo := range dinfos {
-		if time.Since(dinfo.time) > dhtTIMEOUT {
-			continue
-		}
-		if dinfo.peer != nil {
-			nexts[dinfo.peer] = struct{}{}
-		}
-	}
-	return nexts
+	return dinfo
 }
 
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
@@ -515,23 +479,10 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		s.key = t.core.crypto.publicKey
 		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 		bootstrap.bhs = append(bootstrap.bhs, s)
-		sendTo := make(map[*peer]struct{})
 		var mark dhtWatermark
 		next := t._dhtLookup(bootstrap.key, true, &mark)
-		if next != nil {
-			sendTo[next] = struct{}{}
-			// TODO? do this unconditionally
-			for p := range t._getNexts(mark.key) {
-				sendTo[p] = struct{}{}
-			}
-		}
-		for p := range t._getNexts(bootstrap.key) {
-			sendTo[p] = struct{}{}
-		}
-		delete(sendTo, prev)
-		delete(sendTo, dinfo.peer)
-		for p := range sendTo {
-			p.sendBootstrap(t, bootstrap)
+		if next != nil && next != prev && next != dinfo.peer {
+			next.sendBootstrap(t, bootstrap)
 		}
 	}
 }
