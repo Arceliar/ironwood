@@ -396,7 +396,6 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		// We failed to add the dinfo to the DHT for some reason
 		return nil
 	}
-
 	return dinfo
 }
 
@@ -438,9 +437,11 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		bhs := bootstrap.bhs
 		bootstrap.bhs = bootstrap.bhs[:0]
 		for _, s := range bhs {
-			if dfo, isIn := t.dinfos[s.key]; isIn {
-				// This node has already seen it, so make sure we don't send it to them
-				delete(sendTo, dfo.peer)
+			// TODO something faster than this inner loop
+			for p := range t.peers {
+				if p.key.equal(s.key) {
+					delete(sendTo, p)
+				}
 			}
 			if dinfo.peer == nil || dinfo.peer.key != s.key {
 				continue
