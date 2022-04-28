@@ -98,16 +98,16 @@ func TestTwoNodes(t *testing.T) {
 	select {
 	case <-timer.C:
 		phony.Block(tA, func() {
-			for p := range tA.peers {
-				fmt.Println("DEBUG1:", tA.core.crypto.publicKey, p.key)
+			for k := range tA.peers {
+				fmt.Println("DEBUG1:", tA.core.crypto.publicKey, k)
 			}
 			for k := range tA.dinfos {
 				fmt.Println("DEBUG2:", tA.core.crypto.publicKey, k)
 			}
 		})
 		phony.Block(tB, func() {
-			for p := range tB.peers {
-				fmt.Println("DEBUG1:", tB.core.crypto.publicKey, p.key)
+			for k := range tB.peers {
+				fmt.Println("DEBUG1:", tB.core.crypto.publicKey, k)
 			}
 			for k := range tB.dinfos {
 				fmt.Println("DEBUG2:", tB.core.crypto.publicKey, k)
