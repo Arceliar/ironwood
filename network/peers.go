@@ -14,8 +14,8 @@ import (
 const (
 	peerENABLE_DELAY_SCALING = 0
 	peerRETRY_WINDOW         = 2 // seconds to wait between expected time and timeout
-	peerINIT_DELAY           = 4 // backwards compatibiity / historical reasons
-	peerINIT_TIMEOUT         = 6 // backwards compatiblity / historical reasons
+	peerINIT_DELAY           = 40 // backwards compatibiity / historical reasons
+	peerINIT_TIMEOUT         = 60 // backwards compatiblity / historical reasons
 	peerMIN_DELAY            = 1
 	peerMAX_DELAY            = 30 // TODO figure out what makes sense
 )
@@ -137,7 +137,7 @@ func (p *peer) handler() error {
 	defer func() {
 		p.peers.core.dhtree.remove(nil, p)
 	}()
-	p.peers.core.dhtree.addPeer(nil, p)
+	p.peers.core.dhtree.updatePeer(nil, p)
 	done := make(chan struct{})
 	defer close(done)
 	p.writer.keepAlive = func() {
@@ -186,6 +186,7 @@ func (p *peer) handler() error {
 		}
 		var err error
 		phony.Block(p, func() {
+			p.peers.core.dhtree.updatePeer(p, p)
 			err = p._handlePacket(bs)
 		})
 		if err != nil {

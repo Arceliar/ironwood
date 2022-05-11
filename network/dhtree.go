@@ -25,7 +25,7 @@ type dhtree struct {
 	phony.Inbox
 	core       *core
 	pathfinder pathfinder
-	peers      map[publicKey]map[*peer]struct{}
+	peers      map[publicKey]map[*peer]time.Time
 	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
 	dinfos     map[publicKey]*dhtInfo
@@ -44,7 +44,7 @@ type treeExpiredInfo struct {
 
 func (t *dhtree) init(c *core) {
 	t.core = c
-	t.peers = make(map[publicKey]map[*peer]struct{})
+	t.peers = make(map[publicKey]map[*peer]time.Time)
 	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
 	t.dinfos = make(map[publicKey]*dhtInfo)
@@ -116,12 +116,12 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 	})
 }
 
-func (t *dhtree) addPeer(from phony.Actor, p *peer) {
+func (t *dhtree) updatePeer(from phony.Actor, p *peer) {
 	t.Act(from, func() {
 		if _, isIn := t.peers[p.key]; !isIn {
-			t.peers[p.key] = make(map[*peer]struct{})
+			t.peers[p.key] = make(map[*peer]time.Time)
 		}
-		t.peers[p.key][p] = struct{}{}
+		t.peers[p.key][p] = time.Now()
 	})
 }
 
@@ -144,6 +144,8 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 				//dinfo.peer = nil
 				//continue
 				//t._teardown(p, dinfo.getTeardown())
+				dinfo.peer = nil
+				continue // FIXME deleting the dinfo early would potentially allow us to re-learn this path, which could loop
 				dinfo.timer.Stop()
 				delete(t.dinfos, k)
 			}
@@ -387,8 +389,14 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 			break
 		}
 		// TODO something faster than this inner loop
-		for p := range t.peers[s.key] {
-			if !dinfo.peer.key.equal(p.key) || p.time.Before(dinfo.peer.time) {
+		ps := t.peers[s.key]
+		for p := range ps {
+			if time.Since(ps[p]) > dhtTIMEOUT {
+				continue
+			}
+			if !dinfo.peer.key.equal(p.key) || ps[p].After(ps[dinfo.peer]) {
+				// Use the peer instance we heard from most recently, for reliability
+				// TODO something better, this could lead to using the slowest link etc...
 				dinfo.peer = p
 			}
 		}
@@ -438,13 +446,16 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		kept := make(map[publicKey]struct{}, len(bhs))
 		for _, s := range bhs {
 			// TODO something faster than this inner loop
-			for p := range t.peers[s.key] {
-				delete(sendTo, p)
-			}
-			if dinfo.peer == nil || dinfo.peer.key != s.key {
-				continue
-			}
-			if _, isIn := kept[s.key]; isIn {
+      if ps, isIn := t.peers[s.key]; isIn {
+        for p := range ps {
+          delete(sendTo, p)
+        }
+      } else {
+        // Not a peer
+        continue
+      }
+			if _, isIn := kept[s.key]; isIn || s.key.equal(t.core.crypto.publicKey) {
+        // Already added to bhs
 				continue
 			}
 			kept[s.key] = struct{}{}
