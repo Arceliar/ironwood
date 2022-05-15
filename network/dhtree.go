@@ -12,9 +12,11 @@ const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
-	dhtANNOUNCE  = 3 * time.Second
-	dhtTIMEOUT   = 2*dhtANNOUNCE + time.Second
-	dhtCLEANUP   = dhtANNOUNCE + dhtTIMEOUT + time.Second
+	dhtANNOUNCE  = 5 * time.Second
+	dhtTIMEOUT   = dhtANNOUNCE + time.Second
+	dhtCLEANUP   = 2 * dhtTIMEOUT
+	dhtWINDOW    = 250 * time.Millisecond
+	dhtTIMESTEP  = dhtWINDOW
 )
 
 /**********
@@ -25,7 +27,7 @@ type dhtree struct {
 	phony.Inbox
 	core       *core
 	pathfinder pathfinder
-	peers      map[publicKey]map[*peer]time.Time
+	peers      map[publicKey]map[*peer]struct{}
 	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos     map[*peer]*treeInfo
 	dinfos     map[publicKey]*dhtInfo
@@ -35,6 +37,7 @@ type dhtree struct {
 	stimer     *time.Timer // time.AfterFunc for self/parent expiration
 	wait       bool        // FIXME this shouldn't be needed
 	hseq       uint64      // used to track the order treeInfo updates are handled
+	delay      time.Duration
 }
 
 type treeExpiredInfo struct {
@@ -44,7 +47,7 @@ type treeExpiredInfo struct {
 
 func (t *dhtree) init(c *core) {
 	t.core = c
-	t.peers = make(map[publicKey]map[*peer]time.Time)
+	t.peers = make(map[publicKey]map[*peer]struct{})
 	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
 	t.dinfos = make(map[publicKey]*dhtInfo)
@@ -81,6 +84,10 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			p.sendTree(t, t.self)
 		}
 		t.tinfos[p] = info
+		if _, isIn := t.peers[p.key]; !isIn {
+			t.peers[p.key] = make(map[*peer]struct{})
+		}
+		t.peers[p.key][p] = struct{}{}
 		if p == t.parent {
 			if t.wait {
 				panic("this should never happen")
@@ -113,15 +120,6 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 		if !t.wait {
 			t._fix()
 		}
-	})
-}
-
-func (t *dhtree) updatePeer(from phony.Actor, p *peer) {
-	t.Act(from, func() {
-		if _, isIn := t.peers[p.key]; !isIn {
-			t.peers[p.key] = make(map[*peer]time.Time)
-		}
-		t.peers[p.key][p] = time.Now()
 	})
 }
 
@@ -226,6 +224,8 @@ func (t *dhtree) _fix() {
 			})
 		})
 		t._sendTree() // Send the tree update to our peers
+		t.delay = 0
+		t._doBootstrap()
 	}
 	// Clean up t.expired (remove anything worse than the current root)
 	for skey := range t.expired {
@@ -280,10 +280,9 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 // _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
 // this only uses the source direction of paths through the dht
 // bootstraps use slightly different logic, since they need to stop short of the destination key
-func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark) *dhtInfo {
+func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark) *peer {
 	// Start by defining variables and helper functions
 	var bestInfo *dhtInfo
-	var firstInfo *dhtInfo
 	// doUpdate is just to make sure we don't forget to update something
 	doUpdate := func(d *dhtInfo) {
 		bestInfo = d
@@ -306,10 +305,10 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		if isBootstrap && time.Since(info.time) > dhtTIMEOUT {
 			return
 		}
-		doCheckedUpdate(info) // updates if the source is better
-		if firstInfo == nil || treeLess(info.key, firstInfo.key) {
-			firstInfo = info
+		if isBootstrap && info.peer == nil {
+			return
 		}
+		doCheckedUpdate(info) // updates if the source is better
 	}
 	// Update based on our DHT infos
 	for _, dinfo := range t.dinfos {
@@ -317,23 +316,29 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 		doDHT(dinfo)
 	}
 	// Escape hatch:
-	// If the target is even lower than the lowest known key, forward towards that key
+	// If the target is even lower than the lowest known key, forward towards the root
+	// That allows lower keys to eventually make it to the root in the worst case
 	// This is just to make the DHT complete (otherwise, keys lower than the lowest known key would route to nowhere)
-	if bestInfo == nil && !isBootstrap {
-		doUpdate(firstInfo)
+	if bestInfo == nil {
+		if mark != nil && mark.seq != 0 {
+			return nil
+		}
+		return t.parent
+		// FIXME? the above could loop? for watermark reasons
+		// TODO? re-add the lookup based on full ancestry info? When is this safe?
 	}
 	// Check high water mark (loop avoidance)
-	if mark != nil && bestInfo != nil {
-		if treeLess(bestInfo.key, mark.key) || (bestInfo.key.equal(mark.key) && bestInfo.seq < mark.seq) {
-			// The best isn't good enough
-			bestInfo = nil
-		} else {
-			// Update the watermark
-			mark.key = bestInfo.key
-			mark.seq = bestInfo.seq
+	if mark != nil {
+		if treeLess(bestInfo.key, mark.key) {
+			return nil
 		}
+		if bestInfo.key.equal(mark.key) && bestInfo.seq < mark.seq {
+			return nil
+		}
+		mark.key = bestInfo.key
+		mark.seq = bestInfo.seq
 	}
-	return bestInfo
+	return bestInfo.peer
 }
 
 // _dhtAdd adds a dhtInfo to the dht and returns true
@@ -391,11 +396,8 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		// TODO something faster than this inner loop
 		ps := t.peers[s.key]
 		for p := range ps {
-			if time.Since(ps[p]) > dhtTIMEOUT {
-				continue
-			}
-			if !dinfo.peer.key.equal(p.key) || ps[p].After(ps[dinfo.peer]) {
-				// Use the peer instance we heard from most recently, for reliability
+			if !dinfo.peer.key.equal(p.key) || p.time.Before(dinfo.peer.time) {
+				// Use the peer instance we've known about the longest, for reliability
 				// TODO something better, this could lead to using the slowest link etc...
 				dinfo.peer = p
 			}
@@ -428,17 +430,10 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		// Get the next hop(s)
 		sendTo := make(map[*peer]struct{})
 		if next := t._dhtLookup(bootstrap.key, true, nil); next != nil {
-			if next.peer != nil {
-				sendTo[next.peer] = struct{}{}
-			}
+			sendTo[next] = struct{}{}
 		} else {
-			// We don't know a valid next hop, meaning this is the lowest key
-			// Broadcast it to all our peers
-			for _, ps := range t.peers {
-				for p := range ps {
-					sendTo[p] = struct{}{}
-				}
-			}
+			// There's nowhere else to send this
+			return
 		}
 		// Fix the bootstrap hop sigs before sending
 		bhs := bootstrap.bhs
@@ -446,16 +441,16 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		kept := make(map[publicKey]struct{}, len(bhs))
 		for _, s := range bhs {
 			// TODO something faster than this inner loop
-      if ps, isIn := t.peers[s.key]; isIn {
-        for p := range ps {
-          delete(sendTo, p)
-        }
-      } else {
-        // Not a peer
-        continue
-      }
+			if ps, isIn := t.peers[s.key]; isIn {
+				for p := range ps {
+					delete(sendTo, p)
+				}
+			} else {
+				// Not a peer
+				continue
+			}
 			if _, isIn := kept[s.key]; isIn || s.key.equal(t.core.crypto.publicKey) {
-        // Already added to bhs
+				// Already added to bhs
 				continue
 			}
 			kept[s.key] = struct{}{}
@@ -487,7 +482,11 @@ func (t *dhtree) _doBootstrap() {
 	}
 	t._handleBootstrap(nil, t._newBootstrap())
 	t.btimer.Stop()
-	waitTime := dhtANNOUNCE - 250*time.Millisecond + time.Duration(rand.Intn(500))*time.Millisecond
+	t.delay += dhtTIMESTEP
+	if t.delay > dhtANNOUNCE {
+		t.delay = dhtANNOUNCE
+	}
+	waitTime := t.delay - dhtWINDOW + dhtWINDOW*time.Duration(rand.Intn(2048))/1024
 	t.btimer = time.AfterFunc(waitTime, func() {
 		t.Act(nil, t._doBootstrap)
 	})
@@ -498,7 +497,7 @@ func (t *dhtree) _doBootstrap() {
 func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
 	t.Act(from, func() {
 		next := t._dhtLookup(tr.dest, false, &tr.mark)
-		if next == nil || next.peer == nil {
+		if next == nil {
 			if tr.dest.equal(t.core.crypto.publicKey) {
 				dest := tr.source
 				if doNotify {
@@ -507,7 +506,7 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 			}
 			t.core.pconn.handleTraffic(tr)
 		} else {
-			next.peer.sendDHTTraffic(t, tr)
+			next.sendDHTTraffic(t, tr)
 		}
 	})
 }

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"math"
+	//"math"
 	"net"
 	"time"
 
@@ -12,12 +12,12 @@ import (
 )
 
 const (
-	peerENABLE_DELAY_SCALING = 0
+	peerENABLE_DELAY_SCALING = 1
 	peerRETRY_WINDOW         = 2 // seconds to wait between expected time and timeout
-	peerINIT_DELAY           = 40 // backwards compatibiity / historical reasons
-	peerINIT_TIMEOUT         = 60 // backwards compatiblity / historical reasons
+	peerINIT_DELAY           = 4 // backwards compatibiity / historical reasons
+	peerINIT_TIMEOUT         = 6 // backwards compatiblity / historical reasons
 	peerMIN_DELAY            = 1
-	peerMAX_DELAY            = 30 // TODO figure out what makes sense
+	peerMAX_DELAY            = 10 // TODO figure out what makes sense
 )
 
 type peerPort uint64
@@ -137,7 +137,6 @@ func (p *peer) handler() error {
 	defer func() {
 		p.peers.core.dhtree.remove(nil, p)
 	}()
-	p.peers.core.dhtree.updatePeer(nil, p)
 	done := make(chan struct{})
 	defer close(done)
 	p.writer.keepAlive = func() {
@@ -153,7 +152,7 @@ func (p *peer) handler() error {
 			}
 			// TODO figure out a good delay schedule, this is just a placeholder
 			uptime := time.Since(p.time)
-			delay := uint(math.Sqrt(uptime.Minutes()))
+			delay := uint(uptime.Minutes()) //uint(math.Sqrt(uptime.Minutes()))
 			// Clamp to allowed range
 			switch {
 			case delay < peerMIN_DELAY:
@@ -186,7 +185,6 @@ func (p *peer) handler() error {
 		}
 		var err error
 		phony.Block(p, func() {
-			p.peers.core.dhtree.updatePeer(p, p)
 			err = p._handlePacket(bs)
 		})
 		if err != nil {
@@ -241,7 +239,6 @@ func (p *peer) _handleTree(bs []byte) error {
 }
 
 func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
-	return // TODO DEBUG testing with no tree
 	p.Act(from, func() {
 		info = info.add(p.peers.core.crypto.privateKey, p)
 		p.writer.sendPacket(wireProtoTree, info)
@@ -276,7 +273,7 @@ func (p *peer) _handlePathNotify(bs []byte) error {
 }
 
 func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
-	return // TODO DEBUG testing with no tree or pathfinder
+	//return // TODO DEBUG testing with no pathfinder
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoPathNotify, notify)
 	})
@@ -336,7 +333,6 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 */
 
 func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
-	return // DEBUG disable pathfinder
 	p.Act(from, func() {
 		p._push(tr)
 	})
