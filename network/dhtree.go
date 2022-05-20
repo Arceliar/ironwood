@@ -12,9 +12,9 @@ const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
-	dhtANNOUNCE  = 5 * time.Second
+	dhtANNOUNCE  = 9 * time.Second
 	dhtTIMEOUT   = dhtANNOUNCE + time.Second
-	dhtCLEANUP   = 2 * dhtTIMEOUT
+	dhtCLEANUP   = dhtTIMEOUT
 	dhtWINDOW    = 250 * time.Millisecond
 	dhtTIMESTEP  = dhtWINDOW
 )
