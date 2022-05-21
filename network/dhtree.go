@@ -13,7 +13,8 @@ const (
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
 	dhtANNOUNCE  = 9 * time.Second
-	dhtTIMEOUT   = dhtANNOUNCE + time.Second
+	dhtTOLERANCE = time.Second // Must be appreciably greater than dhtWINDOW
+	dhtTIMEOUT   = dhtANNOUNCE + dhtTOLERANCE
 	dhtCLEANUP   = dhtTIMEOUT
 	dhtWINDOW    = 250 * time.Millisecond
 	dhtTIMESTEP  = dhtWINDOW

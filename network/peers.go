@@ -304,34 +304,6 @@ func (p *peer) _handlePathTraffic(bs []byte) error {
 	return nil
 }
 
-/*
-func (p *peer) _handlePathTraffic(bs []byte) error {
-	tr := new(pathTraffic)
-	if err := tr.decode(bs); err != nil {
-		return err
-	}
-	// TODO? don't send to p.peers, have a (read-only) copy of the map locally? via atomics?
-	p.peers.handlePathTraffic(p, tr)
-	return nil
-}
-
-func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
-	ps.Act(from, func() {
-		var nextPort peerPort
-		if len(tr.path) > 0 {
-			nextPort, tr.path = tr.path[0], tr.path[1:]
-		}
-		if next := ps.peers[nextPort]; next != nil {
-			// Forward using the source routed path
-			next.sendPathTraffic(nil, tr)
-		} else {
-			// Fall back to dhtTraffic
-			ps.core.dhtree.handleDHTTraffic(ps, &tr.dt, false)
-		}
-	})
-}
-*/
-
 func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	p.Act(from, func() {
 		p._push(tr)
