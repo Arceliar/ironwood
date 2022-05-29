@@ -12,10 +12,10 @@ const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
-	dhtANNOUNCE  = 9 * time.Second
+	dhtANNOUNCE  = 3 * time.Second
 	dhtTOLERANCE = time.Second // Must be appreciably greater than dhtWINDOW
 	dhtTIMEOUT   = dhtANNOUNCE + dhtTOLERANCE
-	dhtCLEANUP   = dhtTIMEOUT
+	dhtCLEANUP   = dhtTIMEOUT + time.Minute
 	dhtWINDOW    = 250 * time.Millisecond
 	dhtTIMESTEP  = dhtWINDOW
 )
@@ -138,15 +138,12 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 			t.parent = nil
 			t._fix()
 		}
-		for k, dinfo := range t.dinfos {
+		for _, dinfo := range t.dinfos {
 			if dinfo.peer == p {
 				//dinfo.peer = nil
 				//continue
 				//t._teardown(p, dinfo.getTeardown())
 				dinfo.peer = nil
-				continue // FIXME deleting the dinfo early would potentially allow us to re-learn this path, which could loop
-				dinfo.timer.Stop()
-				delete(t.dinfos, k)
 			}
 		}
 	})
@@ -303,7 +300,8 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark
 	}
 	// doDHT updates best based on a DHT path
 	doDHT := func(info *dhtInfo) {
-		if isBootstrap && time.Since(info.time) > dhtTIMEOUT {
+		if (isBootstrap || true) && time.Since(info.time) > dhtTIMEOUT {
+			// FIXME? only do this for bootstraps?
 			return
 		}
 		if isBootstrap && info.peer == nil {
@@ -417,6 +415,19 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	return dinfo
 }
 
+func (t *dhtree) _getRedirects(next *dhtInfo) []*dhtInfo {
+	var redirects []*dhtInfo
+	for _, dinfo := range t.dinfos {
+		if time.Since(dinfo.time) > dhtTIMEOUT {
+			continue
+		}
+		if dhtOrdered(dinfo.target.key, next.key, dinfo.key) {
+			redirects = append(redirects, dinfo)
+		}
+	}
+	return redirects
+}
+
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
@@ -430,11 +441,8 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		}
 		// Get the next hop(s)
 		sendTo := make(map[*peer]struct{})
-		if next := t._dhtLookup(bootstrap.key, true, nil); next != nil {
+		if next := t._dhtLookup(bootstrap.key, true, &dinfo.target); next != nil {
 			sendTo[next] = struct{}{}
-		} else {
-			// There's nowhere else to send this
-			return
 		}
 		// Fix the bootstrap hop sigs before sending
 		bhs := bootstrap.bhs
@@ -461,9 +469,30 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		s.key = t.core.crypto.publicKey
 		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 		bootstrap.bhs = append(bootstrap.bhs, s)
+		dinfo.bhs = bootstrap.bhs
 		// Send to peers
 		for p := range sendTo {
 			p.sendBootstrap(t, bootstrap)
+		}
+		// Now redirect old paths that should have followed this route
+		if dinfo.peer != nil {
+			for _, dfo := range t._getRedirects(dinfo) {
+				dfo.target = dhtWatermark{dinfo.key, dinfo.seq}
+				var skip bool
+				for _, bh := range dfo.bhs {
+					if bh.key.equal(dinfo.peer.key) {
+						skip = true
+						break
+					}
+				}
+				if skip {
+					// They (should) already know about this path
+					continue
+				}
+				// TODO? cover any remaining edge cases?
+				// Routing loops from races between timeouts and redirects?
+				dinfo.peer.sendBootstrap(t, &dfo.dhtBootstrap)
+			}
 		}
 	}
 }
@@ -766,9 +795,10 @@ func (l *treeLabel) decode(data []byte) error {
 
 type dhtInfo struct {
 	dhtBootstrap
-	peer  *peer
-	time  time.Time
-	timer *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
+	peer   *peer
+	target dhtWatermark
+	time   time.Time
+	timer  *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
 }
 
 /****************
