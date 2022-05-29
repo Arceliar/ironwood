@@ -93,7 +93,7 @@ func (pf *pathfinder) _getPath(dest publicKey) []peerPort {
 
 func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 	pf.dhtree.Act(from, func() {
-		if next := pf.dhtree._dhtLookup(n.dest, false, &n.mark); next != nil {
+		if next := pf.dhtree._dhtLookup(n.dest, false, &n.mark, false); next != nil {
 			next.sendPathNotify(pf.dhtree, n)
 			return
 		}
