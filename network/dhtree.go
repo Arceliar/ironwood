@@ -522,6 +522,17 @@ func (t *dhtree) _doBootstrap() {
 	})
 }
 
+// TODO comment
+
+func (t *dhtree) _handleDeactivate(prev *peer, deactivate *dhtDeactivate) {
+}
+
+func (t *dhtree) handleDeactivate(from phony.Actor, prev *peer, deactivate *dhtDeactivate) {
+	t.Act(from, func() {
+		t._handleDeactivate(prev, deactivate)
+	})
+}
+
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
 func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
@@ -874,6 +885,25 @@ func (dbs *dhtBootstrap) decode(data []byte) error {
 		tmp.bhs = append(tmp.bhs, s)
 	}
 	*dbs = tmp
+	return nil
+}
+
+/*****************
+ * dhtDeactivate *
+ *****************/
+
+type dhtDeactivate struct {
+	dhtWatermark // hack to use existing encode/decode methods
+}
+
+func (d *dhtDeactivate) decode(data []byte) error {
+	var tmp dhtDeactivate
+	if !tmp.chop(&data) {
+		return wireDecodeError
+	} else if len(data) != 0 {
+		return wireDecodeError
+	}
+	*d = tmp
 	return nil
 }
 
