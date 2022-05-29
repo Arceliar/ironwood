@@ -435,7 +435,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 func (t *dhtree) _getRedirects(next *dhtInfo) []*dhtInfo {
 	var redirects []*dhtInfo
 	for _, dinfo := range t.dinfos {
-		if time.Since(dinfo.time) > dhtTIMEOUT {
+		if dinfo.isDeactivated || time.Since(dinfo.time) > dhtTIMEOUT {
 			continue
 		}
 		if dhtOrdered(dinfo.target.key, next.key, dinfo.key) {
