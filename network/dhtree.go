@@ -378,6 +378,7 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
 			if nfo := t.dinfos[info.key]; nfo == info {
+				t._handleDeactivate(nfo.peer, &dhtDeactivate{dhtWatermark{nfo.key, nfo.seq}})
 				delete(t.dinfos, nfo.key)
 			}
 		})
