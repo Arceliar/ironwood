@@ -365,6 +365,13 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 		if dinfo.seq < info.seq {
 			dinfo.timer.Stop()
 			delete(t.dinfos, dinfo.key)
+			t.Act(nil, func() {
+				// TODO FIXME This is a hack to do this after the new info's sendTo has been populated
+				for p := range info.sendTo {
+					delete(dinfo.sendTo, p)
+				}
+				t._handleDeactivate(dinfo.peer, &dhtDeactivate{dhtWatermark{dinfo.key, dinfo.seq}})
+			})
 		} else {
 			// We already have a path that's either the same seq or better, so ignore this one
 			// TODO? keep the path, but don't forward it anywhere
@@ -434,6 +441,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 }
 
 func (t *dhtree) _getRedirects(next *dhtInfo) []*dhtInfo {
+	//return nil // TODO FIXME redirects are causing flapping in the convergence test
 	var redirects []*dhtInfo
 	for _, dinfo := range t.dinfos {
 		if dinfo.isDeactivated || time.Since(dinfo.time) > dhtTIMEOUT {
@@ -489,10 +497,10 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		s.key = t.core.crypto.publicKey
 		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
 		bootstrap.bhs = append(bootstrap.bhs, s)
-		dinfo.bhs = bootstrap.bhs
+		dinfo.bhs = bootstrap.bhs // Save the permanent copy
 		// Send to peers
 		for p := range dinfo.sendTo {
-			p.sendBootstrap(t, bootstrap)
+			p.sendBootstrap(t, &dinfo.dhtBootstrap)
 		}
 		// Now redirect old paths that should have followed this route
 		if dinfo.peer != nil {
@@ -501,17 +509,19 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 					continue
 				}
 				dfo.target = dhtWatermark{dinfo.key, dinfo.seq}
-				var skip bool
-				for _, bh := range dfo.bhs {
-					if bh.key.equal(dinfo.peer.key) {
-						skip = true
-						break
+				/*
+					var skip bool
+					for _, bh := range dfo.bhs {
+						if bh.key.equal(dinfo.peer.key) {
+							skip = true
+							break
+						}
 					}
-				}
-				if skip {
-					// They (should) already know about this path
-					continue
-				}
+					if skip {
+						// They (should) already know about this path
+						continue
+					}
+				*/
 				dfo.sendTo[dinfo.peer] = struct{}{}
 				// TODO? cover any remaining edge cases?
 				// Routing loops from races between timeouts and redirects?
