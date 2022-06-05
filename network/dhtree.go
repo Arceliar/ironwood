@@ -580,6 +580,25 @@ func (t *dhtree) _handleDeactivate(prev *peer, deactivate *dhtDeactivate) {
 		}
 		// TODO? reset dinfo.target?
 		// TODO? redirect anything that should have gone elsewhere?
+		for _, dfo := range t.dinfos {
+			if dfo.isDeactivated {
+				continue
+			}
+			if time.Since(dfo.time) > dhtTIMEOUT {
+				continue
+			}
+			if dfo.target.seq != dinfo.seq || !dfo.target.key.equal(dinfo.key) {
+				continue
+			}
+			dfo.target = dhtWatermark{}
+			if next := t._dhtLookup(dfo.key, true, &dfo.target, true); next != nil {
+				if _, isIn := dfo.sendTo[next]; !isIn {
+					// Forward towards a different active path
+					dfo.sendTo[next] = struct{}{}
+					next.sendBootstrap(t, &dfo.dhtBootstrap)
+				}
+			}
+		}
 	}
 }
 
