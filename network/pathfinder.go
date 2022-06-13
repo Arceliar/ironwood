@@ -101,9 +101,9 @@ func (pf *pathfinder) handleNotify(from phony.Actor, n *pathNotify) {
 			return
 		}
 		if pinfo, isIn := pf.paths[n.label.key]; isIn {
-			if n.label.destSeq > pinfo.seq && n.check() {
+			if n.label.seq > pinfo.seq && n.check() {
 				pinfo.path = n.label.path
-				pinfo.seq = n.label.destSeq
+				pinfo.seq = n.label.seq
 			}
 		}
 	})

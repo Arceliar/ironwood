@@ -141,21 +141,6 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 		for _, dinfo := range t.dinfos {
 			if dinfo.peer == p {
 				dinfo.peer = nil
-				for _, bh := range dinfo.bhs {
-					for p := range t.peers[bh.key] {
-						if dinfo.peer == nil || p.time.Before(dinfo.peer.time) {
-							dinfo.peer = p
-						}
-					}
-					if dinfo.peer != nil {
-						break
-					}
-				}
-				if dinfo.peer == nil {
-					t._handleDeactivate(p, &dhtDeactivate{
-						dhtWatermark{dinfo.key, dinfo.seq},
-					})
-				}
 			}
 		}
 	})
@@ -370,7 +355,6 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 				for p := range info.sendTo {
 					delete(dinfo.sendTo, p)
 				}
-				t._handleDeactivate(dinfo.peer, &dhtDeactivate{dhtWatermark{dinfo.key, dinfo.seq}})
 			})
 		} else {
 			// We already have a path that's either the same seq or better, so ignore this one
@@ -385,7 +369,6 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 		t.Act(nil, func() {
 			// Clean up path if it has timed out
 			if nfo := t.dinfos[info.key]; nfo == info {
-				t._handleDeactivate(nfo.peer, &dhtDeactivate{dhtWatermark{nfo.key, nfo.seq}})
 				delete(t.dinfos, nfo.key)
 			}
 		})
@@ -398,10 +381,8 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 // _newBootstrap returns a *dhtBootstrap for this node, using t.self, with a signature
 func (t *dhtree) _newBootstrap() *dhtBootstrap {
 	dbs := &dhtBootstrap{
-		key: t.core.crypto.publicKey,
-		seq: uint64(time.Now().Unix()),
+		*t._getLabel(),
 	}
-	dbs.sig = t.core.crypto.privateKey.sign(dbs.bytesForSig())
 	return dbs
 }
 
@@ -411,23 +392,6 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 		peer:         prev,
 		time:         time.Now(),
 	}
-	// Possibly set peer to something != prev, if it's better
-	for _, s := range bootstrap.bhs {
-		if prev != nil && dinfo.peer != prev {
-			// We already found something better than prev, so break the outer loop
-			break
-		}
-		// TODO something faster than this inner loop
-		ps := t.peers[s.key]
-		for p := range ps {
-			if !dinfo.peer.key.equal(p.key) || p.time.Before(dinfo.peer.time) {
-				// Use the peer instance we've known about the longest, for reliability
-				// TODO something better, this could lead to using the slowest link etc...
-				dinfo.peer = p
-			}
-		}
-	}
-	dinfo.dhtBootstrap.bhs = nil
 	if dinfo.peer == nil {
 		if !dinfo.key.equal(t.core.crypto.publicKey) {
 			panic("this should never happen")
@@ -472,32 +436,6 @@ func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
 		if next := t._dhtLookup(bootstrap.key, true, nil, false); next != nil {
 			dinfo.sendTo[next] = struct{}{}
 		}
-		// Fix the bootstrap hop sigs before sending
-		bhs := bootstrap.bhs
-		bootstrap.bhs = bootstrap.bhs[:0]
-		kept := make(map[publicKey]struct{}, len(bhs))
-		for _, s := range bhs {
-			// TODO something faster than this inner loop
-			if ps, isIn := t.peers[s.key]; isIn {
-				for p := range ps {
-					delete(dinfo.sendTo, p)
-				}
-			} else {
-				// Not a peer
-				continue
-			}
-			if _, isIn := kept[s.key]; isIn || s.key.equal(t.core.crypto.publicKey) {
-				// Already added to bhs
-				continue
-			}
-			kept[s.key] = struct{}{}
-			bootstrap.bhs = append(bootstrap.bhs, s)
-		}
-		var s bootstrapHopSig
-		s.key = t.core.crypto.publicKey
-		s.sig = t.core.crypto.privateKey.sign(bootstrap.bytesForSig())
-		bootstrap.bhs = append(bootstrap.bhs, s)
-		dinfo.bhs = bootstrap.bhs // Save the permanent copy
 		// Send to peers
 		for p := range dinfo.sendTo {
 			p.sendBootstrap(t, &dinfo.dhtBootstrap)
@@ -556,59 +494,6 @@ func (t *dhtree) _doBootstrap() {
 	})
 }
 
-// TODO comment
-
-func (t *dhtree) _handleDeactivate(prev *peer, deactivate *dhtDeactivate) {
-	//return // FIXME DEBUG, test with/without this
-	if dinfo, isIn := t.dinfos[deactivate.key]; isIn {
-		if dinfo.isDeactivated || dinfo.seq != deactivate.seq {
-			return
-		}
-		var found bool
-		for _, bh := range dinfo.bhs {
-			if bh.key.equal(prev.key) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return
-		}
-		dinfo.isDeactivated = true
-		// Forward to next hop(s)
-		for p := range dinfo.sendTo {
-			p.sendDeactivate(t, deactivate)
-		}
-		// TODO? reset dinfo.target?
-		// TODO? redirect anything that should have gone elsewhere?
-		for _, dfo := range t.dinfos {
-			if dfo.isDeactivated {
-				continue
-			}
-			if time.Since(dfo.time) > dhtTIMEOUT {
-				continue
-			}
-			if dfo.target.seq != dinfo.seq || !dfo.target.key.equal(dinfo.key) {
-				continue
-			}
-			dfo.target = dhtWatermark{}
-			if next := t._dhtLookup(dfo.key, true, &dfo.target, true); next != nil {
-				if _, isIn := dfo.sendTo[next]; !isIn {
-					// Forward towards a different active path
-					dfo.sendTo[next] = struct{}{}
-					next.sendBootstrap(t, &dfo.dhtBootstrap)
-				}
-			}
-		}
-	}
-}
-
-func (t *dhtree) handleDeactivate(from phony.Actor, prev *peer, deactivate *dhtDeactivate) {
-	t.Act(from, func() {
-		t._handleDeactivate(prev, deactivate)
-	})
-}
-
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
 func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
@@ -651,7 +536,7 @@ func (t *dhtree) _getLabel() *treeLabel {
 	label.key = t.core.crypto.publicKey
 	label.root = t.self.root
 	label.rootSeq = t.self.seq
-	label.destSeq = uint64(time.Now().Unix())
+	label.seq = uint64(time.Now().Unix())
 	for _, hop := range t.self.hops {
 		label.path = append(label.path, hop.port)
 	}
@@ -819,7 +704,7 @@ type treeLabel struct {
 	key     publicKey
 	root    publicKey
 	rootSeq uint64
-	destSeq uint64
+	seq     uint64
 	path    []peerPort
 }
 
@@ -829,7 +714,7 @@ func (l *treeLabel) bytesForSig() []byte {
 	seq := make([]byte, 8)
 	binary.BigEndian.PutUint64(seq, l.rootSeq)
 	bs = append(bs, seq...)
-	binary.BigEndian.PutUint64(seq, l.destSeq)
+	binary.BigEndian.PutUint64(seq, l.seq)
 	bs = append(bs, seq...)
 	bs = wireEncodePath(bs, l.path)
 	return bs
@@ -864,7 +749,7 @@ func (l *treeLabel) decode(data []byte) error {
 	if len(data) < 8 {
 		return wireDecodeError
 	} else {
-		tmp.destSeq = binary.BigEndian.Uint64(data[:8])
+		tmp.seq = binary.BigEndian.Uint64(data[:8])
 		data = data[8:]
 	}
 	if !wireChopPath(&tmp.path, &data) {
@@ -895,94 +780,7 @@ type dhtInfo struct {
  ****************/
 
 type dhtBootstrap struct {
-	sig signature
-	key publicKey
-	seq uint64
-	bhs []bootstrapHopSig
-}
-
-type bootstrapHopSig struct {
-	key publicKey
-	sig signature
-}
-
-func (dbs *dhtBootstrap) bytesForSig() []byte {
-	const size = len(dbs.key) + 8
-	bs := make([]byte, 0, size)
-	bs = append(bs, dbs.key[:]...)
-	bs = bs[:size]
-	binary.BigEndian.PutUint64(bs[len(bs)-8:], dbs.seq)
-	return bs
-}
-
-func (dbs *dhtBootstrap) check() bool {
-	bs := dbs.bytesForSig()
-	for _, s := range dbs.bhs {
-		if !s.key.verify(bs, &s.sig) {
-			return false
-		}
-	}
-	return dbs.key.verify(bs, &dbs.sig)
-}
-
-func (dbs *dhtBootstrap) checkFrom(from publicKey) bool {
-	if len(dbs.bhs) < 1 || !from.equal(dbs.bhs[len(dbs.bhs)-1].key) {
-		return false
-	}
-	return dbs.check()
-}
-
-func (dbs *dhtBootstrap) encode(out []byte) ([]byte, error) {
-	out = append(out, dbs.sig[:]...)
-	out = append(out, dbs.bytesForSig()...)
-	for _, s := range dbs.bhs {
-		out = append(out, s.key[:]...)
-		out = append(out, s.sig[:]...)
-	}
-	return out, nil
-}
-
-func (dbs *dhtBootstrap) decode(data []byte) error {
-	var tmp dhtBootstrap
-	if !wireChopSlice(tmp.sig[:], &data) {
-		return wireDecodeError
-	} else if !wireChopSlice(tmp.key[:], &data) {
-		return wireDecodeError
-	} else if len(data) < 8 { // TODO? < 16, in case it's embedded in something?
-		return wireDecodeError
-	}
-	tmp.seq = binary.BigEndian.Uint64(data[:8])
-	data = data[8:]
-	for len(data) > 0 {
-		var s bootstrapHopSig
-		if !wireChopSlice(s.key[:], &data) {
-			return wireDecodeError
-		} else if !wireChopSlice(s.sig[:], &data) {
-			return wireDecodeError
-		}
-		tmp.bhs = append(tmp.bhs, s)
-	}
-	*dbs = tmp
-	return nil
-}
-
-/*****************
- * dhtDeactivate *
- *****************/
-
-type dhtDeactivate struct {
-	dhtWatermark // hack to use existing encode/decode methods
-}
-
-func (d *dhtDeactivate) decode(data []byte) error {
-	var tmp dhtDeactivate
-	if !tmp.chop(&data) {
-		return wireDecodeError
-	} else if len(data) != 0 {
-		return wireDecodeError
-	}
-	*d = tmp
-	return nil
+	treeLabel
 }
 
 /**************

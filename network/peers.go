@@ -206,8 +206,6 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
 		return p._handleBootstrap(bs[1:])
-	case wireProtoDHTDeactivate:
-		return p._handleDeactivate(bs[1:])
 	case wireProtoPathNotify:
 		return p._handlePathNotify(bs[1:])
 	case wireDHTTraffic:
@@ -252,7 +250,7 @@ func (p *peer) _handleBootstrap(bs []byte) error {
 	if err := bootstrap.decode(bs); err != nil {
 		return err
 	}
-	if !bootstrap.checkFrom(p.key) {
+	if !bootstrap.check() {
 		return errors.New("invalid bootstrap")
 	}
 	p.peers.core.dhtree.handleBootstrap(p, p, bootstrap)
@@ -262,21 +260,6 @@ func (p *peer) _handleBootstrap(bs []byte) error {
 func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoDHTBootstrap, bootstrap)
-	})
-}
-
-func (p *peer) _handleDeactivate(bs []byte) error {
-	deactivate := new(dhtDeactivate)
-	if err := deactivate.decode(bs); err != nil {
-		return err
-	}
-	p.peers.core.dhtree.handleDeactivate(p, p, deactivate)
-	return nil
-}
-
-func (p *peer) sendDeactivate(from phony.Actor, deactivate *dhtDeactivate) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoDHTDeactivate, deactivate)
 	})
 }
 
