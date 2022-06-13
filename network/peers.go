@@ -206,12 +206,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
 		return p._handleBootstrap(bs[1:])
-	case wireProtoPathNotify:
-		return p._handlePathNotify(bs[1:])
 	case wireDHTTraffic:
 		return p._handleDHTTraffic(bs[1:])
-	case wirePathTraffic:
-		return p._handlePathTraffic(bs[1:])
 	case wireKeepAlive:
 		return p._handleKeepAlive(bs[1:])
 	default:
@@ -263,48 +259,16 @@ func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
 	})
 }
 
-func (p *peer) _handlePathNotify(bs []byte) error {
-	notify := new(pathNotify)
-	if err := notify.decode(bs); err != nil {
-		return err
-	}
-	p.peers.core.dhtree.pathfinder.handleNotify(p, notify)
-	return nil
-}
-
-func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
-	//return // TODO DEBUG testing with no pathfinder
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoPathNotify, notify)
-	})
-}
-
 func (p *peer) _handleDHTTraffic(bs []byte) error {
 	tr := new(dhtTraffic)
 	if err := tr.decode(bs); err != nil {
 		return err // This is just to check that it unmarshals correctly
 	}
-	p.peers.core.dhtree.handleDHTTraffic(p, tr, true)
+	p.peers.core.dhtree.handleDHTTraffic(p, tr)
 	return nil
 }
 
 func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
-	p.Act(from, func() {
-		p._push(tr)
-	})
-}
-
-func (p *peer) _handlePathTraffic(bs []byte) error {
-	tr := new(pathTraffic)
-	if err := tr.decode(bs); err != nil {
-		return err
-	}
-	// TODO? don't send to p.peers, have a (read-only) copy of the map locally? via atomics?
-	p.peers.core.dhtree.pathfinder.handlePathTraffic(p, tr)
-	return nil
-}
-
-func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 	p.Act(from, func() {
 		p._push(tr)
 	})
@@ -332,8 +296,6 @@ func (p *peer) _push(packet wireEncodeable) {
 		switch packet.(type) {
 		case *dhtTraffic:
 			pType = wireDHTTraffic
-		case *pathTraffic:
-			pType = wirePathTraffic
 		default:
 			panic("this should never happen")
 		}
@@ -346,9 +308,6 @@ func (p *peer) _push(packet wireEncodeable) {
 	var size int
 	switch tr := packet.(type) {
 	case *dhtTraffic:
-		sKey, dKey = tr.source, tr.dest
-		size = len(tr.payload)
-	case *pathTraffic:
 		sKey, dKey = tr.source, tr.dest
 		size = len(tr.payload)
 	default:
@@ -369,8 +328,6 @@ func (p *peer) pop() {
 			switch info.packet.(type) {
 			case *dhtTraffic:
 				p.writer.sendPacket(wireDHTTraffic, info.packet)
-			case *pathTraffic:
-				p.writer.sendPacket(wirePathTraffic, info.packet)
 			default:
 				panic("this should never happen")
 			}

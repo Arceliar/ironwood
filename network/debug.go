@@ -81,9 +81,10 @@ func (d *Debug) GetDHT() (infos []DebugDHTInfo) {
 		for _, dinfo := range d.c.dhtree.dinfos {
 			var info DebugDHTInfo
 			info.Key = append(info.Key, dinfo.key[:]...)
-			if dinfo.peer != nil {
-				info.Port = uint64(dinfo.peer.port)
-			}
+			//			if dinfo.peer != nil {
+			//				info.Port = uint64(dinfo.peer.port)
+			//			}
+			// TODO path
 			//if dinfo.rest != nil {
 			//	info.Rest = uint64(dinfo.rest.port)
 			//}
@@ -94,16 +95,18 @@ func (d *Debug) GetDHT() (infos []DebugDHTInfo) {
 }
 
 func (d *Debug) GetPaths() (infos []DebugPathInfo) {
-	phony.Block(&d.c.dhtree, func() {
-		for key, pinfo := range d.c.dhtree.pathfinder.paths {
-			var info DebugPathInfo
-			info.Key = append(info.Key, key[:]...)
-			info.Coords = make([]uint64, 0)
-			for _, hop := range pinfo.path {
-				info.Coords = append(info.Coords, uint64(hop))
+	/*
+		phony.Block(&d.c.dhtree, func() {
+			for key, pinfo := range d.c.dhtree.pathfinder.paths {
+				var info DebugPathInfo
+				info.Key = append(info.Key, key[:]...)
+				info.Coords = make([]uint64, 0)
+				for _, hop := range pinfo.path {
+					info.Coords = append(info.Coords, uint64(hop))
+				}
+				infos = append(infos, info)
 			}
-			infos = append(infos, info)
-		}
-	})
+		})
+	*/
 	return
 }

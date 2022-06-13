@@ -2,7 +2,6 @@ package network
 
 import (
 	"encoding/binary"
-	"math/rand"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -12,12 +11,14 @@ const (
 	treeTIMEOUT  = time.Hour // TODO figure out what makes sense
 	treeANNOUNCE = treeTIMEOUT / 2
 	treeTHROTTLE = treeANNOUNCE / 2 // TODO use this to limit how fast seqs can update
-	dhtANNOUNCE  = 9 * time.Second
-	dhtTOLERANCE = time.Second // Must be appreciably greater than dhtWINDOW
-	dhtTIMEOUT   = dhtANNOUNCE + dhtTOLERANCE
-	dhtCLEANUP   = dhtTIMEOUT + time.Minute
-	dhtWINDOW    = 250 * time.Millisecond
-	dhtTIMESTEP  = dhtWINDOW
+	//dhtANNOUNCE  = 9 * time.Second
+	//dhtTOLERANCE = time.Second // Must be appreciably greater than dhtWINDOW
+	//dhtTIMEOUT   = dhtANNOUNCE + dhtTOLERANCE
+	//dhtCLEANUP   = dhtTIMEOUT + time.Minute
+	//dhtWINDOW    = 250 * time.Millisecond
+	//dhtTIMESTEP  = dhtWINDOW
+	dhtTIMEOUT = 2 * treeTIMEOUT
+	dhtCLEANUP = 2 * dhtTIMEOUT
 )
 
 /**********
@@ -26,19 +27,19 @@ const (
 
 type dhtree struct {
 	phony.Inbox
-	core       *core
-	pathfinder pathfinder
-	peers      map[publicKey]map[*peer]struct{}
-	expired    map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
-	tinfos     map[*peer]*treeInfo
-	dinfos     map[publicKey]*dhtInfo
-	self       *treeInfo   // self info
-	parent     *peer       // peer that sent t.self to us
-	btimer     *time.Timer // time.AfterFunc to send bootstrap packets
-	stimer     *time.Timer // time.AfterFunc for self/parent expiration
-	wait       bool        // FIXME this shouldn't be needed
-	hseq       uint64      // used to track the order treeInfo updates are handled
-	delay      time.Duration
+	core    *core
+	peers   map[publicKey]map[*peer]struct{}
+	expired map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
+	tinfos  map[*peer]*treeInfo
+	dinfos  map[publicKey]*dhtInfo
+	self    *treeInfo   // self info
+	parent  *peer       // peer that sent t.self to us
+	btimer  *time.Timer // time.AfterFunc to send bootstrap packets
+	stimer  *time.Timer // time.AfterFunc for self/parent expiration
+	wait    bool        // FIXME this shouldn't be needed
+	hseq    uint64      // used to track the order treeInfo updates are handled
+	delay   time.Duration
+	seq     uint64
 }
 
 type treeExpiredInfo struct {
@@ -55,8 +56,8 @@ func (t *dhtree) init(c *core) {
 	t.btimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t._fix()                                // Initialize t.self and start announce and timeout timers
+	t.seq = uint64(time.Now().Unix())
 	t.Act(nil, t._doBootstrap)
-	t.pathfinder.init(t)
 }
 
 func (t *dhtree) _sendTree() {
@@ -85,10 +86,20 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 			p.sendTree(t, t.self)
 		}
 		t.tinfos[p] = info
+		var doFlood bool
 		if _, isIn := t.peers[p.key]; !isIn {
 			t.peers[p.key] = make(map[*peer]struct{})
+			doFlood = true
 		}
-		t.peers[p.key][p] = struct{}{}
+		if _, isIn := t.peers[p.key][p]; !isIn {
+			t.peers[p.key][p] = struct{}{}
+			doFlood = true
+		}
+		if doFlood {
+			for _, dinfo := range t.dinfos {
+				p.sendBootstrap(t, &dinfo.dhtBootstrap)
+			}
+		}
 		if p == t.parent {
 			if t.wait {
 				panic("this should never happen")
@@ -138,12 +149,8 @@ func (t *dhtree) remove(from phony.Actor, p *peer) {
 			t.parent = nil
 			t._fix()
 		}
-		for _, dinfo := range t.dinfos {
-			if dinfo.peer == p {
-				dinfo.peer = nil
-			}
-		}
 	})
+	// TODO some logic to remove unreachable DHT nodes
 }
 
 // _fix selects the best parent (and is called in response to receiving a tree update)
@@ -156,9 +163,10 @@ func (t *dhtree) _fix() {
 	if t.self == nil || treeLess(t.core.crypto.publicKey, t.self.root) {
 		// Note that seq needs to be non-decreasing for the node to function as a root
 		//  a timestamp it used to partly mitigate rollbacks from restarting
+		t.seq++
 		t.self = &treeInfo{
 			root: t.core.crypto.publicKey,
-			seq:  uint64(time.Now().Unix()),
+			seq:  t.seq, //uint64(time.Now().Unix()),
 			time: time.Now(),
 		}
 		t.parent = nil
@@ -272,72 +280,103 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 	return bestPeer
 }
 
-// _dhtLookup selects the next hop needed to route closer to the destination in dht keyspace
-// this only uses the source direction of paths through the dht
-// bootstraps use slightly different logic, since they need to stop short of the destination key
-func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark, skipDeactivated bool) *peer {
-	// Start by defining variables and helper functions
-	var bestInfo *dhtInfo
-	// doUpdate is just to make sure we don't forget to update something
-	doUpdate := func(d *dhtInfo) {
-		bestInfo = d
-	}
-	// doCheckedUpdate checks if the provided key is better than the current best, and updates if so
-	doCheckedUpdate := func(d *dhtInfo) {
-		switch {
-		case bestInfo == nil && treeLess(d.key, dest):
-			fallthrough
-		case !isBootstrap && d.key.equal(dest):
-			fallthrough
-		//case !isBootstrap && bestInfo != nil && !bestInfo.key.equal(dest) && d.key.equal(dest):
-		//  fallthrough
-		case bestInfo != nil && dhtOrdered(bestInfo.key, d.key, dest):
-			doUpdate(d)
-		}
-	}
-	// doDHT updates best based on a DHT path
-	doDHT := func(info *dhtInfo) {
-		if skipDeactivated && info.isDeactivated {
-			return
-		}
-		if (isBootstrap || true) && time.Since(info.time) > dhtTIMEOUT {
-			// FIXME? only do this for bootstraps?
-			return
-		}
-		if isBootstrap && info.peer == nil {
-			return
-		}
-		doCheckedUpdate(info) // updates if the source is better
-	}
-	// Update based on our DHT infos
-	for _, dinfo := range t.dinfos {
-		// Note that this includes the self dht entry, so no special logic is needed if we're the destination
-		doDHT(dinfo)
-	}
-	// Escape hatch:
-	// If the target is even lower than the lowest known key, forward towards the root
-	// That allows lower keys to eventually make it to the root in the worst case
-	// This is just to make the DHT complete (otherwise, keys lower than the lowest known key would route to nowhere)
+// TODO document
+func (t *dhtree) _dhtLookup(dest publicKey) *dhtInfo {
+	bestInfo := t.dinfos[dest]
 	if bestInfo == nil {
-		if mark != nil && mark.seq != 0 {
-			return nil
+		// Get the closest key without going over, or default to the lowest key for completeness
+		var lowest *dhtInfo
+		for _, dinfo := range t.dinfos {
+			if bestInfo == nil {
+				if lowest == nil || treeLess(dinfo.key, lowest.key) {
+					lowest = dinfo
+				}
+				if treeLess(dinfo.key, dest) {
+					bestInfo = dinfo
+				}
+				continue
+			}
+			if dhtOrdered(bestInfo.key, dinfo.key, dest) {
+				bestInfo = dinfo
+			}
 		}
-		return t.parent
-		// FIXME? the above could loop? for watermark reasons
-		// TODO? re-add the lookup based on full ancestry info? When is this safe?
+		if bestInfo == nil {
+			bestInfo = lowest
+		}
 	}
-	// Check high water mark (loop avoidance)
-	if mark != nil {
-		if treeLess(bestInfo.key, mark.key) {
-			return nil
-		}
-		if bestInfo.key.equal(mark.key) && bestInfo.seq < mark.seq {
-			return nil
-		}
-		mark.key = bestInfo.key
-		mark.seq = bestInfo.seq
+	return bestInfo
+}
+
+func (t *dhtree) _fullLookup(dest publicKey) *peer {
+	if dinfo := t._dhtLookup(dest); dinfo != nil {
+		return t._treeLookup(&dinfo.treeLabel)
 	}
-	return bestInfo.peer
+	return nil
+}
+
+func (t *dhtree) _old_dhtLookup(dest publicKey, isBootstrap bool, mark *dhtWatermark) *peer {
+	/*
+		// Start by defining variables and helper functions
+		var bestInfo *dhtInfo
+		// doUpdate is just to make sure we don't forget to update something
+		doUpdate := func(d *dhtInfo) {
+			bestInfo = d
+		}
+		// doCheckedUpdate checks if the provided key is better than the current best, and updates if so
+		doCheckedUpdate := func(d *dhtInfo) {
+			switch {
+			case bestInfo == nil && treeLess(d.key, dest):
+				fallthrough
+			case !isBootstrap && d.key.equal(dest):
+				fallthrough
+			//case !isBootstrap && bestInfo != nil && !bestInfo.key.equal(dest) && d.key.equal(dest):
+			//  fallthrough
+			case bestInfo != nil && dhtOrdered(bestInfo.key, d.key, dest):
+				doUpdate(d)
+			}
+		}
+		// doDHT updates best based on a DHT path
+		doDHT := func(info *dhtInfo) {
+			if (isBootstrap || true) && time.Since(info.time) > dhtTIMEOUT {
+				// FIXME? only do this for bootstraps?
+				return
+			}
+			if isBootstrap && info.peer == nil {
+				return
+			}
+			doCheckedUpdate(info) // updates if the source is better
+		}
+		// Update based on our DHT infos
+		for _, dinfo := range t.dinfos {
+			// Note that this includes the self dht entry, so no special logic is needed if we're the destination
+			doDHT(dinfo)
+		}
+		// Escape hatch:
+		// If the target is even lower than the lowest known key, forward towards the root
+		// That allows lower keys to eventually make it to the root in the worst case
+		// This is just to make the DHT complete (otherwise, keys lower than the lowest known key would route to nowhere)
+		if bestInfo == nil {
+			if mark != nil && mark.seq != 0 {
+				return nil
+			}
+			return t.parent
+			// FIXME? the above could loop? for watermark reasons
+			// TODO? re-add the lookup based on full ancestry info? When is this safe?
+		}
+		// Check high water mark (loop avoidance)
+		if mark != nil {
+			if treeLess(bestInfo.key, mark.key) {
+				return nil
+			}
+			if bestInfo.key.equal(mark.key) && bestInfo.seq < mark.seq {
+				return nil
+			}
+			mark.key = bestInfo.key
+			mark.seq = bestInfo.seq
+		}
+		return bestInfo.peer
+	*/
+	return nil
 }
 
 // _dhtAdd adds a dhtInfo to the dht and returns true
@@ -350,12 +389,6 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 		if dinfo.seq < info.seq {
 			dinfo.timer.Stop()
 			delete(t.dinfos, dinfo.key)
-			t.Act(nil, func() {
-				// TODO FIXME This is a hack to do this after the new info's sendTo has been populated
-				for p := range info.sendTo {
-					delete(dinfo.sendTo, p)
-				}
-			})
 		} else {
 			// We already have a path that's either the same seq or better, so ignore this one
 			// TODO? keep the path, but don't forward it anywhere
@@ -373,8 +406,6 @@ func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 			}
 		})
 	})
-	// Set up sendTo
-	info.sendTo = make(map[*peer]struct{})
 	return true
 }
 
@@ -389,13 +420,7 @@ func (t *dhtree) _newBootstrap() *dhtBootstrap {
 func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo {
 	dinfo := &dhtInfo{
 		dhtBootstrap: *bootstrap,
-		peer:         prev,
 		time:         time.Now(),
-	}
-	if dinfo.peer == nil {
-		if !dinfo.key.equal(t.core.crypto.publicKey) {
-			panic("this should never happen")
-		}
 	}
 	if !t._dhtAdd(dinfo) {
 		// We failed to add the dinfo to the DHT for some reason
@@ -404,67 +429,24 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 	return dinfo
 }
 
-func (t *dhtree) _getRedirects(next *dhtInfo) []*dhtInfo {
-	return nil // TODO FIXME redirects are causing flapping in the convergence test
-	var redirects []*dhtInfo
-	for _, dinfo := range t.dinfos {
-		if dinfo.isDeactivated || time.Since(dinfo.time) > dhtTIMEOUT {
-			continue
-		}
-		if dhtOrdered(dinfo.target.key, next.key, dinfo.key) {
-			redirects = append(redirects, dinfo)
-		}
-	}
-	return redirects
-}
-
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
 func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
-	if dinfo := t._addBootstrapPath(bootstrap, prev); dinfo != nil {
-		if dinfo.peer == nil {
-			// sanity checks, this should only happen when setting up our own path
-			if !bootstrap.key.equal(t.core.crypto.publicKey) {
-				panic("wrong key")
+	dinfo := &dhtInfo{
+		dhtBootstrap: *bootstrap,
+		time:         time.Now(),
+	}
+	if !t._dhtAdd(dinfo) {
+		// We failed to add the dinfo to the DHT for some reason
+		return
+	}
+	for _, ps := range t.peers {
+		for p := range ps {
+			if p == prev {
+				continue
 			}
-		}
-		// Get the next hop(s)
-		if next := t._dhtLookup(bootstrap.key, true, &dinfo.target, true); next != nil {
-			dinfo.sendTo[next] = struct{}{}
-		}
-		if next := t._dhtLookup(bootstrap.key, true, nil, false); next != nil {
-			dinfo.sendTo[next] = struct{}{}
-		}
-		// Send to peers
-		for p := range dinfo.sendTo {
-			p.sendBootstrap(t, &dinfo.dhtBootstrap)
-		}
-		// Now redirect old paths that should have followed this route
-		if dinfo.peer != nil {
-			for _, dfo := range t._getRedirects(dinfo) {
-				if _, isIn := dfo.sendTo[dinfo.peer]; isIn {
-					continue
-				}
-				dfo.target = dhtWatermark{dinfo.key, dinfo.seq}
-				/*
-					var skip bool
-					for _, bh := range dfo.bhs {
-						if bh.key.equal(dinfo.peer.key) {
-							skip = true
-							break
-						}
-					}
-					if skip {
-						// They (should) already know about this path
-						continue
-					}
-				*/
-				dfo.sendTo[dinfo.peer] = struct{}{}
-				// TODO? cover any remaining edge cases?
-				// Routing loops from races between timeouts and redirects?
-				dinfo.peer.sendBootstrap(t, &dfo.dhtBootstrap)
-			}
+			p.sendBootstrap(t, bootstrap)
 		}
 	}
 }
@@ -484,11 +466,7 @@ func (t *dhtree) _doBootstrap() {
 	}
 	t._handleBootstrap(nil, t._newBootstrap())
 	t.btimer.Stop()
-	t.delay += dhtTIMESTEP
-	if t.delay > dhtANNOUNCE {
-		t.delay = dhtANNOUNCE
-	}
-	waitTime := t.delay - dhtWINDOW + dhtWINDOW*time.Duration(rand.Intn(2048))/1024
+	waitTime := dhtTIMEOUT / 2
 	t.btimer = time.AfterFunc(waitTime, func() {
 		t.Act(nil, t._doBootstrap)
 	})
@@ -496,16 +474,10 @@ func (t *dhtree) _doBootstrap() {
 
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
 // if there's nowhere better to send it, then it hands it off to be read out from the local PacketConn interface
-func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify bool) {
+func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 	t.Act(from, func() {
-		next := t._dhtLookup(tr.dest, false, &tr.mark, false)
+		next := t._fullLookup(tr.dest)
 		if next == nil {
-			if tr.dest.equal(t.core.crypto.publicKey) {
-				dest := tr.source
-				if doNotify {
-					t.pathfinder._doNotify(dest)
-				}
-			}
 			t.core.pconn.handleTraffic(tr)
 		} else {
 			next.sendDHTTraffic(t, tr)
@@ -513,19 +485,9 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 	})
 }
 
-// sendTraffic sends a dhtTraffic packet to the destination, possibly by wrapping it in a pathfinder packet.
+// TODO document
 func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
-	t.Act(from, func() {
-		if path := t.pathfinder._getPath(tr.dest); path != nil {
-			pt := &pathTraffic{
-				path:        path,
-				baseTraffic: tr.baseTraffic,
-			}
-			t.pathfinder.handlePathTraffic(nil, pt)
-		} else {
-			t.handleDHTTraffic(nil, tr, false)
-		}
-	})
+	t.handleDHTTraffic(from, tr)
 }
 
 func (t *dhtree) _getLabel() *treeLabel {
@@ -536,7 +498,8 @@ func (t *dhtree) _getLabel() *treeLabel {
 	label.key = t.core.crypto.publicKey
 	label.root = t.self.root
 	label.rootSeq = t.self.seq
-	label.seq = uint64(time.Now().Unix())
+	t.seq++
+	label.seq = t.seq //uint64(time.Now().Unix())
 	for _, hop := range t.self.hops {
 		label.path = append(label.path, hop.port)
 	}
@@ -767,12 +730,8 @@ func (l *treeLabel) decode(data []byte) error {
 
 type dhtInfo struct {
 	dhtBootstrap
-	peer          *peer
-	time          time.Time
-	timer         *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
-	sendTo        map[*peer]struct{}
-	target        dhtWatermark
-	isDeactivated bool
+	time  time.Time
+	timer *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
 }
 
 /****************
