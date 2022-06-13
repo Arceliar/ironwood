@@ -441,7 +441,7 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 }
 
 func (t *dhtree) _getRedirects(next *dhtInfo) []*dhtInfo {
-	//return nil // TODO FIXME redirects are causing flapping in the convergence test
+	return nil // TODO FIXME redirects are causing flapping in the convergence test
 	var redirects []*dhtInfo
 	for _, dinfo := range t.dinfos {
 		if dinfo.isDeactivated || time.Since(dinfo.time) > dhtTIMEOUT {
@@ -559,6 +559,7 @@ func (t *dhtree) _doBootstrap() {
 // TODO comment
 
 func (t *dhtree) _handleDeactivate(prev *peer, deactivate *dhtDeactivate) {
+	//return // FIXME DEBUG, test with/without this
 	if dinfo, isIn := t.dinfos[deactivate.key]; isIn {
 		if dinfo.isDeactivated || dinfo.seq != deactivate.seq {
 			return
