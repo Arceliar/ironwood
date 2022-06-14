@@ -32,13 +32,12 @@ type dhtree struct {
 	expired map[publicKey]treeExpiredInfo // stores root highest seq and when it expires
 	tinfos  map[*peer]*treeInfo
 	dinfos  map[publicKey]*dhtInfo
-	self    *treeInfo // self info
-	parent  *peer     // peer that sent t.self to us
-	//btimer  *time.Timer // time.AfterFunc to send bootstrap packets
-	stimer *time.Timer // time.AfterFunc for self/parent expiration
-	wait   bool        // FIXME this shouldn't be needed
-	hseq   uint64      // used to track the order treeInfo updates are handled
-	seq    uint64
+	self    *treeInfo   // self info
+	parent  *peer       // peer that sent t.self to us
+	btimer  *time.Timer // time.AfterFunc to send bootstrap packets
+	stimer  *time.Timer // time.AfterFunc for self/parent expiration
+	wait    bool        // FIXME this shouldn't be needed
+	hseq    uint64      // used to track the order treeInfo updates are handled
 }
 
 type treeExpiredInfo struct {
@@ -52,10 +51,9 @@ func (t *dhtree) init(c *core) {
 	t.expired = make(map[publicKey]treeExpiredInfo)
 	t.tinfos = make(map[*peer]*treeInfo)
 	t.dinfos = make(map[publicKey]*dhtInfo)
-	//t.btimer = time.AfterFunc(0, func() {}) // non-nil until closed
+	t.btimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t.stimer = time.AfterFunc(0, func() {}) // non-nil until closed
 	t._fix()                                // Initialize t.self and start announce and timeout timers
-	t.seq = uint64(time.Now().Unix())
 	t.Act(nil, t._doBootstrap)
 }
 
@@ -96,7 +94,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 		}
 		if doFlood {
 			for _, dinfo := range t.dinfos {
-				if !dinfo.sent || time.Since(dinfo.time) > dhtTIMEOUT {
+				if time.Since(dinfo.time) > dhtTIMEOUT {
 					continue
 				}
 				p.sendBootstrap(t, &dinfo.dhtBootstrap)
@@ -165,10 +163,9 @@ func (t *dhtree) _fix() {
 	if t.self == nil || treeLess(t.core.crypto.publicKey, t.self.root) {
 		// Note that seq needs to be non-decreasing for the node to function as a root
 		//  a timestamp it used to partly mitigate rollbacks from restarting
-		t.seq++
 		t.self = &treeInfo{
 			root: t.core.crypto.publicKey,
-			seq:  t.seq, //uint64(time.Now().Unix()),
+			seq:  uint64(time.Now().Unix()),
 			time: time.Now(),
 		}
 		t.parent = nil
@@ -308,19 +305,6 @@ func (t *dhtree) _dhtLookup(dest publicKey) *dhtInfo {
 			bestInfo = lowest
 		}
 	}
-	if bestInfo != nil && !bestInfo.sent {
-		bestInfo.sent = true
-		for _, ps := range t.peers {
-			for p := range ps {
-				/* TODO? Save prev? We could even use it *as* the sent indicator...
-				  if p == prev {
-					  continue
-				  }
-				*/
-				p.sendBootstrap(t, &bestInfo.dhtBootstrap)
-			}
-		}
-	}
 	return bestInfo
 }
 
@@ -384,56 +368,24 @@ func (t *dhtree) _addBootstrapPath(bootstrap *dhtBootstrap, prev *peer) *dhtInfo
 // _handleBootstrap takes a bootstrap packet and checks if we know of a better prev for the source node
 // if yes, then we forward to the next hop in the path towards that prev
 // if no, then we reply with a dhtBootstrapAck (unless sanity checks fail)
-func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) {
+func (t *dhtree) _handleBootstrap(prev *peer, bootstrap *dhtBootstrap) bool {
 	dinfo := &dhtInfo{
 		dhtBootstrap: *bootstrap,
 		time:         time.Now(),
 	}
-	oldInfo := t.dinfos[dinfo.key]
 	if !t._dhtAdd(dinfo) {
 		// We failed to add the dinfo to the DHT for some reason
-		return
+		return false
 	}
-	//dist := t.self.dist(&dinfo.treeLabel)
-	//waitTime := time.Duration(dist) * time.Second
-	if oldInfo != nil && time.Since(oldInfo.time) > time.Second {
-		dinfo.sent = true
-		for _, ps := range t.peers {
-			for p := range ps {
-				if p == prev {
-					continue
-				}
-				p.sendBootstrap(t, bootstrap)
+	for _, ps := range t.peers {
+		for p := range ps {
+			if p == prev {
+				continue
 			}
+			p.sendBootstrap(t, bootstrap)
 		}
-	} else {
-		const waitTime = time.Second
-		time.AfterFunc(waitTime, func() {
-			t.Act(nil, func() {
-				if dfo := t.dinfos[dinfo.key]; dfo != nil && !dfo.sent {
-					dfo.sent = true
-					for _, ps := range t.peers {
-						for p := range ps {
-							if p == prev {
-								continue
-							}
-							p.sendBootstrap(t, &dfo.dhtBootstrap)
-						}
-					}
-				}
-			})
-		})
 	}
-	/*
-		for _, ps := range t.peers {
-			for p := range ps {
-				if p == prev {
-					continue
-				}
-				p.sendBootstrap(t, bootstrap)
-			}
-		}
-	*/
+	return true
 }
 
 // handleBootstrap is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrap
@@ -446,19 +398,15 @@ func (t *dhtree) handleBootstrap(from phony.Actor, prev *peer, bootstrap *dhtBoo
 // _doBootstrap decides whether or not to send a bootstrap packet
 // if a bootstrap is sent, then it sets things up to attempt to send another bootstrap at a later point
 func (t *dhtree) _doBootstrap() {
-	/*
-		if t.btimer == nil {
-			return
-		}
-	*/
-	t._handleBootstrap(nil, t._newBootstrap())
-	/*
-		t.btimer.Stop()
-		waitTime := dhtTIMEOUT / 2
-		t.btimer = time.AfterFunc(waitTime, func() {
+	if t.btimer == nil {
+		return
+	}
+	t.btimer.Stop()
+	if !t._handleBootstrap(nil, t._newBootstrap()) {
+		t.btimer = time.AfterFunc(time.Second, func() {
 			t.Act(nil, t._doBootstrap)
 		})
-	*/
+	}
 }
 
 // handleDHTTraffic take a dht traffic packet (still marshaled as []bytes) and decides where to forward it to next to take it closer to its destination in keyspace
@@ -487,8 +435,7 @@ func (t *dhtree) _getLabel() *treeLabel {
 	label.key = t.core.crypto.publicKey
 	label.root = t.self.root
 	label.rootSeq = t.self.seq
-	t.seq++
-	label.seq = t.seq //uint64(time.Now().Unix())
+	label.seq = uint64(time.Now().Unix())
 	for _, hop := range t.self.hops {
 		label.path = append(label.path, hop.port)
 	}
@@ -721,7 +668,6 @@ type dhtInfo struct {
 	dhtBootstrap
 	time  time.Time
 	timer *time.Timer // time.AfterFunc to clean up after timeout, stop this on teardown
-	sent  bool
 }
 
 /****************
