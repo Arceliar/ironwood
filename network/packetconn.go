@@ -19,7 +19,7 @@ func _type_asserts_() {
 type PacketConn struct {
 	actor        phony.Inbox
 	core         *core
-	recv         chan *dhtTraffic //read buffer
+	recv         chan *traffic //read buffer
 	oobHandler   func(ed25519.PublicKey, ed25519.PublicKey, []byte)
 	readDeadline *deadline
 	closeMutex   sync.Mutex
@@ -38,7 +38,7 @@ func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
 
 func (pc *PacketConn) init(c *core) {
 	pc.core = c
-	pc.recv = make(chan *dhtTraffic, 1)
+	pc.recv = make(chan *traffic, 1)
 	pc.readDeadline = newDeadline()
 	pc.closed = make(chan struct{})
 	pc.Debug.init(c)
@@ -47,7 +47,7 @@ func (pc *PacketConn) init(c *core) {
 // ReadFrom fulfills the net.PacketConn interface, with a types.Addr returned as the from address.
 // Note that failing to call ReadFrom may cause the connection to block and/or leak memory.
 func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
-	var tr *dhtTraffic
+	var tr *traffic
 	select {
 	case <-pc.closed:
 		return 0, nil, errors.New("closed")
@@ -81,12 +81,12 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if uint64(len(p)) > pc.MTU() {
 		return 0, errors.New("oversized message")
 	}
-	var tr dhtTraffic
+	var tr traffic
 	tr.source = pc.core.crypto.publicKey
 	copy(tr.dest[:], dest)
 	tr.kind = wireTrafficStandard
 	tr.payload = append(tr.payload, p...)
-	pc.core.dhtree.sendTraffic(nil, &tr)
+	pc.core.crdtree.sendTraffic(nil, &tr)
 	return len(p), nil
 }
 
@@ -105,16 +105,7 @@ func (pc *PacketConn) Close() error {
 			p.conn.Close()
 		}
 	})
-	phony.Block(&pc.core.dhtree, func() {
-		if pc.core.dhtree.btimer != nil {
-			pc.core.dhtree.btimer.Stop()
-			pc.core.dhtree.btimer = nil
-		}
-		if pc.core.dhtree.stimer != nil {
-			pc.core.dhtree.stimer.Stop()
-			pc.core.dhtree.stimer = nil
-		}
-	})
+	phony.Block(&pc.core.crdtree, pc.core.crdtree._shutdown)
 	return nil
 }
 
@@ -181,12 +172,12 @@ func (pc *PacketConn) SendOutOfBand(toKey ed25519.PublicKey, data []byte) error 
 	if len(toKey) != publicKeySize {
 		return errors.New("incorrect address length")
 	}
-	var tr dhtTraffic
+	var tr traffic
 	tr.source = pc.core.crypto.publicKey
 	copy(tr.dest[:], toKey)
 	tr.kind = wireTrafficOutOfBand
 	tr.payload = append(tr.payload, data...)
-	pc.core.dhtree.sendTraffic(nil, &tr)
+	pc.core.crdtree.sendTraffic(nil, &tr)
 	return nil
 }
 
@@ -239,7 +230,7 @@ func (pc *PacketConn) MTU() uint64 {
 	return MTU
 }
 
-func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
+func (pc *PacketConn) handleTraffic(tr *traffic) {
 	pc.actor.Act(nil, func() {
 		switch tr.kind {
 		case wireTrafficDummy:

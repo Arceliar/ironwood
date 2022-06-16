@@ -7,9 +7,10 @@ import (
 
 const (
 	wireDummy = iota // unused
-	wireProtoTree
-	wireProtoDHTBootstrap
-	wireDHTTraffic
+	wireProtoSigReq
+	wireProtoSigRes
+	wireProtoAnnounce
+	wireTraffic
 	wireKeepAlive
 )
 

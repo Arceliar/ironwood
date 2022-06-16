@@ -135,7 +135,7 @@ func (w *peerWriter) sendPacket(pType byte, data wireEncodeable) {
 
 func (p *peer) handler() error {
 	defer func() {
-		p.peers.core.dhtree.remove(nil, p)
+		p.peers.core.crdtree.removePeer(nil, p)
 	}()
 	done := make(chan struct{})
 	defer close(done)
@@ -164,9 +164,8 @@ func (p *peer) handler() error {
 			p.writer._write([]byte{0x00, 0x02, wireKeepAlive, p.writer.delay})
 		})
 	}
-	// Hack to get ourself into the remote node's dhtree
-	// They send a similar message and we'll respond with correct info
-	p.sendTree(nil, &treeInfo{root: p.peers.core.crypto.publicKey})
+	// Add peer to the crdtree, to kick off protocol exchanges
+	p.peers.core.crdtree.addPeer(p, p)
 	// Now allocate buffers and start reading / handling packets...
 	var lenBuf [2]byte // packet length is a uint16
 	bs := make([]byte, 65535)
@@ -202,12 +201,14 @@ func (p *peer) _handlePacket(bs []byte) error {
 	switch pType := bs[0]; pType {
 	case wireDummy:
 		return nil
-	case wireProtoTree:
-		return p._handleTree(bs[1:])
-	case wireProtoDHTBootstrap:
-		return p._handleBootstrap(bs[1:])
-	case wireDHTTraffic:
-		return p._handleDHTTraffic(bs[1:])
+	case wireProtoSigReq:
+		return p._handleSigReq(bs[1:])
+	case wireProtoSigRes:
+		return p._handleSigRes(bs[1:])
+	case wireProtoAnnounce:
+		return p._handleAnnounce(bs[1:])
+	case wireTraffic:
+		return p._handleTraffic(bs[1:])
 	case wireKeepAlive:
 		return p._handleKeepAlive(bs[1:])
 	default:
@@ -215,60 +216,67 @@ func (p *peer) _handlePacket(bs []byte) error {
 	}
 }
 
-func (p *peer) _handleTree(bs []byte) error {
-	info := new(treeInfo)
-	if err := info.decode(bs); err != nil {
+func (p *peer) _handleSigReq(bs []byte) error {
+	req := new(crdtreeSigReq)
+	if err := req.decode(bs); err != nil {
 		return err
 	}
-	if !info.checkSigs() {
-		return errors.New("invalid signature")
-	}
-	if !p.key.equal(info.from()) {
-		return errors.New("unrecognized publicKey")
-	}
-	dest := info.hops[len(info.hops)-1].next
-	if !p.peers.core.crypto.publicKey.equal(dest) {
-		return errors.New("incorrect destination")
-	}
-	p.peers.core.dhtree.update(p, info, p)
+	p.peers.core.crdtree.handleRequest(p, p, req)
 	return nil
 }
 
-func (p *peer) sendTree(from phony.Actor, info *treeInfo) {
+func (p *peer) sendSigReq(from phony.Actor, req *crdtreeSigReq) {
 	p.Act(from, func() {
-		info = info.add(p.peers.core.crypto.privateKey, p)
-		p.writer.sendPacket(wireProtoTree, info)
+		p.writer.sendPacket(wireProtoSigReq, req)
 	})
 }
 
-func (p *peer) _handleBootstrap(bs []byte) error {
-	bootstrap := new(dhtBootstrap)
-	if err := bootstrap.decode(bs); err != nil {
+func (p *peer) _handleSigRes(bs []byte) error {
+	res := new(crdtreeSigRes)
+	if err := res.decode(bs); err != nil {
 		return err
 	}
-	if !bootstrap.check() {
-		return errors.New("invalid bootstrap")
+	if !res.check() {
+		return errors.New("bad SigRes")
 	}
-	p.peers.core.dhtree.handleBootstrap(p, p, bootstrap)
+	p.peers.core.crdtree.handleResponse(p, p, res)
 	return nil
 }
 
-func (p *peer) sendBootstrap(from phony.Actor, bootstrap *dhtBootstrap) {
+func (p *peer) sendSigRes(from phony.Actor, res *crdtreeSigRes) {
 	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoDHTBootstrap, bootstrap)
+		p.writer.sendPacket(wireProtoSigRes, res)
 	})
 }
 
-func (p *peer) _handleDHTTraffic(bs []byte) error {
-	tr := new(dhtTraffic)
+func (p *peer) _handleAnnounce(bs []byte) error {
+	ann := new(crdtreeAnnounce)
+	if err := ann.decode(bs); err != nil {
+		return err
+	}
+	if !ann.check() {
+		return errors.New("bad Announce")
+	}
+	p.peers.core.crdtree.handleAnnounce(p, p, ann)
+	return nil
+}
+
+func (p *peer) sendAnnounce(from phony.Actor, ann *crdtreeAnnounce) {
+	p.Act(from, func() {
+		p.writer.sendPacket(wireProtoAnnounce, ann)
+	})
+}
+
+func (p *peer) _handleTraffic(bs []byte) error {
+	tr := new(traffic)
 	if err := tr.decode(bs); err != nil {
 		return err // This is just to check that it unmarshals correctly
 	}
-	p.peers.core.dhtree.handleDHTTraffic(p, tr)
+	p.peers.core.crdtree.handleTraffic(p, tr)
 	return nil
 }
 
-func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
+func (p *peer) sendTraffic(from phony.Actor, tr *traffic) {
 	p.Act(from, func() {
 		p._push(tr)
 	})
@@ -294,8 +302,8 @@ func (p *peer) _push(packet wireEncodeable) {
 	if p.ready {
 		var pType byte
 		switch packet.(type) {
-		case *dhtTraffic:
-			pType = wireDHTTraffic
+		case *traffic:
+			pType = wireTraffic
 		default:
 			panic("this should never happen")
 		}
@@ -307,7 +315,7 @@ func (p *peer) _push(packet wireEncodeable) {
 	var sKey, dKey publicKey
 	var size int
 	switch tr := packet.(type) {
-	case *dhtTraffic:
+	case *traffic:
 		sKey, dKey = tr.source, tr.dest
 		size = len(tr.payload)
 	default:
@@ -326,8 +334,8 @@ func (p *peer) pop() {
 	p.Act(nil, func() {
 		if info, ok := p.queue.pop(); ok {
 			switch info.packet.(type) {
-			case *dhtTraffic:
-				p.writer.sendPacket(wireDHTTraffic, info.packet)
+			case *traffic:
+				p.writer.sendPacket(wireTraffic, info.packet)
 			default:
 				panic("this should never happen")
 			}
