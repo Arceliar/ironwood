@@ -40,6 +40,18 @@ func (key publicKey) equal(comparedKey publicKey) bool {
 	return key == comparedKey
 }
 
+func (key publicKey) less(comparedKey publicKey) bool {
+	for idx := range key {
+		switch {
+		case key[idx] < comparedKey[idx]:
+			return true
+		case key[idx] > comparedKey[idx]:
+			return false
+		}
+	}
+	return false
+}
+
 func (key publicKey) addr() types.Addr {
 	return types.Addr(key[:])
 }

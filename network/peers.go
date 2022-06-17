@@ -236,7 +236,7 @@ func (p *peer) _handleSigRes(bs []byte) error {
 	if err := res.decode(bs); err != nil {
 		return err
 	}
-	if !res.check() {
+	if !res.check(p.peers.core.crypto.publicKey, p.key) {
 		return errors.New("bad SigRes")
 	}
 	p.peers.core.crdtree.handleResponse(p, p, res)
