@@ -71,10 +71,10 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 		return 0, errors.New("closed")
 	default:
 	}
-	if _, ok := addr.(types.Addr); !ok {
+	dest, ok := types.ExtractAddrKey(addr)
+	if !ok {
 		return 0, errors.New("incorrect address type, expected types.Addr")
 	}
-	dest := addr.(types.Addr)
 	if len(dest) != publicKeySize {
 		return 0, errors.New("incorrect address length")
 	}
