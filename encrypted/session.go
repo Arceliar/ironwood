@@ -211,6 +211,9 @@ type sessionInfo struct {
 	nextPub      boxPub  // becomes sendPub
 	timer        *time.Timer
 	ack          *sessionAck
+	since        time.Time
+	rx           uint64
+	tx           uint64
 }
 
 func newSession(ed *edPub, current, next boxPub, seq uint64) *sessionInfo {
@@ -221,6 +224,7 @@ func newSession(ed *edPub, current, next boxPub, seq uint64) *sessionInfo {
 	info.recvPub, info.recvPriv = newBoxKeys()
 	info.sendPub, info.sendPriv = newBoxKeys()
 	info.nextPub, info.nextPriv = newBoxKeys()
+	info.since = time.Now()
 	info._fixShared(0, 0)
 	return info
 }
@@ -308,6 +312,7 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		bs = boxSeal(bs, tmp, info.sendNonce, &info.sendShared)
 		// send
 		info.mgr.pc.PacketConn.WriteTo(bs, types.Addr(info.ed[:]))
+		info.tx += uint64(len(msg))
 		info._resetTimer()
 	})
 }
@@ -403,6 +408,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			info.mgr.pc.network.recv(info, msg)
 			// Misc remaining followup work
 			onSuccess(key)
+			info.rx += uint64(len(msg))
 			info._resetTimer()
 		} else {
 			// Keys somehow became out-of-sync
