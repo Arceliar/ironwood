@@ -52,7 +52,13 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 	})
 }
 
-// TODO all the actual work
+// TODO all the actual work:
+//  something (fix?) needs to root ourself
+//  something (fix?) needs to send a request when it makes sense to do so
+//  lookups need to work
+//  we need to handle traffic
+//  we need to do something to support IP->key lookups, e.g. a way to return the closest key and let the caller check if it's a match
+//  we need to remove unreachable nodes from the network (somehow) -- though technically speaking, we can save that for last
 
 func (t *crdtree) _fix() {}
 
