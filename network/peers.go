@@ -137,7 +137,7 @@ func (p *peer) handler() error {
 		default:
 		}
 		p.writer.Act(nil, func() {
-			p.writer._write([]byte{0x00, 0x01, wireDummy})
+			p.writer._write([]byte{0x00, 0x01, wireHeartbeat})
 		})
 	}
 	// Hack to get ourself into the remote node's dhtree
@@ -175,7 +175,7 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return errors.New("empty packet")
 	}
 	switch pType := bs[0]; pType {
-	case wireDummy:
+	case wireHeartbeat:
 		return nil
 	case wireProtoTree:
 		return p._handleTree(bs[1:])
