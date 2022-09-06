@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	wireDummy = iota // unused
+	wireHeartbeat = iota
 	wireProtoTree
 	wireProtoDHTBootstrap
 	wireProtoDHTBootstrapAck
