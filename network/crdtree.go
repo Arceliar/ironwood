@@ -30,7 +30,7 @@ func (t *crdtree) init(c *core) {
 	t.requests = make(map[publicKey]crdtreeSigReq)
 	t.responses = make(map[publicKey]crdtreeSigRes)
 	// Kick off actor to do initial work / become root
-	t.Act(nil, t._fix)
+	t.Act(nil, func() { t._fix(true) })
 }
 
 func (t *crdtree) _shutdown() {} // TODO cleanup (stop any timers etc)
@@ -65,8 +65,9 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 			delete(t.requests, p.key)
 			delete(t.responses, p.key)
 			if t.infos[t.core.crypto.publicKey].parent == p.key {
-				delete(t.infos, t.core.crypto.publicKey)
-				t._fix()
+				t._becomeRoot()
+				//delete(t.infos, t.core.crypto.publicKey)
+				t._fix(true)
 			}
 		}
 	})
@@ -80,17 +81,15 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 //  we need to do something to support IP->key lookups, e.g. a way to return the closest key and let the caller check if it's a match
 //  we need to remove unreachable nodes from the network (somehow) -- though technically speaking, we can save that for last
 
-func (t *crdtree) _fix() {
-	origSelf := t.infos[t.core.crypto.publicKey]
+func (t *crdtree) _fix(force bool) {
 	if _, isIn := t.infos[t.core.crypto.publicKey]; !isIn && !t._becomeRoot() {
 		panic("this should never happen")
 	}
-	oldSelf := t.infos[t.core.crypto.publicKey]
-	newSelf := oldSelf
+	self := t.infos[t.core.crypto.publicKey]
 	// TODO dheck if we know a better parent for ourself, if so, switch to it... or rather, send a request so we can switch later?
 	myRoot := t._getRootFor(t.core.crypto.publicKey)
 	bestRoot := myRoot
-	bestParent := oldSelf.parent
+	bestParent := self.parent
 	for pk := range t.responses {
 		// TODO have them pre-sign an announcement, which we store in a map somewhere
 		peerRoot := t._getRootFor(pk)
@@ -122,15 +121,26 @@ func (t *crdtree) _fix() {
 					p.sendSigReq(t, req)
 				}
 			}
+			return
+		} else {
+			// TODO DEBUG THIS!
+			//panic("this should never happen")
 		}
 	}
-	if newSelf != origSelf {
+	if force {
 		// TODO send announcement
+		ann := self.getAnnounce(t.core.crypto.publicKey)
+		for _, ps := range t.peers {
+			for p := range ps {
+				p.sendAnnounce(t, ann)
+			}
+		}
 	}
 }
 
 func (t *crdtree) _getRootFor(key publicKey) publicKey {
 	visited := make(map[publicKey]struct{})
+	visited[publicKey{}] = struct{}{}
 	here := key
 	for {
 		if _, isIn := visited[here]; isIn {
@@ -187,7 +197,7 @@ func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
 	// This is the entire point of having a nonce...
 	if t.requests[p.key] == res.crdtreeSigReq {
 		t.responses[p.key] = *res
-		t._fix() // This could become our new parent
+		t._fix(false) // This could become our new parent
 	}
 }
 
@@ -253,7 +263,7 @@ func (t *crdtree) _handleAnnounce(p *peer, ann *crdtreeAnnounce) {
 				p.sendAnnounce(t, ann)
 			}
 		}
-		t._fix() // This could require us to change parents
+		t._fix(false) // This could require us to change parents
 	}
 }
 
@@ -281,12 +291,39 @@ func (t *crdtree) handleTraffic(from phony.Actor, tr *traffic) {
 func (t *crdtree) _lookup(dest publicKey) *peer {
 	_, isIn := t.infos[dest]
 	if !isIn {
-		return nil
+		//return nil
+		// TODO switch dest to the closest known key, so out-of-band stuff works
+		// This would be a hack to make the example code run without modification
+		// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
+		var lowest *publicKey
+		var best *publicKey
+		for key := range t.infos {
+			if lowest == nil || crdtreeLess(key, *lowest) {
+				k := key
+				lowest = &k
+			}
+			if best == nil && crdtreeLess(key, dest) {
+				k := key
+				best = &k
+			}
+			if crdtreeLess(key, dest) && crdtreeLess(*best, key) {
+				k := key
+				best = &k
+			}
+		}
+		if best == nil {
+			best = lowest
+		}
+		if best == nil {
+			return nil
+		}
+		dest = *best
 	}
 	dists := t._getDists(dest)
 	getDist := func(key publicKey) (uint64, bool) {
 		var dist uint64
 		visited := make(map[publicKey]struct{})
+		visited[publicKey{}] = struct{}{}
 		here := key
 		for {
 			if _, isIn := visited[here]; isIn {
