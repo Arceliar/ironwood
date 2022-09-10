@@ -187,6 +187,7 @@ func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
 	// This is the entire point of having a nonce...
 	if t.requests[p.key] == res.crdtreeSigReq {
 		t.responses[p.key] = *res
+		t._fix() // This could become our new parent
 	}
 }
 
@@ -252,6 +253,7 @@ func (t *crdtree) _handleAnnounce(p *peer, ann *crdtreeAnnounce) {
 				p.sendAnnounce(t, ann)
 			}
 		}
+		t._fix() // This could require us to change parents
 	}
 }
 
@@ -261,15 +263,17 @@ func (t *crdtree) handleAnnounce(from phony.Actor, p *peer, ann *crdtreeAnnounce
 	})
 }
 
-func (t *crdtree) sendTraffic(from phony.Actor, tr *traffic) {}
+func (t *crdtree) sendTraffic(from phony.Actor, tr *traffic) {
+	// TODO any sort of additional sanity checks (in an Act)
+	t.handleTraffic(from, tr)
+}
 
 func (t *crdtree) handleTraffic(from phony.Actor, tr *traffic) {
 	t.Act(from, func() {
 		if p := t._lookup(tr.dest); p != nil {
 			p.sendTraffic(t, tr)
 		} else {
-			// TODO handle traffic
-			panic("TODO")
+			t.core.pconn.handleTraffic(tr)
 		}
 	})
 }
@@ -279,28 +283,47 @@ func (t *crdtree) _lookup(dest publicKey) *peer {
 	if !isIn {
 		return nil
 	}
-	/* TODO
-	ancDists := t._getDists(dest)
-	var bestPeer publicKey
-	var bestDist uint64
-	var found bool
-	for k := range t.peers {
-	  // TODO something more efficient
-	  pDists := t._getDists(k)
-	  for k, pd := pDists {
-	    if ad, isIn := ancDists[k]; isIn {
-	      dist := ad+pd
-	      if !found || dist < bestDist {
-
-	      }
-	    }
-	  }
+	dists := t._getDists(dest)
+	getDist := func(key publicKey) (uint64, bool) {
+		var dist uint64
+		visited := make(map[publicKey]struct{})
+		here := key
+		for {
+			if _, isIn := visited[here]; isIn {
+				return 0, false
+			}
+			if d, isIn := dists[here]; isIn {
+				return dist + d, true
+			}
+			dist++
+			visited[here] = struct{}{}
+			here = t.infos[here].parent
+		}
 	}
-	*/
-	return nil
+	var bestPeer *peer
+	bestDist := ^uint64(0)
+	if dist, ok := getDist(t.core.crypto.publicKey); ok {
+		bestDist = dist // Self dist, so other nodes must be strictly better by distance
+	}
+	for k, ps := range t.peers {
+		dist, ok := getDist(k)
+		if !ok {
+			continue
+		}
+		if dist < bestDist {
+			for p := range ps {
+				// TODO decide which peer is best
+				bestPeer = p
+				break
+			}
+			bestDist = dist
+		}
+	}
+	return bestPeer
 }
 
 func (t *crdtree) _getDists(dest publicKey) map[publicKey]uint64 {
+	// This returns the distances from the destination's root for the destination and each of its ancestors
 	dists := make(map[publicKey]uint64)
 	next := dest
 	var dist uint64
