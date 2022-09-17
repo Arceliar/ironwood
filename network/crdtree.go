@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"time"
+	//"fmt"
 
 	"github.com/Arceliar/phony"
 )
@@ -48,8 +49,8 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 			req := t.requests[p.key]
 			p.sendSigReq(t, &req)
 		}
-		req := t._newReq()
-		p.sendSigReq(t, req)
+		//req := t._newReq()
+		//p.sendSigReq(t, req)
 		for key, info := range t.infos {
 			p.sendAnnounce(t, info.getAnnounce(key))
 		}
@@ -65,7 +66,9 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 			delete(t.requests, p.key)
 			delete(t.responses, p.key)
 			if t.infos[t.core.crypto.publicKey].parent == p.key {
-				t._becomeRoot()
+				if !t._becomeRoot() {
+					panic("this should never happen")
+				}
 				//delete(t.infos, t.core.crypto.publicKey)
 				t._fix(true)
 			}
@@ -125,6 +128,10 @@ func (t *crdtree) _fix(force bool) {
 		} else {
 			// TODO DEBUG THIS!
 			//panic("this should never happen")
+			if !t._becomeRoot() {
+				panic("this also should never happen")
+			}
+			force = true
 		}
 	}
 	if force {
@@ -133,6 +140,20 @@ func (t *crdtree) _fix(force bool) {
 		for _, ps := range t.peers {
 			for p := range ps {
 				p.sendAnnounce(t, ann)
+			}
+		}
+		for pk := range t.requests {
+			delete(t.requests, pk)
+		}
+		for pk := range t.responses {
+			delete(t.responses, pk)
+		}
+		for pk, ps := range t.peers {
+			// TODO track which req was sent to which peer, only accept ones we actually sent...
+			req := t._newReq()
+			t.requests[pk] = *req
+			for p := range ps {
+				p.sendSigReq(t, req)
 			}
 		}
 	}
@@ -231,11 +252,14 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 		switch {
 		case info.seq > ann.seq:
 			// This is an old seq, so exit
+			//fmt.Println("DEBUG1")
 			return false
 		case info.seq < ann.seq:
 			// This is a newer seq, so don't exit
 		case info.parent.less(ann.parent):
 			// same seq, worse (higher) parent
+			//fmt.Println(info.parent, info.seq, ann.parent, ann.seq)
+			//fmt.Println("DEBUG2")
 			return false
 		case ann.parent.less(info.parent):
 			// same seq, better (lower) parent, so don't exit
@@ -243,6 +267,7 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 			// same seq and parent, lower nonce, so don't exit
 		default:
 			// same seq and parent, same or worse nonce, so exit
+			//fmt.Println("DEBUG3")
 			return false
 		}
 	}
