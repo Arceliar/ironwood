@@ -110,7 +110,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 				t.wait = true
 				t.self = &treeInfo{root: t.core.crypto.publicKey}
 				t._sendTree() // send bad news immediately
-				time.AfterFunc(time.Second, func() {
+				time.AfterFunc(peerTIMEOUT+time.Second, func() {
 					t.Act(nil, func() {
 						t.wait = false
 						t.self, t.parent = nil, nil
@@ -340,9 +340,7 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 
 // _dhtAdd adds a dhtInfo to the dht and returns true
 // it may return false if the path associated with the dhtInfo isn't allowed for some reason
-//
-//	e.g. we know a better prev/next for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
-//
+// e.g. we know a better prev/next for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
