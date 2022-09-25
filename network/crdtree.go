@@ -49,8 +49,6 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 			req := t.requests[p.key]
 			p.sendSigReq(t, &req)
 		}
-		//req := t._newReq()
-		//p.sendSigReq(t, req)
 		for key, info := range t.infos {
 			p.sendAnnounce(t, info.getAnnounce(key))
 		}
@@ -65,9 +63,7 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 			delete(t.peers, p.key)
 			delete(t.requests, p.key)
 			delete(t.responses, p.key)
-			if t.infos[t.core.crypto.publicKey].parent == p.key {
-				t._fix()
-			}
+			t._fix()
 		}
 	})
 }
@@ -85,7 +81,7 @@ func (t *crdtree) _fix() {
 	bestParent := t.core.crypto.publicKey
 	self := t.infos[t.core.crypto.publicKey]
 	// Check if our current parent leads to a better root than ourself
-	if _, isIn := t.infos[self.parent]; isIn {
+	if _, isIn := t.peers[self.parent]; isIn {
 		root, _ := t._getRootAndDists(t.core.crypto.publicKey)
 		if root != bestRoot {
 			bestRoot, bestParent = root, self.parent
@@ -98,18 +94,18 @@ func (t *crdtree) _fix() {
 			// This would loop through us already
 			continue
 		}
-		switch {
-		case pRoot == bestRoot && pk.less(bestParent):
-			fallthrough
-		case pRoot.less(bestRoot):
+		if pRoot.less(bestRoot) {
 			bestRoot, bestParent = pRoot, pk
 		}
 	}
 	if self.parent != bestParent {
 		res := t.responses[bestParent]
 		switch {
-		case bestRoot != t.core.crypto.publicKey && t._useResponse(bestParent, &res):
-			// We just made somebody else root
+		case bestRoot != t.core.crypto.publicKey:
+			// Somebody else should be root
+			if !t._useResponse(bestParent, &res) {
+				panic("this should never happen")
+			}
 		default:
 			// Become root
 			if !t._becomeRoot() {
@@ -176,9 +172,6 @@ func (t *crdtree) handleRequest(from phony.Actor, p *peer, req *crdtreeSigReq) {
 }
 
 func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
-	// TODO check that we actually sent this request / that it's our most recent to this peer
-	// Ignore it if not, it could be old or they could be spewing grabage
-	// This is the entire point of having a nonce...
 	if t.requests[p.key] == res.crdtreeSigReq {
 		t.responses[p.key] = *res
 		t._fix() // This could become our new parent
@@ -280,7 +273,7 @@ func (t *crdtree) _lookup(dest publicKey) *peer {
 	_, isIn := t.infos[dest]
 	if !isIn {
 		//return nil
-		// TODO switch dest to the closest known key, so out-of-band stuff works
+		// Switch dest to the closest known key, so out-of-band stuff works
 		// This would be a hack to make the example code run without modification
 		// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
 		var lowest *publicKey
@@ -307,6 +300,7 @@ func (t *crdtree) _lookup(dest publicKey) *peer {
 		}
 		dest = *best
 	}
+	// Look up the next hop (in treespace) towards the destination
 	_, dists := t._getRootAndDists(dest)
 	getDist := func(key publicKey) (uint64, bool) {
 		var dist uint64
