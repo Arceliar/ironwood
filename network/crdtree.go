@@ -31,7 +31,7 @@ func (t *crdtree) init(c *core) {
 	t.requests = make(map[publicKey]crdtreeSigReq)
 	t.responses = make(map[publicKey]crdtreeSigRes)
 	// Kick off actor to do initial work / become root
-	t.Act(nil, func() { t._fix(true) })
+	t.Act(nil, t._fix)
 }
 
 func (t *crdtree) _shutdown() {} // TODO cleanup (stop any timers etc)
@@ -66,11 +66,7 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 			delete(t.requests, p.key)
 			delete(t.responses, p.key)
 			if t.infos[t.core.crypto.publicKey].parent == p.key {
-				if !t._becomeRoot() {
-					panic("this should never happen")
-				}
-				//delete(t.infos, t.core.crypto.publicKey)
-				t._fix(true)
+				t._fix()
 			}
 		}
 	})
@@ -84,91 +80,58 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 //  we need to do something to support IP->key lookups, e.g. a way to return the closest key and let the caller check if it's a match
 //  we need to remove unreachable nodes from the network (somehow) -- though technically speaking, we can save that for last
 
-func (t *crdtree) _fix(force bool) {
-	if _, isIn := t.infos[t.core.crypto.publicKey]; !isIn && !t._becomeRoot() {
-		panic("this should never happen")
-	}
+func (t *crdtree) _fix() {
+	bestRoot := t.core.crypto.publicKey
+	bestParent := t.core.crypto.publicKey
 	self := t.infos[t.core.crypto.publicKey]
-	// TODO dheck if we know a better parent for ourself, if so, switch to it... or rather, send a request so we can switch later?
-	myRoot := t._getRootFor(t.core.crypto.publicKey)
-	bestRoot := myRoot
-	bestParent := self.parent
-	for pk := range t.responses {
-		// TODO have them pre-sign an announcement, which we store in a map somewhere
-		peerRoot := t._getRootFor(pk)
-		if crdtreeLess(peerRoot, bestRoot) {
-			bestRoot = peerRoot
-			bestParent = pk
+	// Check if our current parent leads to a better root than ourself
+	if _, isIn := t.infos[self.parent]; isIn {
+		root, _ := t._getRootAndDists(t.core.crypto.publicKey)
+		if root != bestRoot {
+			bestRoot, bestParent = root, self.parent
 		}
-		// TODO tie break, right now it's selecting a basically random peer
 	}
-	if bestRoot != myRoot {
-		// TODO switch to this peer as our new parent
-		// This really requires having a signed update from the peers already on hand...
-		res, isIn := t.responses[bestParent]
-		if !isIn {
-			panic("this should never happen")
+	// Check if we know a better root/parent
+	for pk := range t.responses {
+		pRoot, pDists := t._getRootAndDists(pk)
+		if _, isIn := pDists[t.core.crypto.publicKey]; isIn {
+			// This would loop through us already
+			continue
 		}
-		if t._useResponse(bestParent, &res) {
-			for pk := range t.requests {
-				delete(t.requests, pk)
+		switch {
+		case pRoot == bestRoot && pk.less(bestParent):
+			fallthrough
+		case pRoot.less(bestRoot):
+			bestRoot, bestParent = pRoot, pk
+		}
+	}
+	if self.parent != bestParent {
+		res := t.responses[bestParent]
+		switch {
+		case bestRoot != t.core.crypto.publicKey && t._useResponse(bestParent, &res):
+			// We just made somebody else root
+		default:
+			// Become root
+			if !t._becomeRoot() {
+				panic("this should never happen")
 			}
-			for pk := range t.responses {
-				delete(t.responses, pk)
-			}
-			for pk, ps := range t.peers {
-				// TODO track which req was sent to which peer, only accept ones we actually sent...
-				req := t._newReq()
-				t.requests[pk] = *req
+			self = t.infos[t.core.crypto.publicKey]
+			ann := self.getAnnounce(t.core.crypto.publicKey)
+			for _, ps := range t.peers {
 				for p := range ps {
-					p.sendSigReq(t, req)
+					p.sendAnnounce(t, ann)
 				}
 			}
-			return
-		} else {
-			// TODO DEBUG THIS!
-			//panic("this should never happen")
-			if !t._becomeRoot() {
-				panic("this also should never happen")
-			}
-			force = true
 		}
-	}
-	if force {
-		// TODO send announcement
-		ann := self.getAnnounce(t.core.crypto.publicKey)
-		for _, ps := range t.peers {
-			for p := range ps {
-				p.sendAnnounce(t, ann)
-			}
-		}
-		for pk := range t.requests {
-			delete(t.requests, pk)
-		}
-		for pk := range t.responses {
-			delete(t.responses, pk)
-		}
+		t.requests = make(map[publicKey]crdtreeSigReq)
+		t.responses = make(map[publicKey]crdtreeSigRes)
 		for pk, ps := range t.peers {
-			// TODO track which req was sent to which peer, only accept ones we actually sent...
 			req := t._newReq()
 			t.requests[pk] = *req
 			for p := range ps {
 				p.sendSigReq(t, req)
 			}
 		}
-	}
-}
-
-func (t *crdtree) _getRootFor(key publicKey) publicKey {
-	visited := make(map[publicKey]struct{})
-	visited[publicKey{}] = struct{}{}
-	here := key
-	for {
-		if _, isIn := visited[here]; isIn {
-			return here
-		}
-		visited[here] = struct{}{}
-		here = t.infos[here].parent
 	}
 }
 
@@ -218,7 +181,7 @@ func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
 	// This is the entire point of having a nonce...
 	if t.requests[p.key] == res.crdtreeSigReq {
 		t.responses[p.key] = *res
-		t._fix(false) // This could become our new parent
+		t._fix() // This could become our new parent
 	}
 }
 
@@ -288,7 +251,7 @@ func (t *crdtree) _handleAnnounce(p *peer, ann *crdtreeAnnounce) {
 				p.sendAnnounce(t, ann)
 			}
 		}
-		t._fix(false) // This could require us to change parents
+		t._fix() // This could require us to change parents
 	}
 }
 
@@ -323,15 +286,15 @@ func (t *crdtree) _lookup(dest publicKey) *peer {
 		var lowest *publicKey
 		var best *publicKey
 		for key := range t.infos {
-			if lowest == nil || crdtreeLess(key, *lowest) {
+			if lowest == nil || key.less(*lowest) {
 				k := key
 				lowest = &k
 			}
-			if best == nil && crdtreeLess(key, dest) {
+			if best == nil && key.less(dest) {
 				k := key
 				best = &k
 			}
-			if crdtreeLess(key, dest) && crdtreeLess(*best, key) {
+			if key.less(dest) && best.less(key) {
 				k := key
 				best = &k
 			}
@@ -344,7 +307,7 @@ func (t *crdtree) _lookup(dest publicKey) *peer {
 		}
 		dest = *best
 	}
-	dists := t._getDists(dest)
+	_, dists := t._getRootAndDists(dest)
 	getDist := func(key publicKey) (uint64, bool) {
 		var dist uint64
 		visited := make(map[publicKey]struct{})
@@ -384,16 +347,18 @@ func (t *crdtree) _lookup(dest publicKey) *peer {
 	return bestPeer
 }
 
-func (t *crdtree) _getDists(dest publicKey) map[publicKey]uint64 {
+func (t *crdtree) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint64) {
 	// This returns the distances from the destination's root for the destination and each of its ancestors
 	dists := make(map[publicKey]uint64)
 	next := dest
+	var root publicKey
 	var dist uint64
 	for {
 		if _, isIn := dists[next]; isIn {
 			break
 		}
 		if info, isIn := t.infos[next]; isIn {
+			root = next
 			dists[next] = dist
 			dist++
 			next = info.parent
@@ -401,7 +366,7 @@ func (t *crdtree) _getDists(dest publicKey) map[publicKey]uint64 {
 			break
 		}
 	}
-	return dists
+	return root, dists
 }
 
 /*****************
@@ -548,19 +513,4 @@ func (info *crdtreeInfo) getAnnounce(key publicKey) *crdtreeAnnounce {
 		crdtreeSigRes: info.crdtreeSigRes,
 		sig:           info.sig,
 	}
-}
-
-/******************
- * util functions *
- ******************/
-
-func crdtreeLess(key1, key2 publicKey) bool {
-	for idx := range key1 {
-		if key1[idx] < key2[idx] {
-			return true
-		} else if key1[idx] > key2[idx] {
-			return false
-		}
-	}
-	return false
 }
