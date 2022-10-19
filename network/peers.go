@@ -145,6 +145,11 @@ func (p *peer) handler() error {
 	// Hack to get ourself into the remote node's dhtree
 	// They send a similar message and we'll respond with correct info
 	p.sendTree(nil, &treeInfo{root: p.peers.core.crypto.publicKey})
+	// Hack to send our priority to the remote node in a way that existing
+	// nodes can safely ignore
+	p.writer.Act(nil, func() {
+		p.writer._write([]byte{0x00, 0x03, wireDummy, 'p', p.prio})
+	})
 	// Now allocate buffers and start reading / handling packets...
 	var lenBuf [2]byte // packet length is a uint16
 	bs := make([]byte, 65535)
@@ -178,7 +183,7 @@ func (p *peer) _handlePacket(bs []byte) error {
 	}
 	switch pType := bs[0]; pType {
 	case wireDummy:
-		return nil
+		return p._handleDummy(bs[1:])
 	case wireProtoTree:
 		return p._handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
@@ -202,6 +207,22 @@ func (p *peer) _handlePacket(bs []byte) error {
 	default:
 		return errors.New("unrecognized packet type")
 	}
+}
+
+func (p *peer) _handleDummy(bs []byte) error {
+	for len(bs) > 0 {
+		switch bs[0] {
+		case 'p':
+			// The remote node sent us a priority number, only update
+			// it if the number they have sent is worse than the one
+			// that we configured
+			if prio := bs[1]; prio > p.prio {
+				p.prio = prio
+				bs = bs[2:]
+			}
+		}
+	}
+	return nil
 }
 
 func (p *peer) _handleTree(bs []byte) error {
