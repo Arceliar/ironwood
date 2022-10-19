@@ -147,9 +147,15 @@ func (p *peer) handler() error {
 	p.sendTree(nil, &treeInfo{root: p.peers.core.crypto.publicKey})
 	// Hack to send our priority to the remote node in a way that existing
 	// nodes can safely ignore
-	p.writer.Act(nil, func() {
-		p.writer._write([]byte{0x00, 0x03, wireDummy, 'p', p.prio})
+	var prio uint8
+	phony.Block(p, func() {
+		prio = p.prio
 	})
+	if prio > 0 {
+		p.writer.Act(nil, func() {
+			p.writer._write([]byte{0x00, 0x03, wireDummy, 'p', prio})
+		})
+	}
 	// Now allocate buffers and start reading / handling packets...
 	var lenBuf [2]byte // packet length is a uint16
 	bs := make([]byte, 65535)
@@ -210,16 +216,16 @@ func (p *peer) _handlePacket(bs []byte) error {
 }
 
 func (p *peer) _handleDummy(bs []byte) error {
-	for len(bs) > 0 {
-		switch bs[0] {
-		case 'p':
-			// The remote node sent us a priority number, only update
-			// it if the number they have sent is worse than the one
-			// that we configured
-			if prio := bs[1]; prio > p.prio {
-				p.prio = prio
-				bs = bs[2:]
-			}
+	if len(bs) < 2 {
+		return nil
+	}
+	switch bs[0] {
+	case 'p':
+		// The remote node sent us a priority number, only update
+		// it if the number they have sent is worse than the one
+		// that we configured
+		if prio := bs[1]; prio > p.prio {
+			p.prio = prio
 		}
 	}
 	return nil
