@@ -653,6 +653,7 @@ func (t *dhtree) handleDHTTraffic(from phony.Actor, tr *dhtTraffic, doNotify boo
 				t.pathfinder._doNotify(dest, !doNotify)
 			}
 			t.core.pconn.handleTraffic(tr)
+			dhtTrafficPool.Put(tr)
 		} else {
 			next.sendDHTTraffic(t, tr)
 		}
@@ -664,7 +665,7 @@ func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
 		if path := t.pathfinder._getPath(tr.dest); path != nil {
 			pt := new(pathTraffic)
 			pt.path = path
-			pt.dt = *tr
+			pt.dt = tr
 			t.core.peers.handlePathTraffic(t, pt)
 		} else {
 			t.handleDHTTraffic(nil, tr, false)
@@ -1175,7 +1176,8 @@ func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
 }
 
 func (t *dhtTraffic) decode(data []byte) error {
-	var tmp dhtTraffic
+	tmp := getDHTTraffic()
+	defer dhtTrafficPool.Put(tmp)
 	if !wireChopSlice(tmp.source[:], &data) {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.dest[:], &data) {
@@ -1184,9 +1186,9 @@ func (t *dhtTraffic) decode(data []byte) error {
 	if len(data) < 1 {
 		return wireDecodeError
 	}
-	tmp.kind, data = data[0], data[1:]
-	tmp.payload = append(tmp.payload[:0], data...)
-	*t = tmp
+	t.kind, data = data[0], data[1:]
+	t.source, t.dest = tmp.source, tmp.dest
+	t.payload = append(t.payload[:0], data...)
 	return nil
 }
 

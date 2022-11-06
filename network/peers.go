@@ -400,6 +400,7 @@ func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 
 func (p *peer) _handlePathTraffic(bs []byte) error {
 	tr := new(pathTraffic)
+	tr.dt = getDHTTraffic()
 	if err := tr.decode(bs); err != nil {
 		return err
 	}
@@ -419,7 +420,7 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 			next.sendPathTraffic(nil, tr)
 		} else {
 			// Fall back to dhtTraffic
-			ps.core.dhtree.handleDHTTraffic(ps, &tr.dt, false)
+			ps.core.dhtree.handleDHTTraffic(ps, tr.dt, false)
 		}
 	})
 }
@@ -476,11 +477,13 @@ func (p *peer) _push(packet wireEncodeable) {
 func (p *peer) pop() {
 	p.Act(nil, func() {
 		if info, ok := p.queue.pop(); ok {
-			switch info.packet.(type) {
+			switch tr := info.packet.(type) {
 			case *dhtTraffic:
 				p.writer.sendPacket(wireDHTTraffic, info.packet)
+				dhtTrafficPool.Put(tr)
 			case *pathTraffic:
 				p.writer.sendPacket(wirePathTraffic, info.packet)
+				dhtTrafficPool.Put(tr.dt)
 			default:
 				panic("this should never happen")
 			}
