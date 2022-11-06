@@ -43,7 +43,8 @@ func (q *packetQueue) drop() bool {
 	stream := q.streams[longestIdx]
 	info := stream.infos[0]
 	if len(stream.infos) > 1 {
-		stream.infos = stream.infos[1:]
+		copy(stream.infos[0:], stream.infos[1:])
+		stream.infos = stream.infos[:len(stream.infos)-1]
 		stream.size -= info.size
 		q.streams[longestIdx] = stream
 		q.size -= info.size
@@ -77,7 +78,8 @@ func (q *packetQueue) pop() (info pqPacketInfo, ok bool) {
 		stream := q.streams[0]
 		info = stream.infos[0]
 		if len(stream.infos) > 1 {
-			stream.infos = stream.infos[1:]
+			copy(stream.infos[0:], stream.infos[1:])
+			stream.infos = stream.infos[:len(stream.infos)-1]
 			stream.size -= info.size
 			q.streams[0] = stream
 			q.size -= info.size
