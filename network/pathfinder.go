@@ -310,20 +310,10 @@ func (t *pathTraffic) encode(out []byte) ([]byte, error) {
 }
 
 func (t *pathTraffic) decode(data []byte) error {
-	var tmp pathTraffic
-	tmp.dt = getDHTTraffic()
-	defer dhtTrafficPool.Put(tmp.dt)
-	if !wireChopPath(&tmp.path, &data) {
+	if !wireChopPath(&t.path, &data) {
 		return wireDecodeError
-	} else if err := tmp.dt.decode(data); err != nil {
-		return err
 	}
-	*t = tmp
-	t.path = tmp.path
-	t.dt.source, t.dt.dest = tmp.dt.source, tmp.dt.dest
-	t.dt.kind = tmp.dt.kind
-	t.dt.payload = append(t.dt.payload[:0], tmp.dt.payload...)
-	return nil
+	return t.dt.decode(data)
 }
 
 func pathPopFirstHop(data []byte) (peerPort, []byte) {
