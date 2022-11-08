@@ -42,6 +42,14 @@ func (q *packetQueue) drop() bool {
 	}
 	stream := q.streams[longestIdx]
 	info := stream.infos[0]
+	if info.packet != nil {
+		switch tr := info.packet.(type) {
+		case *dhtTraffic:
+			defer dhtTrafficPool.Put(tr)
+		case *pathTraffic:
+			defer dhtTrafficPool.Put(tr.dt)
+		}
+	}
 	if len(stream.infos) > 1 {
 		stream.infos = stream.infos[1:]
 		stream.size -= info.size

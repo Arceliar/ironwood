@@ -68,6 +68,7 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	case <-pc.readDeadline.getCancel():
 		return 0, nil, errors.New("deadline exceeded")
 	case tr = <-pc.recv:
+		defer dhtTrafficPool.Put(tr)
 	}
 	copy(p, tr.payload)
 	n = len(tr.payload)
@@ -75,7 +76,6 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 		n = len(p)
 	}
 	from = tr.source.addr()
-	dhtTrafficPool.Put(tr)
 	return
 }
 
@@ -259,12 +259,16 @@ func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
 		switch tr.kind {
 		case wireTrafficDummy:
 			// Drop the traffic
+			dhtTrafficPool.Put(tr)
 		case wireTrafficStandard:
 			if tr.dest.equal(pc.core.crypto.publicKey) {
 				select {
 				case pc.recv <- tr:
 				case <-pc.closed:
+					dhtTrafficPool.Put(tr)
 				}
+			} else {
+				dhtTrafficPool.Put(tr)
 			}
 		case wireTrafficOutOfBand:
 			if pc.oobHandler != nil {
@@ -276,6 +280,7 @@ func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
 			}
 		default:
 			// Drop the traffic
+			dhtTrafficPool.Put(tr)
 		}
 	})
 }
