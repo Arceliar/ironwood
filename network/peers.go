@@ -434,11 +434,13 @@ func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 func (p *peer) _push(packet wireEncodeable) {
 	if p.ready {
 		var pType byte
-		switch packet.(type) {
+		switch tr := packet.(type) {
 		case *dhtTraffic:
 			pType = wireDHTTraffic
+			defer dhtTrafficPool.Put(tr)
 		case *pathTraffic:
 			pType = wirePathTraffic
+			defer dhtTrafficPool.Put(tr.dt)
 		default:
 			panic("this should never happen")
 		}
@@ -480,10 +482,10 @@ func (p *peer) pop() {
 			switch tr := info.packet.(type) {
 			case *dhtTraffic:
 				p.writer.sendPacket(wireDHTTraffic, info.packet)
-				dhtTrafficPool.Put(tr)
+				defer dhtTrafficPool.Put(tr)
 			case *pathTraffic:
 				p.writer.sendPacket(wirePathTraffic, info.packet)
-				dhtTrafficPool.Put(tr.dt)
+				defer dhtTrafficPool.Put(tr.dt)
 			default:
 				panic("this should never happen")
 			}
