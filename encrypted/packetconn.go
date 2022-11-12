@@ -57,7 +57,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 		return 0, errors.New("closed")
 	default:
 	}
-	destKey, ok := addr.(types.Addr)
+	destKey, ok := types.ExtractAddrKey(addr)
 	if !ok || len(destKey) != edPubSize {
 		return 0, errors.New("bad destination address")
 	}
