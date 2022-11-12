@@ -212,6 +212,7 @@ type sessionInfo struct {
 	timer        *time.Timer
 	ack          *sessionAck
 	since        time.Time
+	rotated      time.Time // last time we rotated keys
 	rx           uint64
 	tx           uint64
 }
@@ -407,7 +408,10 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			msg = unboxed[len(key):]
 			info.mgr.pc.network.recv(info, msg)
 			// Misc remaining followup work
-			onSuccess(key)
+			if info.rotated.IsZero() || time.Since(info.rotated) > time.Minute {
+				onSuccess(key)
+				info.rotated = time.Now()
+			}
 			info.rx += uint64(len(msg))
 			info._resetTimer()
 		} else {
