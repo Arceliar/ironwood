@@ -12,12 +12,8 @@ import (
 )
 
 const (
-	peerENABLE_DELAY_SCALING = 1
-	peerRETRY_WINDOW         = 2 // seconds to wait between expected time and timeout
-	peerINIT_DELAY           = 4 // backwards compatibiity / historical reasons
-	peerINIT_TIMEOUT         = 6 // backwards compatiblity / historical reasons
-	peerMIN_DELAY            = 1
-	peerMAX_DELAY            = 10 // TODO figure out what makes sense
+	peer_KEEPALIVE_DELAY = time.Second
+	peer_TIMEOUT         = peer_KEEPALIVE_DELAY + 2*time.Second
 )
 
 type peerPort uint64
@@ -57,10 +53,8 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		p.conn = conn
 		p.key = key
 		p.port = port
+		p.monitor.peer = p
 		p.writer.peer = p
-		p.writer.timer = time.AfterFunc(0, func() {})
-		p.writer.delay = peerINIT_DELAY
-		p.timeout = peerINIT_TIMEOUT
 		p.time = time.Now()
 		ps.peers[port] = p
 	})
@@ -86,27 +80,69 @@ type peer struct {
 	key         publicKey
 	port        peerPort
 	queue       packetQueue
-	ready       bool // is the writer ready for traffic?
-	writer      peerWriter
-	timeout     byte
 	time        time.Time // time when the peer was initialized
+	monitor     peerMonitor
+	writer      peerWriter
+	ready       bool // is the writer ready for traffic?
+}
+
+type peerMonitor struct {
+	phony.Inbox
+	peer      *peer
+	keepAlive func()
+	timer     *time.Timer
+	deadlined bool
+}
+
+func (m *peerMonitor) sent(pType wirePacketType) {
+	m.Act(&m.peer.writer, func() {
+		if m.timer != nil {
+			// We're sending a packet, so we definitely don't need to send a keepalive after this
+			m.timer.Stop()
+			m.timer = nil
+		}
+		switch {
+		case m.deadlined:
+			return
+		case pType == wireDummy:
+		case pType == wireKeepAlive:
+		default:
+			// We're sending non-keepalive traffic
+			// This means we expect some kind of acknowledgement (at least a keepalive)
+			// Set a read deadline for that (and make a note that we did so)
+			m.peer.conn.SetReadDeadline(time.Now().Add(peer_TIMEOUT))
+			m.deadlined = true
+		}
+	})
+}
+
+func (m *peerMonitor) recv(pType wirePacketType) {
+	m.Act(nil, func() {
+		m.peer.conn.SetReadDeadline(time.Time{})
+		m.deadlined = false
+		switch {
+		case m.timer != nil:
+		case pType == wireDummy:
+		case pType == wireKeepAlive:
+		default:
+			// We just received non-keepalive traffic
+			// The other side is expecting some kind of response, at least a keepalive
+			// We set a timer to trigger a response later, if we don't send any traffic in the mean time
+			m.timer = time.AfterFunc(peer_KEEPALIVE_DELAY, m.keepAlive)
+		}
+	})
 }
 
 type peerWriter struct {
 	phony.Inbox
-	peer      *peer
-	keepAlive func()
-	writeBuf  []byte
-	seq       uint64
-	timer     *time.Timer
-	delay     byte
+	peer     *peer
+	writeBuf []byte
+	seq      uint64
 }
 
-func (w *peerWriter) _write(bs []byte) {
-	w.timer.Stop()
+func (w *peerWriter) _write(bs []byte, pType wirePacketType) {
+	w.peer.monitor.sent(pType)
 	_, _ = w.peer.conn.Write(bs)
-	delay := time.Duration(w.delay) * time.Second
-	w.timer = time.AfterFunc(delay, w.keepAlive)
 	w.seq++
 	seq := w.seq
 	w.Act(nil, func() {
@@ -116,11 +152,11 @@ func (w *peerWriter) _write(bs []byte) {
 	})
 }
 
-func (w *peerWriter) sendPacket(pType byte, data wireEncodeable) {
+func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 	w.Act(nil, func() {
 		w.writeBuf = append(w.writeBuf[:0], 0x00, 0x00) // This will be the length
 		var err error
-		w.writeBuf, err = wireEncode(w.writeBuf, pType, data)
+		w.writeBuf, err = wireEncode(w.writeBuf, byte(pType), data)
 		if err != nil {
 			panic(err)
 		}
@@ -129,7 +165,7 @@ func (w *peerWriter) sendPacket(pType byte, data wireEncodeable) {
 			return
 		}
 		binary.BigEndian.PutUint16(w.writeBuf[:2], uint16(len(bs)))
-		w._write(w.writeBuf)
+		w._write(w.writeBuf, pType)
 	})
 }
 
@@ -139,29 +175,15 @@ func (p *peer) handler() error {
 	}()
 	done := make(chan struct{})
 	defer close(done)
-	p.writer.keepAlive = func() {
+	p.conn.SetDeadline(time.Time{})
+	p.monitor.keepAlive = func() {
 		select {
 		case <-done:
 			return
 		default:
 		}
 		p.writer.Act(nil, func() {
-			if peerENABLE_DELAY_SCALING == 0 {
-				p.writer._write([]byte{0x00, 0x01, wireDummy})
-				return
-			}
-			// TODO figure out a good delay schedule, this is just a placeholder
-			uptime := time.Since(p.time)
-			delay := uint(uptime.Minutes()) //uint(math.Sqrt(uptime.Minutes()))
-			// Clamp to allowed range
-			switch {
-			case delay < peerMIN_DELAY:
-				delay = peerMIN_DELAY
-			case delay > peerMAX_DELAY:
-				delay = peerMAX_DELAY
-			}
-			p.writer.delay = byte(delay)
-			p.writer._write([]byte{0x00, 0x02, wireKeepAlive, p.writer.delay})
+			p.writer._write([]byte{0x00, 0x01, byte(wireKeepAlive)}, wireKeepAlive)
 		})
 	}
 	// Add peer to the crdtree, to kick off protocol exchanges
@@ -170,10 +192,6 @@ func (p *peer) handler() error {
 	var lenBuf [2]byte // packet length is a uint16
 	bs := make([]byte, 65535)
 	for {
-		timeout := time.Duration(p.timeout) * time.Second
-		if err := p.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-			return err
-		}
 		if _, err := io.ReadFull(p.conn, lenBuf[:]); err != nil {
 			return err
 		}
@@ -198,8 +216,12 @@ func (p *peer) _handlePacket(bs []byte) error {
 	if len(bs) == 0 {
 		return errors.New("empty packet")
 	}
-	switch pType := bs[0]; pType {
+	pType := wirePacketType(bs[0])
+	p.monitor.recv(pType)
+	switch pType {
 	case wireDummy:
+		return nil
+	case wireKeepAlive:
 		return nil
 	case wireProtoSigReq:
 		return p._handleSigReq(bs[1:])
@@ -209,8 +231,6 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleAnnounce(bs[1:])
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
-	case wireKeepAlive:
-		return p._handleKeepAlive(bs[1:])
 	default:
 		return errors.New("unrecognized packet type")
 	}
@@ -282,25 +302,9 @@ func (p *peer) sendTraffic(from phony.Actor, tr *traffic) {
 	})
 }
 
-func (p *peer) _handleKeepAlive(bs []byte) error {
-	if len(bs) != 1 {
-		return errors.New("wrong wireKeepAlive length")
-	}
-	delay := bs[0]
-	// TODO? don't error here, just move it to the allowed range
-	switch {
-	case delay < peerMIN_DELAY:
-		return errors.New("wireKeepAlive delay too short")
-	case delay > peerMAX_DELAY:
-		return errors.New("wireKeepAlive delay too long")
-	}
-	p.timeout = bs[0] + peerRETRY_WINDOW
-	return nil
-}
-
 func (p *peer) _push(packet wireEncodeable) {
 	if p.ready {
-		var pType byte
+		var pType wirePacketType
 		switch packet.(type) {
 		case *traffic:
 			pType = wireTraffic

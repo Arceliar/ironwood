@@ -5,13 +5,15 @@ import (
 	"errors"
 )
 
+type wirePacketType byte
+
 const (
-	wireDummy = iota // unused
+	wireDummy wirePacketType = iota // unused
+	wireKeepAlive
 	wireProtoSigReq
 	wireProtoSigRes
 	wireProtoAnnounce
 	wireTraffic
-	wireKeepAlive
 )
 
 // TODO? proper packet types for out-of-band, instead of embedding into ordinary traffic

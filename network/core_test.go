@@ -478,7 +478,7 @@ func (d *dummyConn) RemoteAddr() net.Addr {
 }
 
 func (d *dummyConn) SetDeadline(t time.Time) error {
-	panic("TODO implement SetDeadline")
+	//panic("TODO implement SetDeadline")
 	return nil
 }
 
