@@ -408,7 +408,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			msg = unboxed[len(key):]
 			info.mgr.pc.network.recv(info, msg)
 			// Misc remaining followup work
-			if time.Since(info.rotated) > time.Minute {
+			if info.rotated.IsZero() || time.Since(info.rotated) > time.Minute {
 				onSuccess(key)
 				info.rotated = time.Now()
 			}
