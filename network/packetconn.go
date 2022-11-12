@@ -44,6 +44,20 @@ func (pc *PacketConn) init(c *core) {
 	pc.Debug.init(c)
 }
 
+var dhtTrafficPool = sync.Pool{
+	New: func() interface{} {
+		return &dhtTraffic{
+			payload: make([]byte, 0, 65535),
+		}
+	},
+}
+
+func getDHTTraffic() *dhtTraffic {
+	d := dhtTrafficPool.Get().(*dhtTraffic)
+	d.payload = d.payload[:0]
+	return d
+}
+
 // ReadFrom fulfills the net.PacketConn interface, with a types.Addr returned as the from address.
 // Note that failing to call ReadFrom may cause the connection to block and/or leak memory.
 func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
@@ -54,6 +68,7 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	case <-pc.readDeadline.getCancel():
 		return 0, nil, errors.New("deadline exceeded")
 	case tr = <-pc.recv:
+		defer dhtTrafficPool.Put(tr)
 	}
 	copy(p, tr.payload)
 	n = len(tr.payload)
@@ -81,12 +96,12 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if uint64(len(p)) > pc.MTU() {
 		return 0, errors.New("oversized message")
 	}
-	var tr dhtTraffic
+	tr := getDHTTraffic()
 	tr.source = pc.core.crypto.publicKey
 	copy(tr.dest[:], dest)
 	tr.kind = wireTrafficStandard
-	tr.payload = append(tr.payload, p...)
-	pc.core.dhtree.sendTraffic(nil, &tr)
+	tr.payload = append(tr.payload[:0], p...)
+	pc.core.dhtree.sendTraffic(nil, tr)
 	return len(p), nil
 }
 
@@ -244,12 +259,16 @@ func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
 		switch tr.kind {
 		case wireTrafficDummy:
 			// Drop the traffic
+			dhtTrafficPool.Put(tr)
 		case wireTrafficStandard:
 			if tr.dest.equal(pc.core.crypto.publicKey) {
 				select {
 				case pc.recv <- tr:
 				case <-pc.closed:
+					dhtTrafficPool.Put(tr)
 				}
+			} else {
+				dhtTrafficPool.Put(tr)
 			}
 		case wireTrafficOutOfBand:
 			if pc.oobHandler != nil {
@@ -261,6 +280,7 @@ func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
 			}
 		default:
 			// Drop the traffic
+			dhtTrafficPool.Put(tr)
 		}
 	})
 }

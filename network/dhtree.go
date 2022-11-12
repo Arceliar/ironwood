@@ -664,7 +664,7 @@ func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
 		if path := t.pathfinder._getPath(tr.dest); path != nil {
 			pt := new(pathTraffic)
 			pt.path = path
-			pt.dt = *tr
+			pt.dt = tr
 			t.core.peers.handlePathTraffic(t, pt)
 		} else {
 			t.handleDHTTraffic(nil, tr, false)
@@ -1175,18 +1175,16 @@ func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
 }
 
 func (t *dhtTraffic) decode(data []byte) error {
-	var tmp dhtTraffic
-	if !wireChopSlice(tmp.source[:], &data) {
+	if !wireChopSlice(t.source[:], &data) {
 		return wireDecodeError
-	} else if !wireChopSlice(tmp.dest[:], &data) {
+	} else if !wireChopSlice(t.dest[:], &data) {
 		return wireDecodeError
 	}
 	if len(data) < 1 {
 		return wireDecodeError
 	}
-	tmp.kind, data = data[0], data[1:]
-	tmp.payload = append(tmp.payload[:0], data...)
-	*t = tmp
+	t.kind, data = data[0], data[1:]
+	t.payload = append(t.payload[:0], data...)
 	return nil
 }
 
