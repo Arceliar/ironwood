@@ -109,6 +109,13 @@ func (w *peerWriter) _write(bs []byte) {
 
 func (w *peerWriter) sendPacket(pType byte, data wireEncodeable) {
 	w.Act(nil, func() {
+		switch tr := data.(type) {
+		case *dhtTraffic:
+			defer dhtTrafficPool.Put(tr)
+		case *pathTraffic:
+			defer dhtTrafficPool.Put(tr.dt)
+		default:
+		}
 		w.writeBuf = append(w.writeBuf[:0], 0x00, 0x00) // This will be the length
 		var err error
 		w.writeBuf, err = wireEncode(w.writeBuf, pType, data)
@@ -384,8 +391,9 @@ func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
 }
 
 func (p *peer) _handleDHTTraffic(bs []byte) error {
-	tr := new(dhtTraffic)
+	tr := getDHTTraffic()
 	if err := tr.decode(bs); err != nil {
+		dhtTrafficPool.Put(tr)
 		return err // This is just to check that it unmarshals correctly
 	}
 	p.peers.core.dhtree.handleDHTTraffic(p, tr, true)
@@ -433,18 +441,14 @@ func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 
 func (p *peer) _push(packet wireEncodeable) {
 	if p.ready {
-		var pType byte
-		switch tr := packet.(type) {
+		switch packet.(type) {
 		case *dhtTraffic:
-			pType = wireDHTTraffic
-			defer dhtTrafficPool.Put(tr)
+			p.writer.sendPacket(wireDHTTraffic, packet)
 		case *pathTraffic:
-			pType = wirePathTraffic
-			defer dhtTrafficPool.Put(tr.dt)
+			p.writer.sendPacket(wirePathTraffic, packet)
 		default:
 			panic("this should never happen")
 		}
-		p.writer.sendPacket(pType, packet)
 		p.ready = false
 		return
 	}
@@ -479,13 +483,11 @@ func (p *peer) _push(packet wireEncodeable) {
 func (p *peer) pop() {
 	p.Act(nil, func() {
 		if info, ok := p.queue.pop(); ok {
-			switch tr := info.packet.(type) {
+			switch info.packet.(type) {
 			case *dhtTraffic:
 				p.writer.sendPacket(wireDHTTraffic, info.packet)
-				defer dhtTrafficPool.Put(tr)
 			case *pathTraffic:
 				p.writer.sendPacket(wirePathTraffic, info.packet)
-				defer dhtTrafficPool.Put(tr.dt)
 			default:
 				panic("this should never happen")
 			}
