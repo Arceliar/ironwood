@@ -4,7 +4,6 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"net"
-	"sync"
 
 	"github.com/Arceliar/phony"
 
@@ -52,12 +51,6 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	return
 }
 
-var writeBufPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 0, 65535)
-	},
-}
-
 func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	select {
 	case <-pc.network.closed:
@@ -74,7 +67,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	n = len(p)
 	var dest edPub
 	copy(dest[:], destKey)
-	buf := writeBufPool.Get().([]byte)[:0]
+	buf := bufPool.Get().([]byte)[:0]
 	buf = append(buf, p...)
 	pc.sessions.writeTo(dest, buf)
 	return

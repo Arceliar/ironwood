@@ -242,18 +242,20 @@ func (pc *PacketConn) PrivateKey() ed25519.PrivateKey {
 	return ed25519.PrivateKey(sk[:])
 }
 
+// MaxPeerMessageSize is the largest packet size sendable
+const MaxPeerMessageSize = 65535
+
 // MTU returns the maximum transmission unit of the PacketConn, i.e. maximum safe message size to send over the network.
 func (pc *PacketConn) MTU() uint64 {
-	const maxPeerMessageSize = 65535
 	const messageTypeSize = 1
 	const rootSeqSize = 8
 	const treeUpdateOverhead = messageTypeSize + publicKeySize + rootSeqSize
 	const maxPortSize = 10 // maximum vuint size in bytes
 	const treeHopSize = publicKeySize + maxPortSize + signatureSize
-	const maxHops = (maxPeerMessageSize - treeUpdateOverhead) / treeHopSize
+	const maxHops = (MaxPeerMessageSize - treeUpdateOverhead) / treeHopSize
 	const maxPathBytes = 2 * maxPortSize * maxHops // to the root and back
 	const pathTrafficOverhead = messageTypeSize + maxPathBytes + publicKeySize + publicKeySize + messageTypeSize
-	const MTU = maxPeerMessageSize - pathTrafficOverhead
+	const MTU = MaxPeerMessageSize - pathTrafficOverhead
 	return MTU
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/Arceliar/phony"
 
+	"github.com/Arceliar/ironwood/network"
 	"github.com/Arceliar/ironwood/types"
 )
 
@@ -145,7 +146,7 @@ func (mgr *sessionManager) writeTo(toKey edPub, msg []byte) {
 		} else {
 			// Need to buffer the traffic
 			mgr._bufferAndInit(toKey, msg)
-			writeBufPool.Put(msg[:0]) // nolint:staticcheck
+			bufPool.Put(msg[:0]) // nolint:staticcheck
 		}
 	})
 }
@@ -287,17 +288,17 @@ func (info *sessionInfo) _handleUpdate(init *sessionInit) {
 	info._resetTimer()
 }
 
-var sessionBufPool = sync.Pool{
+var bufPool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, 0, sessionTrafficOverhead+65535)
+		return make([]byte, 0, sessionTrafficOverhead+network.MaxPeerMessageSize)
 	},
 }
 
 func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 	// TODO? some worker pool to multi-thread this
 	info.Act(from, func() {
-		defer writeBufPool.Put(msg[:0]) // nolint:staticcheck
-		info.sendNonce += 1             // Advance the nonce before anything else
+		defer bufPool.Put(msg[:0]) // nolint:staticcheck
+		info.sendNonce += 1        // Advance the nonce before anything else
 		if info.sendNonce == 0 {
 			// Nonce overflowed, so rotate keys
 			info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
@@ -306,13 +307,8 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 			info.localKeySeq++
 			info._fixShared(0, 0)
 		}
-		bs := sessionBufPool.Get().([]byte)
-		if l := sessionTrafficOverhead + len(msg); cap(bs) < l {
-			bs = make([]byte, l) // just in case
-		} else {
-			bs = bs[:l] // extend a reused slice
-		}
-		defer sessionBufPool.Put(bs[:0]) // nolint:staticcheck
+		bs := bufPool.Get().([]byte)[:sessionTrafficOverhead+len(msg)]
+		defer bufPool.Put(bs[:0]) // nolint:staticcheck
 		bs[0] = sessionTypeTraffic
 		offset := 1
 		offset += binary.PutUvarint(bs[offset:], info.localKeySeq)
@@ -321,8 +317,8 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		bs = bs[:offset]
 		// We need to include info.nextPub below the layer of encryption
 		// That way the remote side knows it's us when we send from it later...
-		tmp := sessionBufPool.Get().([]byte)[:0]
-		defer sessionBufPool.Put(tmp[:0]) // nolint:staticcheck
+		tmp := bufPool.Get().([]byte)[:0]
+		defer bufPool.Put(tmp[:0]) // nolint:staticcheck
 		tmp = append(tmp, info.nextPub[:]...)
 		tmp = append(tmp, msg...)
 		bs = boxSeal(bs, tmp, info.sendNonce, &info.sendShared)
