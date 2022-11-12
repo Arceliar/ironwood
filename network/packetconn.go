@@ -54,6 +54,9 @@ var dhtTrafficPool = sync.Pool{
 
 func getDHTTraffic() *dhtTraffic {
 	d := dhtTrafficPool.Get().(*dhtTraffic)
+	d.kind = wireDummy
+	d.source = publicKey{}
+	d.dest = publicKey{}
 	d.payload = d.payload[:0]
 	return d
 }
@@ -278,6 +281,7 @@ func (pc *PacketConn) handleTraffic(tr *dhtTraffic) {
 				// TODO something smarter than spamming goroutines
 				go pc.oobHandler(source, dest, msg)
 			}
+			dhtTrafficPool.Put(tr)
 		default:
 			// Drop the traffic
 			dhtTrafficPool.Put(tr)
