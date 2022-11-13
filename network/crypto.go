@@ -28,10 +28,6 @@ func (key *privateKey) sign(message []byte) signature {
 	return sig
 }
 
-func (key privateKey) equal(comparedKey privateKey) bool {
-	return key == comparedKey
-}
-
 func (key *publicKey) verify(message []byte, sig *signature) bool {
 	return ed25519.Verify(ed25519.PublicKey(key[:]), message, sig[:])
 }

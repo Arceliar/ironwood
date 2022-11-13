@@ -452,11 +452,11 @@ func (t *dhtree) _handleBootstrapAck(ack *dhtBootstrapAck) {
 	}
 	setup := t._newSetup(&ack.response)
 	t._handleSetup(nil, setup)
-	if t.prev == nil {
-		// This can happen if the treeLookup in handleSetup fails
-		// FIXME we should avoid letting this happen
-		//  E.g. check that the lookup will fail, or at least that the roots match
-	}
+	// if t.prev == nil {
+	//   This can happen if the treeLookup in handleSetup fails
+	//   FIXME we should avoid letting this happen
+	//   E.g. check that the lookup will fail, or at least that the roots match
+	// }
 }
 
 // handleBootstrapAck is the externally callable actor behavior that sends a message to the dhtree that it should _handleBootstrapAck
@@ -711,14 +711,6 @@ type treeHop struct {
 	next publicKey
 	port peerPort
 	sig  signature
-}
-
-func (info *treeInfo) dest() publicKey {
-	key := info.root
-	if len(info.hops) > 0 {
-		key = info.hops[len(info.hops)-1].next
-	}
-	return key
 }
 
 func (info *treeInfo) from() publicKey {
@@ -1014,10 +1006,6 @@ func (st *dhtSetupToken) decode(data []byte) error {
 type dhtBootstrapAck struct {
 	bootstrap dhtBootstrap
 	response  dhtSetupToken
-}
-
-func (ack *dhtBootstrapAck) check() bool {
-	return ack.bootstrap.check() && ack.response.check()
 }
 
 func (ack *dhtBootstrapAck) encode(out []byte) ([]byte, error) {

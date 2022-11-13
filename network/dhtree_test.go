@@ -89,7 +89,7 @@ func TestMarshalDHTBootstrap(t *testing.T) {
 		copy(sk[:], newPriv)
 	}
 	c := new(core)
-	c.init(priv)
+	_ = c.init(priv)
 	c.dhtree.self = info
 	bootstrap := new(dhtBootstrap)
 	bootstrap.label = *c.dhtree._getLabel()

@@ -315,9 +315,3 @@ func (t *pathTraffic) decode(data []byte) error {
 	}
 	return t.dt.decode(data)
 }
-
-func pathPopFirstHop(data []byte) (peerPort, []byte) {
-	u, l := wireDecodeUint(data)
-	copy(data, data[l:]) // Shift data forward, because we pool []byte
-	return peerPort(u), data[:len(data)-l]
-}

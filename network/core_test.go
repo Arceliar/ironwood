@@ -22,8 +22,8 @@ func TestTwoNodes(t *testing.T) {
 	cA, cB := newDummyConn(pubA, pubB)
 	defer cA.Close()
 	defer cB.Close()
-	go a.HandleConn(pubB, cA, 0)
-	go b.HandleConn(pubA, cB, 0)
+	go a.HandleConn(pubB, cA, 0) // nolint:errcheck
+	go b.HandleConn(pubA, cB, 0) // nolint:errcheck
 	waitForRoot([]*PacketConn{a, b}, 10*time.Second)
 	timer := time.NewTimer(time.Second)
 	defer func() { timer.Stop() }()
@@ -121,12 +121,12 @@ func TestLineNetwork(t *testing.T) {
 		defer linkB.Close()
 		go func() {
 			<-wait
-			prev.HandleConn(keyB, linkA, 0)
+			_ = prev.HandleConn(keyB, linkA, 0)
 			//linkA.Close()
 		}()
 		go func() {
 			<-wait
-			here.HandleConn(keyA, linkB, 0)
+			_ = here.HandleConn(keyA, linkB, 0)
 			//linkB.Close()
 		}()
 	}
@@ -171,9 +171,9 @@ func TestLineNetwork(t *testing.T) {
 							println(string(bs), string(msg))
 							//panic("unequal")
 						}
-						if err != nil {
-							//panic(err)
-						}
+						// if err != nil {
+						//   panic(err)
+						// }
 						//panic("read problem")
 					}
 					var fK publicKey
@@ -187,7 +187,7 @@ func TestLineNetwork(t *testing.T) {
 			select {
 			case <-timer.C:
 				func() {
-					defer func() { recover() }()
+					defer func() { _ = recover() }()
 					close(done)
 				}()
 				for _, conn := range conns {
@@ -236,11 +236,11 @@ func TestRandomTreeNetwork(t *testing.T) {
 			defer linkB.Close()
 			go func() {
 				<-wait
-				conn.HandleConn(keyB, linkA, 0)
+				_ = conn.HandleConn(keyB, linkA, 0)
 			}()
 			go func() {
 				<-wait
-				p.HandleConn(keyA, linkB, 0)
+				_ = p.HandleConn(keyA, linkB, 0)
 			}()
 		}
 		conns = append(conns, conn)
@@ -286,9 +286,9 @@ func TestRandomTreeNetwork(t *testing.T) {
 							println(string(bs), string(msg))
 							//panic("unequal")
 						}
-						if err != nil {
-							//panic(err)
-						}
+						// if err != nil {
+						//   panic(err)
+						// }
 						//panic("read problem")
 					}
 					var fK publicKey
@@ -302,7 +302,7 @@ func TestRandomTreeNetwork(t *testing.T) {
 			select {
 			case <-timer.C:
 				func() {
-					defer func() { recover() }()
+					defer func() { _ = recover() }()
 					close(done)
 				}()
 				for _, conn := range conns {
@@ -431,17 +431,14 @@ func (d *dummyConn) Close() error {
 
 func (d *dummyConn) LocalAddr() net.Addr {
 	panic("TODO LocalAddr")
-	return nil
 }
 
 func (d *dummyConn) RemoteAddr() net.Addr {
 	panic("TODO RemoteAddr")
-	return nil
 }
 
 func (d *dummyConn) SetDeadline(t time.Time) error {
 	panic("TODO implement SetDeadline")
-	return nil
 }
 
 func (d *dummyConn) SetReadDeadline(t time.Time) error {
@@ -451,5 +448,4 @@ func (d *dummyConn) SetReadDeadline(t time.Time) error {
 
 func (d *dummyConn) SetWriteDeadline(t time.Time) error {
 	panic("TODO implement SetWriteDeadline")
-	return nil
 }

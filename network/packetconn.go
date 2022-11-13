@@ -12,9 +12,7 @@ import (
 	"github.com/Arceliar/ironwood/types"
 )
 
-func _type_asserts_() {
-	var _ types.PacketConn = new(PacketConn)
-}
+var _ types.PacketConn = new(PacketConn)
 
 type PacketConn struct {
 	actor        phony.Inbox

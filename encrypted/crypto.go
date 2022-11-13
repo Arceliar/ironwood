@@ -1,7 +1,6 @@
 package encrypted
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
@@ -14,15 +13,6 @@ import (
 /********
  * util *
  ********/
-
-func bytesEqual(a, b []byte) bool {
-	return bytes.Equal(a, b)
-}
-
-func bytesPush(dest, source []byte, offset int) (newOffset int) {
-	copy(dest[offset:], source)
-	return offset + len(source)
-}
 
 func bytesPop(dest, source []byte, offset int) (newOffset int) {
 	copy(dest[:], source[offset:])
@@ -69,13 +59,6 @@ func (priv *edPriv) toBox() *boxPriv {
 	e := e2c.Ed25519PrivateKeyToCurve25519(ed25519.PrivateKey(priv[:]))
 	copy(c[:], e)
 	return &c
-}
-
-func (priv *edPriv) pub() *edPub {
-	pk := ed25519.PrivateKey(priv[:]).Public().(ed25519.PublicKey)
-	pub := new(edPub)
-	copy(pub[:], pk[:])
-	return pub
 }
 
 /*******

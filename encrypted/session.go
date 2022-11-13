@@ -21,7 +21,6 @@ const (
 	sessionTrafficOverheadMin = 1 + 1 + 1 + 1 + boxOverhead + boxPubSize // header, seq, seq, nonce
 	sessionTrafficOverhead    = sessionTrafficOverheadMin + 9 + 9 + 9
 	sessionInitSize           = 1 + boxPubSize + boxOverhead + edSigSize + boxPubSize + boxPubSize + 8 + 8
-	sessionAckSize            = sessionInitSize
 )
 
 const (
@@ -176,13 +175,13 @@ func (mgr *sessionManager) _bufferAndInit(toKey edPub, msg []byte) {
 
 func (mgr *sessionManager) sendInit(dest *edPub, init *sessionInit) {
 	if bs, err := init.encrypt(&mgr.pc.secretEd, dest); err == nil {
-		mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
+		_, _ = mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
 	}
 }
 
 func (mgr *sessionManager) sendAck(dest *edPub, ack *sessionAck) {
 	if bs, err := ack.encrypt(&mgr.pc.secretEd, dest); err == nil {
-		mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
+		_, _ = mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
 	}
 }
 
@@ -210,7 +209,6 @@ type sessionInfo struct {
 	nextPriv     boxPriv // becomes sendPriv
 	nextPub      boxPub  // becomes sendPub
 	timer        *time.Timer
-	ack          *sessionAck
 	since        time.Time
 	rotated      time.Time // last time we rotated keys
 	rx           uint64
@@ -312,7 +310,7 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		tmp = append(tmp, msg...)
 		bs = boxSeal(bs, tmp, info.sendNonce, &info.sendShared)
 		// send
-		info.mgr.pc.PacketConn.WriteTo(bs, types.Addr(info.ed[:]))
+		_, _ = info.mgr.pc.PacketConn.WriteTo(bs, types.Addr(info.ed[:]))
 		info.tx += uint64(len(msg))
 		info._resetTimer()
 	})

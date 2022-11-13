@@ -5,14 +5,11 @@ import (
 	"errors"
 	"net"
 
-	"github.com/Arceliar/phony"
-
 	"github.com/Arceliar/ironwood/network"
 	"github.com/Arceliar/ironwood/types"
 )
 
 type PacketConn struct {
-	actor phony.Inbox
 	*network.PacketConn
 	secretEd  edPriv
 	secretBox boxPriv

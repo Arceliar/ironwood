@@ -39,15 +39,6 @@ func wireChopSlice(out []byte, data *[]byte) bool {
 	return true
 }
 
-func wireChopBytes(out *[]byte, data *[]byte, size int) bool {
-	if len(*data) < size {
-		return false
-	}
-	*out = append(*out, (*data)[:size]...)
-	*data = (*data)[size:]
-	return true
-}
-
 type wireEncodeable interface {
 	encode(out []byte) ([]byte, error)
 }
