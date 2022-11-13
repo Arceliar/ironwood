@@ -67,7 +67,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	n = len(p)
 	var dest edPub
 	copy(dest[:], destKey)
-	buf := bufPool.Get().([]byte)[:0]
+	buf := pc.sessions.pool.Get().([]byte)[:0]
 	buf = append(buf, p...)
 	pc.sessions.writeTo(dest, buf)
 	return
