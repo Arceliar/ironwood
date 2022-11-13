@@ -146,7 +146,6 @@ func (mgr *sessionManager) writeTo(toKey edPub, msg []byte) {
 		} else {
 			// Need to buffer the traffic
 			mgr._bufferAndInit(toKey, msg)
-			bufPool.Put(msg[:0]) // nolint:staticcheck
 		}
 	})
 }
@@ -318,10 +317,10 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		// We need to include info.nextPub below the layer of encryption
 		// That way the remote side knows it's us when we send from it later...
 		tmp := bufPool.Get().([]byte)[:0]
-		defer bufPool.Put(tmp[:0]) // nolint:staticcheck
 		tmp = append(tmp, info.nextPub[:]...)
 		tmp = append(tmp, msg...)
 		bs = boxSeal(bs, tmp, info.sendNonce, &info.sendShared)
+		bufPool.Put(tmp[:0]) // nolint:staticcheck
 		// send
 		info.mgr.pc.PacketConn.WriteTo(bs, types.Addr(info.ed[:]))
 		info.tx += uint64(len(msg))
