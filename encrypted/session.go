@@ -2,6 +2,7 @@ package encrypted
 
 import (
 	"encoding/binary"
+	"sync"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -40,12 +41,16 @@ type sessionManager struct {
 	pc       *PacketConn
 	sessions map[edPub]*sessionInfo
 	buffers  map[edPub]*sessionBuffer
+	pool     sync.Pool
 }
 
 func (mgr *sessionManager) init(pc *PacketConn) {
 	mgr.pc = pc
 	mgr.sessions = make(map[edPub]*sessionInfo)
 	mgr.buffers = make(map[edPub]*sessionBuffer)
+	mgr.pool.New = func() interface{} {
+		return make([]byte, 0, sessionTrafficOverhead+pc.MTU())
+	}
 }
 
 func (mgr *sessionManager) _newSession(ed *edPub, recv, send boxPub, seq uint64) *sessionInfo {
@@ -289,7 +294,8 @@ func (info *sessionInfo) _handleUpdate(init *sessionInit) {
 func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 	// TODO? some worker pool to multi-thread this
 	info.Act(from, func() {
-		info.sendNonce += 1 // Advance the nonce before anything else
+		defer info.mgr.pool.Put(msg[:0]) // nolint:staticcheck
+		info.sendNonce += 1              // Advance the nonce before anything else
 		if info.sendNonce == 0 {
 			// Nonce overflowed, so rotate keys
 			info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
@@ -298,7 +304,8 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 			info.localKeySeq++
 			info._fixShared(0, 0)
 		}
-		bs := make([]byte, sessionTrafficOverhead+len(msg))
+		bs := info.mgr.pool.Get().([]byte)[:sessionTrafficOverhead+len(msg)]
+		defer info.mgr.pool.Put(bs[:0]) // nolint:staticcheck
 		bs[0] = sessionTypeTraffic
 		offset := 1
 		offset += binary.PutUvarint(bs[offset:], info.localKeySeq)
@@ -307,10 +314,11 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		bs = bs[:offset]
 		// We need to include info.nextPub below the layer of encryption
 		// That way the remote side knows it's us when we send from it later...
-		var tmp []byte
+		tmp := info.mgr.pool.Get().([]byte)[:0]
 		tmp = append(tmp, info.nextPub[:]...)
 		tmp = append(tmp, msg...)
 		bs = boxSeal(bs, tmp, info.sendNonce, &info.sendShared)
+		info.mgr.pool.Put(tmp[:0]) // nolint:staticcheck
 		// send
 		info.mgr.pc.PacketConn.WriteTo(bs, types.Addr(info.ed[:]))
 		info.tx += uint64(len(msg))
