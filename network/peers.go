@@ -28,7 +28,7 @@ func (ps *peers) init(c *core) {
 	ps.peers = make(map[peerPort]*peer)
 }
 
-func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
+func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error) {
 	var p *peer
 	var err error
 	ps.core.pconn.closeMutex.Lock()
@@ -54,6 +54,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		p.port = port
 		p.writer.peer = p
 		p.writer.timer = time.AfterFunc(0, func() {})
+		p.prio = prio
 		ps.peers[port] = p
 	})
 	return p, err
@@ -81,6 +82,7 @@ type peer struct {
 	queue       packetQueue
 	ready       bool // is the writer ready for traffic?
 	writer      peerWriter
+	prio        uint8 // lower is better, relative only to other peerings to the same peer
 }
 
 type peerWriter struct {
@@ -107,6 +109,13 @@ func (w *peerWriter) _write(bs []byte) {
 
 func (w *peerWriter) sendPacket(pType byte, data wireEncodeable) {
 	w.Act(nil, func() {
+		switch tr := data.(type) {
+		case *dhtTraffic:
+			defer dhtTrafficPool.Put(tr)
+		case *pathTraffic:
+			defer dhtTrafficPool.Put(tr.dt)
+		default:
+		}
 		w.writeBuf = append(w.writeBuf[:0], 0x00, 0x00) // This will be the length
 		var err error
 		w.writeBuf, err = wireEncode(w.writeBuf, pType, data)
@@ -143,6 +152,17 @@ func (p *peer) handler() error {
 	// Hack to get ourself into the remote node's dhtree
 	// They send a similar message and we'll respond with correct info
 	p.sendTree(nil, &treeInfo{root: p.peers.core.crypto.publicKey})
+	// Hack to send our priority to the remote node in a way that existing
+	// nodes can safely ignore
+	var prio uint8
+	phony.Block(p, func() {
+		prio = p.prio
+	})
+	if prio > 0 {
+		p.writer.Act(nil, func() {
+			p.writer._write([]byte{0x00, 0x03, wireDummy, 'p', prio})
+		})
+	}
 	// Now allocate buffers and start reading / handling packets...
 	var lenBuf [2]byte // packet length is a uint16
 	bs := make([]byte, 65535)
@@ -176,7 +196,7 @@ func (p *peer) _handlePacket(bs []byte) error {
 	}
 	switch pType := bs[0]; pType {
 	case wireHeartbeat:
-		return nil
+		return p._handleHeartbeat(bs[1:])
 	case wireProtoTree:
 		return p._handleTree(bs[1:])
 	case wireProtoDHTBootstrap:
@@ -200,6 +220,22 @@ func (p *peer) _handlePacket(bs []byte) error {
 	default:
 		return errors.New("unrecognized packet type")
 	}
+}
+
+func (p *peer) _handleHeartbeat(bs []byte) error {
+	if len(bs) < 2 {
+		return nil
+	}
+	switch bs[0] {
+	case 'p':
+		// The remote node sent us a priority number, only update
+		// it if the number they have sent is worse than the one
+		// that we configured
+		if prio := bs[1]; prio > p.prio {
+			p.prio = prio
+		}
+	}
+	return nil
 }
 
 func (p *peer) _handleTree(bs []byte) error {
@@ -355,8 +391,9 @@ func (p *peer) sendPathResponse(from phony.Actor, response *pathResponse) {
 }
 
 func (p *peer) _handleDHTTraffic(bs []byte) error {
-	tr := new(dhtTraffic)
+	tr := getDHTTraffic()
 	if err := tr.decode(bs); err != nil {
+		dhtTrafficPool.Put(tr)
 		return err // This is just to check that it unmarshals correctly
 	}
 	p.peers.core.dhtree.handleDHTTraffic(p, tr, true)
@@ -371,6 +408,7 @@ func (p *peer) sendDHTTraffic(from phony.Actor, tr *dhtTraffic) {
 
 func (p *peer) _handlePathTraffic(bs []byte) error {
 	tr := new(pathTraffic)
+	tr.dt = getDHTTraffic()
 	if err := tr.decode(bs); err != nil {
 		return err
 	}
@@ -390,7 +428,7 @@ func (ps *peers) handlePathTraffic(from phony.Actor, tr *pathTraffic) {
 			next.sendPathTraffic(nil, tr)
 		} else {
 			// Fall back to dhtTraffic
-			ps.core.dhtree.handleDHTTraffic(ps, &tr.dt, false)
+			ps.core.dhtree.handleDHTTraffic(ps, tr.dt, false)
 		}
 	})
 }
@@ -403,16 +441,14 @@ func (p *peer) sendPathTraffic(from phony.Actor, tr *pathTraffic) {
 
 func (p *peer) _push(packet wireEncodeable) {
 	if p.ready {
-		var pType byte
 		switch packet.(type) {
 		case *dhtTraffic:
-			pType = wireDHTTraffic
+			p.writer.sendPacket(wireDHTTraffic, packet)
 		case *pathTraffic:
-			pType = wirePathTraffic
+			p.writer.sendPacket(wirePathTraffic, packet)
 		default:
 			panic("this should never happen")
 		}
-		p.writer.sendPacket(pType, packet)
 		p.ready = false
 		return
 	}

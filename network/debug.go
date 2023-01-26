@@ -24,12 +24,13 @@ type DebugSelfInfo struct {
 }
 
 type DebugPeerInfo struct {
-	Key     ed25519.PublicKey
-	Root    ed25519.PublicKey
-	Coords  []uint64
-	Port    uint64
-	Updated time.Time
-	Conn    net.Conn
+	Key      ed25519.PublicKey
+	Root     ed25519.PublicKey
+	Coords   []uint64
+	Port     uint64
+	Updated  time.Time
+	Conn     net.Conn
+	Priority uint8
 }
 
 type DebugDHTInfo struct {
@@ -70,6 +71,7 @@ func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 			info.Port = uint64(p.port)
 			info.Updated = tinfo.time
 			info.Conn = p.conn
+			info.Priority = p.prio
 			infos = append(infos, info)
 		}
 	})

@@ -301,7 +301,7 @@ func (r *pathResponse) decode(data []byte) error {
 
 type pathTraffic struct {
 	path []peerPort
-	dt   dhtTraffic
+	dt   *dhtTraffic
 }
 
 func (t *pathTraffic) encode(out []byte) ([]byte, error) {
@@ -310,14 +310,10 @@ func (t *pathTraffic) encode(out []byte) ([]byte, error) {
 }
 
 func (t *pathTraffic) decode(data []byte) error {
-	var tmp pathTraffic
-	if !wireChopPath(&tmp.path, &data) {
+	if !wireChopPath(&t.path, &data) {
 		return wireDecodeError
-	} else if err := tmp.dt.decode(data); err != nil {
-		return err
 	}
-	*t = tmp
-	return nil
+	return t.dt.decode(data)
 }
 
 func pathPopFirstHop(data []byte) (peerPort, []byte) {

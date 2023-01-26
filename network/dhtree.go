@@ -72,8 +72,9 @@ func (t *dhtree) _sendTree() {
 // update adds a treeInfo to the spanning tree
 // it then fixes the tree (selecting a new parent, if needed) and the dht (restarting the bootstrap process)
 // if the info is from the current parent, then there's a delay before the tree/dht are fixed
-//  that prevents a race where we immediately switch to a new parent, who tries to do the same with us
-//  this avoids the tons of traffic generated when nodes race to use each other as parents
+//
+//	that prevents a race where we immediately switch to a new parent, who tries to do the same with us
+//	this avoids the tons of traffic generated when nodes race to use each other as parents
 func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 	t.Act(from, func() {
 		// The tree info should have been checked before this point
@@ -109,7 +110,7 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 				t.wait = true
 				t.self = &treeInfo{root: t.core.crypto.publicKey}
 				t._sendTree() // send bad news immediately
-				time.AfterFunc(time.Second, func() {
+				time.AfterFunc(peerTIMEOUT+time.Second, func() {
 					t.Act(nil, func() {
 						t.wait = false
 						t.self, t.parent = nil, nil
@@ -162,9 +163,9 @@ func (t *dhtree) _fix() {
 		t.parent = nil
 	}
 	for _, info := range t.tinfos {
-		// Refill expired to include non-root nodes (in case we're replacing an expired
+		// Refill expired to include non-root nodes (in case we're replacing something)
 		if exp, isIn := t.expired[info.root]; !isIn || exp.seq < info.seq || exp.seq == info.seq && info.time.Before(exp.time) {
-			// Fill expired as we
+			// Fill expired as we go
 			t.expired[info.root] = treeExpiredInfo{seq: info.seq, time: info.time}
 		}
 	}
@@ -222,7 +223,7 @@ func (t *dhtree) _fix() {
 	// Clean up t.expired (remove anything worse than the current root)
 	for skey := range t.expired {
 		key := publicKey(skey)
-		if key.equal(t.self.root) || treeLess(t.self.root, key) {
+		if treeLess(t.self.root, key) {
 			delete(t.expired, skey)
 		}
 	}
@@ -249,6 +250,10 @@ func (t *dhtree) _treeLookup(dest *treeLabel) *peer {
 			isBetter = true
 		case dist > bestDist:
 		case treeLess(info.from(), best.from()):
+			isBetter = true
+		case bestPeer != nil && bestPeer.key == p.key && p.prio < bestPeer.prio:
+			// It's another link to the same next-hop node, but this link has a
+			// higher priority than the chosen one, so prefer it instead
 			isBetter = true
 		}
 		if isBetter {
@@ -334,12 +339,21 @@ func (t *dhtree) _dhtLookup(dest publicKey, isBootstrap bool) *peer {
 	for _, info := range t.dinfos {
 		doDHT(info)
 	}
+	// If we have more than one peering to our next-hop, ensure we switch over to
+	// a higher priority link if one is available
+	if bestPeer != nil {
+		for p := range t.tinfos {
+			if p.key == bestPeer.key && p.prio < bestPeer.prio {
+				doUpdate(p.key, p, nil)
+			}
+		}
+	}
 	return bestPeer
 }
 
 // _dhtAdd adds a dhtInfo to the dht and returns true
 // it may return false if the path associated with the dhtInfo isn't allowed for some reason
-//  e.g. we know a better prev/next for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
+// e.g. we know a better prev/next for one of the nodes in the path, which can happen if there's multiple split rings that haven't converged on their own yet
 // as of writing, that never happens, it always adds and returns true
 func (t *dhtree) _dhtAdd(info *dhtInfo) bool {
 	// TODO? check existing paths, don't allow this one if the source/dest pair makes no sense
@@ -650,7 +664,7 @@ func (t *dhtree) sendTraffic(from phony.Actor, tr *dhtTraffic) {
 		if path := t.pathfinder._getPath(tr.dest); path != nil {
 			pt := new(pathTraffic)
 			pt.path = path
-			pt.dt = *tr
+			pt.dt = tr
 			t.core.peers.handlePathTraffic(t, pt)
 		} else {
 			t.handleDHTTraffic(nil, tr, false)
@@ -1161,18 +1175,16 @@ func (t *dhtTraffic) encode(out []byte) ([]byte, error) {
 }
 
 func (t *dhtTraffic) decode(data []byte) error {
-	var tmp dhtTraffic
-	if !wireChopSlice(tmp.source[:], &data) {
+	if !wireChopSlice(t.source[:], &data) {
 		return wireDecodeError
-	} else if !wireChopSlice(tmp.dest[:], &data) {
+	} else if !wireChopSlice(t.dest[:], &data) {
 		return wireDecodeError
 	}
 	if len(data) < 1 {
 		return wireDecodeError
 	}
-	tmp.kind, data = data[0], data[1:]
-	tmp.payload = append(tmp.payload[:0], data...)
-	*t = tmp
+	t.kind, data = data[0], data[1:]
+	t.payload = append(t.payload[:0], data...)
 	return nil
 }
 
