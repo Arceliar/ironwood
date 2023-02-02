@@ -108,7 +108,11 @@ func (t *dhtree) update(from phony.Actor, info *treeInfo, p *peer) {
 				//  Then we get more bad news and switch again, etc...
 				// Set self to root, send, then process things correctly 1 second later
 				t.wait = true
-				t.self = &treeInfo{root: t.core.crypto.publicKey}
+				t.self = &treeInfo{
+					root: t.core.crypto.publicKey,
+					seq:  uint64(time.Now().Unix()),
+					time: time.Now(),
+				}
 				t._sendTree() // send bad news immediately
 				time.AfterFunc(peerTIMEOUT+time.Second, func() {
 					t.Act(nil, func() {
