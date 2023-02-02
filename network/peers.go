@@ -21,6 +21,7 @@ type peers struct {
 	phony.Inbox // Used to create/remove peers
 	core        *core
 	peers       map[peerPort]*peer
+	pseq        uint64 // order of peer connections
 }
 
 func (ps *peers) init(c *core) {
@@ -47,9 +48,11 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 			port = peerPort(idx)
 			break
 		}
+		ps.pseq++
 		p = new(peer)
 		p.peers = ps
 		p.conn = conn
+		p.pseq = ps.pseq
 		p.key = key
 		p.port = port
 		p.writer.peer = p
@@ -76,6 +79,7 @@ type peer struct {
 	phony.Inbox // Only used to process or send some protocol traffic
 	peers       *peers
 	conn        net.Conn
+	pseq        uint64
 	key         publicKey
 	info        *treeInfo
 	port        peerPort

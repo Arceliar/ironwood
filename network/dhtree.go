@@ -3,6 +3,7 @@ package network
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"math"
 	"time"
 
 	"github.com/Arceliar/phony"
@@ -169,6 +170,10 @@ func (t *dhtree) _fix() {
 			t.expired[info.root] = treeExpiredInfo{seq: info.seq, time: info.time}
 		}
 	}
+	var bestpseq uint64 = math.MaxUint64
+	if t.parent != nil {
+		bestpseq = t.parent.pseq
+	}
 	for p, info := range t.tinfos {
 		if exp, isIn := t.expired[info.root]; isIn {
 			if info.seq < exp.seq {
@@ -182,17 +187,17 @@ func (t *dhtree) _fix() {
 			// This has a loop, e.g. it's from a child, so skip it
 		case treeLess(info.root, t.self.root):
 			// This is a better root
-			t.self, t.parent = info, p
+			t.self, t.parent, bestpseq = info, p, p.pseq
 		case treeLess(t.self.root, info.root):
 			// This is a worse root, so don't do anything with it
 		case info.seq > t.self.seq:
 			// This is a newer sequence number, so update parent
-			t.self, t.parent = info, p
+			t.self, t.parent, bestpseq = info, p, p.pseq
 		case info.seq < t.self.seq:
-			// This is an older sequnce number, so ignore it
-		case info.hseq < t.self.hseq:
-			// This info has been around for longer (e.g. the path is more stable)
-			t.self, t.parent = info, p
+			// This is an older sequence number, so ignore it
+		case p.pseq < bestpseq:
+			// This peer has been around for longer (e.g. the path is more stable)
+			t.self, t.parent, bestpseq = info, p, p.pseq
 		}
 	}
 	if t.self != oldSelf {
