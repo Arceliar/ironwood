@@ -5,14 +5,16 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/Arceliar/phony"
 )
 
 const (
-	peerKEEPALIVE = 4 * time.Second
-	peerTIMEOUT   = 6 * time.Second
+	peerKEEPALIVE  = 4 * time.Second
+	peerTIMEOUT    = 6 * time.Second
+	connectionTick = 5 * time.Minute
 )
 
 type peerPort uint64
@@ -21,11 +23,28 @@ type peers struct {
 	phony.Inbox // Used to create/remove peers
 	core        *core
 	peers       map[peerPort]*peer
+	flakes      map[publicKey]*atomic.Int64
 }
 
 func (ps *peers) init(c *core) {
 	ps.core = c
 	ps.peers = make(map[peerPort]*peer)
+	ps.flakes = make(map[publicKey]*atomic.Int64)
+	time.AfterFunc(connectionTick, ps.updateFlakes)
+}
+
+func (ps *peers) updateFlakes() {
+	defer time.AfterFunc(connectionTick, ps.updateFlakes)
+
+	// Every so often, reduce the disconnection count for each key in the
+	// map. Nodes that seem to disconnect a lot will be avoided in _fix.
+	phony.Block(ps, func() {
+		for _, f := range ps.flakes {
+			if f.Load() > 0 {
+				f.Add(-1)
+			}
+		}
+	})
 }
 
 func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error) {
@@ -55,17 +74,22 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 		p.writer.peer = p
 		p.writer.timer = time.AfterFunc(0, func() {})
 		p.prio = prio
+		if _, ok := ps.flakes[key]; !ok {
+			ps.flakes[key] = &atomic.Int64{}
+		}
+		p.flakes = ps.flakes[key]
 		ps.peers[port] = p
 	})
 	return p, err
 }
 
-func (ps *peers) removePeer(port peerPort) error {
+func (ps *peers) removePeer(port peerPort, key publicKey) error {
 	var err error
 	phony.Block(ps, func() {
-		if _, isIn := ps.peers[port]; !isIn {
+		if peer, isIn := ps.peers[port]; !isIn {
 			err = errors.New("peer not found")
 		} else {
+			peer.flakes.Add(1)
 			delete(ps.peers, port)
 		}
 	})
@@ -82,7 +106,8 @@ type peer struct {
 	queue       packetQueue
 	ready       bool // is the writer ready for traffic?
 	writer      peerWriter
-	prio        uint8 // lower is better, relative only to other peerings to the same peer
+	prio        uint8         // lower is better, relative only to other peerings to the same peer
+	flakes      *atomic.Int64 // how many times has this peer disconnected recently?
 }
 
 type peerWriter struct {

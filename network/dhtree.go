@@ -169,6 +169,7 @@ func (t *dhtree) _fix() {
 			t.expired[info.root] = treeExpiredInfo{seq: info.seq, time: info.time}
 		}
 	}
+
 	for p, info := range t.tinfos {
 		if exp, isIn := t.expired[info.root]; isIn {
 			if info.seq < exp.seq {
@@ -176,6 +177,11 @@ func (t *dhtree) _fix() {
 			} else if info.seq == exp.seq && time.Since(exp.time) > treeTIMEOUT {
 				continue // skip expired sequence numbers
 			}
+		}
+		var peerflakes, parentflakes int64
+		peerflakes = p.flakes.Load()
+		if t.parent != nil {
+			parentflakes = t.parent.flakes.Load()
 		}
 		switch {
 		case !info.checkLoops():
@@ -190,6 +196,11 @@ func (t *dhtree) _fix() {
 			t.self, t.parent = info, p
 		case info.seq < t.self.seq:
 			// This is an older sequnce number, so ignore it
+		case peerflakes < parentflakes:
+			// This connection doesn't look flakey recently
+			t.self, t.parent = info, p
+		case peerflakes > parentflakes:
+			// This connection is more flakey within the last few minutes, so ignore it
 		case info.hseq < t.self.hseq:
 			// This info has been around for longer (e.g. the path is more stable)
 			t.self, t.parent = info, p
