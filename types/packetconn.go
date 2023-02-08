@@ -32,4 +32,6 @@ type PacketConn interface {
 
 	// MTU returns the maximum transmission unit of the PacketConn, i.e. maximum safe message size to send over the network.
 	MTU() uint64
+
+	GetKeyFor(target ed25519.PublicKey) (key ed25519.PublicKey)
 }

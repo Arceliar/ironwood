@@ -1,8 +1,9 @@
 package network
 
 import (
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/binary"
+	mrand "math/rand"
 	"time"
 	//"fmt"
 
@@ -14,6 +15,13 @@ import (
  ***********/
 
 // TODO have some way to gc / expire unused data eventually... soft state?
+
+// TODO further soft state experiments, we need a way to keep track of keys/seqs that have expired, and to inform peers that their current seq is already expired (if e.g. they disconnect and reconnect)... easy way would be to save the whole expired info/ann and to send it back when we get an old/worse info, with some caveats about loops happening if different nodes can use a different definition of "worse"
+
+const (
+	crdtreeRefresh = time.Minute
+	crdtreeTimeout = crdtreeRefresh + 10*time.Second
+)
 
 type crdtree struct {
 	phony.Inbox
@@ -101,11 +109,13 @@ func (t *crdtree) _fix() {
 	if self.parent != bestParent {
 		res := t.responses[bestParent]
 		switch {
-		case bestRoot != t.core.crypto.publicKey:
+		case bestRoot != t.core.crypto.publicKey && t._useResponse(bestParent, &res):
 			// Somebody else should be root
-			if !t._useResponse(bestParent, &res) {
-				panic("this should never happen")
-			}
+			/*
+				if !t._useResponse(bestParent, &res) {
+					panic("this should never happen")
+				}
+			*/
 		default:
 			// Become root
 			if !t._becomeRoot() {
@@ -134,7 +144,7 @@ func (t *crdtree) _fix() {
 func (t *crdtree) _newReq() *crdtreeSigReq {
 	var req crdtreeSigReq
 	nonce := make([]byte, 8)
-	rand.Read(nonce) // If there's an error, there's not much to do...
+	crand.Read(nonce) // If there's an error, there's not much to do...
 	req.nonce = binary.BigEndian.Uint64(nonce)
 	req.seq = t.infos[t.core.crypto.publicKey].seq + 1
 	return &req
@@ -231,16 +241,44 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 		parent:        ann.parent,
 		crdtreeSigRes: ann.crdtreeSigRes,
 		sig:           ann.sig,
-		time:          time.Now(),
 	}
-	t.infos[ann.key] = info
+	key := ann.key
+	if key == t.core.crypto.publicKey {
+		delay := crdtreeRefresh + time.Millisecond*time.Duration(mrand.Intn(1024))
+		info.timer = time.AfterFunc(delay, func() {
+			t.Act(nil, func() {
+				if t.infos[key] == info {
+					delete(t.infos, key)
+					t._fix()
+				}
+			})
+		})
+	} else {
+		info.timer = time.AfterFunc(crdtreeTimeout, func() {
+			t.Act(nil, func() {
+				if t.infos[key] == info {
+					delete(t.infos, key)
+					// TODO only call fix if this was in our ancestry
+					t._fix()
+				}
+			})
+		})
+	}
+	if oldInfo, isIn := t.infos[key]; isIn {
+		oldInfo.timer.Stop()
+	}
+	t.infos[key] = info
 	return true
 }
 
 func (t *crdtree) _handleAnnounce(p *peer, ann *crdtreeAnnounce) {
 	if t._update(ann) {
+		orig := p
 		for _, ps := range t.peers {
 			for p := range ps {
+				if p == orig {
+					continue
+				}
 				p.sendAnnounce(t, ann)
 			}
 		}
@@ -269,10 +307,45 @@ func (t *crdtree) handleTraffic(from phony.Actor, tr *traffic) {
 	})
 }
 
+func (t *crdtree) _keyLookup(dest publicKey) publicKey {
+	// Returns the key that's the closest match to the destination publicKey
+	_, isIn := t.infos[dest]
+	if !isIn {
+		// Switch dest to the closest known key, so out-of-band stuff works
+		// This would be a hack to make the example code run without modification
+		// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
+		var lowest *publicKey
+		var best *publicKey
+		for key := range t.infos {
+			if lowest == nil || key.less(*lowest) {
+				k := key
+				lowest = &k
+			}
+			if best == nil && key.less(dest) {
+				k := key
+				best = &k
+			}
+			if key.less(dest) && best.less(key) {
+				k := key
+				best = &k
+			}
+		}
+		if best == nil {
+			best = lowest
+		}
+		if best == nil {
+			//return nil
+		} else {
+			dest = *best
+		}
+	}
+	return dest
+}
+
 func (t *crdtree) _lookup(dest publicKey) *peer {
 	_, isIn := t.infos[dest]
 	if !isIn {
-		//return nil
+		return nil // TODO? comment out to enable DHT-style routing
 		// Switch dest to the closest known key, so out-of-band stuff works
 		// This would be a hack to make the example code run without modification
 		// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
@@ -496,8 +569,8 @@ func (ann *crdtreeAnnounce) decode(data []byte) error {
 type crdtreeInfo struct {
 	parent publicKey
 	crdtreeSigRes
-	sig  signature
-	time time.Time // This part not serialized
+	sig   signature
+	timer *time.Timer
 }
 
 func (info *crdtreeInfo) getAnnounce(key publicKey) *crdtreeAnnounce {

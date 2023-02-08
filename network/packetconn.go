@@ -300,3 +300,15 @@ func (d *deadline) getCancel() chan struct{} {
 	ch := d.cancel
 	return ch
 }
+
+/////
+
+func (pc *PacketConn) GetKeyFor(target ed25519.PublicKey) (key ed25519.PublicKey) {
+	phony.Block(&pc.core.crdtree, func() {
+		var k publicKey
+		copy(k[:], target[:])
+		k = pc.core.crdtree._keyLookup(k)
+		key = ed25519.PublicKey(k[:])
+	})
+	return
+}
