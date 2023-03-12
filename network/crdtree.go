@@ -184,7 +184,7 @@ func (t *crdtree) handleRequest(from phony.Actor, p *peer, req *crdtreeSigReq) {
 func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
 	if t.requests[p.key] == res.crdtreeSigReq {
 		t.responses[p.key] = *res
-		t._fix() // This could become our new parent
+		//t._fix() // This could become our new parent, FIXME but it flaps like crazy
 	}
 }
 
