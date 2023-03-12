@@ -18,6 +18,8 @@ import (
 
 // TODO further soft state experiments, we need a way to keep track of keys/seqs that have expired, and to inform peers that their current seq is already expired (if e.g. they disconnect and reconnect)... easy way would be to save the whole expired info/ann and to send it back when we get an old/worse info, with some caveats about loops happening if different nodes can use a different definition of "worse"
 
+// TODO the above expired stuff, we can also use that to check when our own info has expired / what seq to use, so we can remove the "force" arg to fix, and use the same logic for any expired info (be it ourself or someone else -- just with different timing for ourself)
+
 const (
 	crdtreeRefresh = time.Minute
 	crdtreeTimeout = crdtreeRefresh + 10*time.Second
@@ -39,7 +41,7 @@ func (t *crdtree) init(c *core) {
 	t.requests = make(map[publicKey]crdtreeSigReq)
 	t.responses = make(map[publicKey]crdtreeSigRes)
 	// Kick off actor to do initial work / become root
-	t.Act(nil, t._fix)
+	t.Act(nil, func() { t._fix(false) })
 }
 
 func (t *crdtree) _shutdown() {} // TODO cleanup (stop any timers etc)
@@ -71,7 +73,7 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 			delete(t.peers, p.key)
 			delete(t.requests, p.key)
 			delete(t.responses, p.key)
-			t._fix()
+			t._fix(false)
 		}
 	})
 }
@@ -84,7 +86,7 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 //  we need to do something to support IP->key lookups, e.g. a way to return the closest key and let the caller check if it's a match
 //  we need to remove unreachable nodes from the network (somehow) -- though technically speaking, we can save that for last
 
-func (t *crdtree) _fix() {
+func (t *crdtree) _fix(force bool) {
 	bestRoot := t.core.crypto.publicKey
 	bestParent := t.core.crypto.publicKey
 	self := t.infos[t.core.crypto.publicKey]
@@ -106,7 +108,7 @@ func (t *crdtree) _fix() {
 			bestRoot, bestParent = pRoot, pk
 		}
 	}
-	if self.parent != bestParent {
+	if force || self.parent != bestParent {
 		res := t.responses[bestParent]
 		switch {
 		case bestRoot != t.core.crypto.publicKey && t._useResponse(bestParent, &res):
@@ -248,8 +250,8 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 		info.timer = time.AfterFunc(delay, func() {
 			t.Act(nil, func() {
 				if t.infos[key] == info {
-					delete(t.infos, key)
-					t._fix()
+					//delete(t.infos, key)
+					t._fix(true)
 				}
 			})
 		})
@@ -259,7 +261,7 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 				if t.infos[key] == info {
 					delete(t.infos, key)
 					// TODO only call fix if this was in our ancestry
-					t._fix()
+					t._fix(false)
 				}
 			})
 		})
@@ -282,7 +284,7 @@ func (t *crdtree) _handleAnnounce(p *peer, ann *crdtreeAnnounce) {
 				p.sendAnnounce(t, ann)
 			}
 		}
-		t._fix() // This could require us to change parents
+		t._fix(false) // This could require us to change parents
 	}
 }
 
