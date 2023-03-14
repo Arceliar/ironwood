@@ -23,12 +23,15 @@ type DebugSelfInfo struct {
 }
 
 type DebugPeerInfo struct {
-	Key     ed25519.PublicKey
-	Root    ed25519.PublicKey
-	Coords  []uint64
-	Port    uint64
-	Updated time.Time
-	Conn    net.Conn
+	Key      ed25519.PublicKey
+	Root     ed25519.PublicKey
+	Coords   []uint64
+	Port     uint64
+	Priority uint8
+	RX       uint64
+	TX       uint64
+	Updated  time.Time
+	Conn     net.Conn
 }
 
 type DebugDHTInfo struct {

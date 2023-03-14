@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+
 	//"math"
 	"net"
 	"time"
@@ -29,7 +30,7 @@ func (ps *peers) init(c *core) {
 	ps.peers = make(map[peerPort]*peer)
 }
 
-func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
+func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error) {
 	var p *peer
 	var err error
 	ps.core.pconn.closeMutex.Lock()
@@ -53,6 +54,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn) (*peer, error) {
 		p.conn = conn
 		p.key = key
 		p.port = port
+		p.prio = prio
 		p.monitor.peer = p
 		p.writer.peer = p
 		p.time = time.Now()
@@ -79,6 +81,7 @@ type peer struct {
 	conn        net.Conn
 	key         publicKey
 	port        peerPort
+	prio        uint8
 	queue       packetQueue
 	time        time.Time // time when the peer was initialized
 	monitor     peerMonitor
