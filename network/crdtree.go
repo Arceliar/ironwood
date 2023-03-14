@@ -20,9 +20,11 @@ import (
 
 // TODO the above expired stuff, we can also use that to check when our own info has expired / what seq to use, so we can remove the "force" arg to fix, and use the same logic for any expired info (be it ourself or someone else -- just with different timing for ourself)
 
+// TODO if we stay soft state and no DHT, then implement some kind of fisheye update logic? No need to immediately send info that we can prove won't affect other node's next-hop calculations (and isn't needed to avoid timeouts)
+
 const (
-	crdtreeRefresh = time.Minute
-	crdtreeTimeout = crdtreeRefresh + 10*time.Second
+	crdtreeRefresh = 23 * time.Hour //time.Minute
+	crdtreeTimeout = 24 * time.Hour //crdtreeRefresh + 10*time.Second
 )
 
 type crdtree struct {
@@ -32,6 +34,7 @@ type crdtree struct {
 	infos     map[publicKey]crdtreeInfo
 	requests  map[publicKey]crdtreeSigReq
 	responses map[publicKey]crdtreeSigRes
+	resSeq    uint64
 }
 
 func (t *crdtree) init(c *core) {
@@ -59,6 +62,10 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 			req := t.requests[p.key]
 			p.sendSigReq(t, &req)
 		}
+		// TODO? instead of sending everything, send only the info we need for local consistency (to avoid routing loops)
+		//  I think that means ourself, our ancestry, and all our descendants
+		//  Though we still need to send everything *once* for new nodes, at some point, maybe on their request
+		//*
 		for key, info := range t.infos {
 			p.sendAnnounce(t, info.getAnnounce(key))
 		}
@@ -93,7 +100,7 @@ func (t *crdtree) _fix(force bool) {
 	// Check if our current parent leads to a better root than ourself
 	if _, isIn := t.peers[self.parent]; isIn {
 		root, _ := t._getRootAndDists(t.core.crypto.publicKey)
-		if root != bestRoot {
+		if root.less(bestRoot) {
 			bestRoot, bestParent = root, self.parent
 		}
 	}
@@ -107,11 +114,17 @@ func (t *crdtree) _fix(force bool) {
 		if pRoot.less(bestRoot) {
 			bestRoot, bestParent = pRoot, pk
 		}
+		// TODO? switch to another parent (to the same root) if they're "better", at least sometimes
+		if force || bestParent != self.parent {
+			if pRoot == bestRoot && t.responses[pk].resSeq < t.responses[bestParent].resSeq {
+				bestRoot, bestParent = pRoot, pk
+			}
+		}
 	}
 	if force || self.parent != bestParent {
-		res := t.responses[bestParent]
+		res, isIn := t.responses[bestParent] // FIXME only use if bestParent isIn t.responses!
 		switch {
-		case bestRoot != t.core.crypto.publicKey && t._useResponse(bestParent, &res):
+		case isIn && bestRoot != t.core.crypto.publicKey && t._useResponse(bestParent, &res):
 			// Somebody else should be root
 			/*
 				if !t._useResponse(bestParent, &res) {
@@ -156,7 +169,7 @@ func (t *crdtree) _becomeRoot() bool {
 	req := t._newReq()
 	bs := req.bytesForSig(t.core.crypto.publicKey, t.core.crypto.publicKey)
 	sig := t.core.crypto.privateKey.sign(bs)
-	res := crdtreeSigRes{*req, sig}
+	res := crdtreeSigRes{*req, sig, 0}
 	ann := crdtreeAnnounce{
 		key:           t.core.crypto.publicKey,
 		parent:        t.core.crypto.publicKey,
@@ -173,7 +186,7 @@ func (t *crdtree) _handleRequest(p *peer, req *crdtreeSigReq) {
 	// TODO sanity check that this wouldn't loop, only sign/respond if it's safe
 	bs := req.bytesForSig(p.key, t.core.crypto.publicKey)
 	sig := t.core.crypto.privateKey.sign(bs)
-	res := crdtreeSigRes{*req, sig}
+	res := crdtreeSigRes{*req, sig, 0}
 	p.sendSigRes(t, &res)
 }
 
@@ -185,8 +198,10 @@ func (t *crdtree) handleRequest(from phony.Actor, p *peer, req *crdtreeSigReq) {
 
 func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
 	if t.requests[p.key] == res.crdtreeSigReq {
+		res.resSeq = t.resSeq
+		t.resSeq++
 		t.responses[p.key] = *res
-		//t._fix() // This could become our new parent, FIXME but it flaps like crazy
+		t._fix(false) // This could become our new parent, FIXME but it flaps like crazy
 	}
 }
 
@@ -407,6 +422,9 @@ func (t *crdtree) _lookup(dest publicKey) *peer {
 		if dist < bestDist {
 			for p := range ps {
 				// TODO decide which peer is best
+				// FIXME this sends randomly across peer links to the same node
+				//  we know that's bad, it at least needs to be deterministic
+				//  for real-world applications to not choke on reordering / packet loss
 				bestPeer = p
 				break
 			}
@@ -481,7 +499,8 @@ func (req *crdtreeSigReq) decode(data []byte) error {
 
 type crdtreeSigRes struct {
 	crdtreeSigReq
-	psig signature
+	psig   signature
+	resSeq uint64 // TODO? store elsewhere, so it's not kept around in the crdtreeInfo
 }
 
 func (res *crdtreeSigRes) check(node, parent publicKey) bool {
