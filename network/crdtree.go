@@ -35,6 +35,8 @@ type crdtree struct {
 	infos     map[publicKey]crdtreeInfo
 	requests  map[publicKey]crdtreeSigReq
 	responses map[publicKey]crdtreeSigRes
+	resSeqs   map[publicKey]uint64
+	resSeqCtr uint64
 	refresh   bool
 }
 
@@ -44,6 +46,7 @@ func (t *crdtree) init(c *core) {
 	t.infos = make(map[publicKey]crdtreeInfo)
 	t.requests = make(map[publicKey]crdtreeSigReq)
 	t.responses = make(map[publicKey]crdtreeSigRes)
+	t.resSeqs = make(map[publicKey]uint64)
 	// Kick off actor to do initial work / become root
 	t.Act(nil, t._fix)
 }
@@ -81,9 +84,34 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 			delete(t.peers, p.key)
 			delete(t.requests, p.key)
 			delete(t.responses, p.key)
+			delete(t.resSeqs, p.key)
 			t._fix()
 		}
 	})
+}
+
+func (t *crdtree) _clearReqs() {
+	for k := range t.requests {
+		delete(t.requests, k)
+	}
+	for k := range t.responses {
+		delete(t.responses, k)
+	}
+	for k := range t.resSeqs {
+		delete(t.resSeqs, k)
+	}
+	t.resSeqCtr = 0
+}
+
+func (t *crdtree) _sendReqs() {
+	t._clearReqs()
+	for pk, ps := range t.peers {
+		req := t._newReq()
+		t.requests[pk] = *req
+		for p := range ps {
+			p.sendSigReq(t, req)
+		}
+	}
 }
 
 // TODO all the actual work:
@@ -117,7 +145,7 @@ func (t *crdtree) _fix() {
 		}
 		// TODO? switch to another parent (to the same root) if they're "better", at least sometimes
 		if t.refresh || bestParent != self.parent {
-			if pRoot == bestRoot {
+			if pRoot == bestRoot && t.resSeqs[pk] < t.resSeqs[bestParent] {
 				bestRoot, bestParent = pRoot, pk
 			}
 		}
@@ -146,15 +174,7 @@ func (t *crdtree) _fix() {
 			}
 		}
 		t.refresh = false
-		t.requests = make(map[publicKey]crdtreeSigReq)
-		t.responses = make(map[publicKey]crdtreeSigRes)
-		for pk, ps := range t.peers {
-			req := t._newReq()
-			t.requests[pk] = *req
-			for p := range ps {
-				p.sendSigReq(t, req)
-			}
-		}
+		t._sendReqs()
 	}
 }
 
@@ -199,7 +219,9 @@ func (t *crdtree) handleRequest(from phony.Actor, p *peer, req *crdtreeSigReq) {
 }
 
 func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
-	if t.requests[p.key] == res.crdtreeSigReq {
+	if _, isIn := t.responses[p.key]; !isIn && t.requests[p.key] == res.crdtreeSigReq {
+		t.resSeqCtr++
+		t.resSeqs[p.key] = t.resSeqCtr
 		t.responses[p.key] = *res
 		t._fix() // This could become our new parent, FIXME but it flaps like crazy
 	}
