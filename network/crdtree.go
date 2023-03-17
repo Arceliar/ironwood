@@ -19,7 +19,7 @@ import (
 
 // TODO further soft state experiments, we need a way to keep track of keys/seqs that have expired, and to inform peers that their current seq is already expired (if e.g. they disconnect and reconnect)... easy way would be to save the whole expired info/ann and to send it back when we get an old/worse info, with some caveats about loops happening if different nodes can use a different definition of "worse"
 
-// TODO the above expired stuff, we can also use that to check when our own info has expired / what seq to use, so we can remove the "force" arg to fix, and use the same logic for any expired info (be it ourself or someone else -- just with different timing for ourself)
+// TODO the above expired stuff, we can also use that to check when our own info has expired / what seq to use, so we can remove the "refresh" field to track when our own info is nearing timeout, and use the same logic for any expired info (be it ourself or someone else -- just with different timing for ourself)
 
 // TODO if we stay soft state and no DHT, then implement some kind of fisheye update logic? No need to immediately send info that we can prove won't affect other node's next-hop calculations (and isn't needed to avoid timeouts)
 
@@ -35,7 +35,7 @@ type crdtree struct {
 	infos     map[publicKey]crdtreeInfo
 	requests  map[publicKey]crdtreeSigReq
 	responses map[publicKey]crdtreeSigRes
-	resSeq    uint64
+	refresh   bool
 }
 
 func (t *crdtree) init(c *core) {
@@ -45,7 +45,7 @@ func (t *crdtree) init(c *core) {
 	t.requests = make(map[publicKey]crdtreeSigReq)
 	t.responses = make(map[publicKey]crdtreeSigRes)
 	// Kick off actor to do initial work / become root
-	t.Act(nil, func() { t._fix(false) })
+	t.Act(nil, t._fix)
 }
 
 func (t *crdtree) _shutdown() {} // TODO cleanup (stop any timers etc)
@@ -81,7 +81,7 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 			delete(t.peers, p.key)
 			delete(t.requests, p.key)
 			delete(t.responses, p.key)
-			t._fix(false)
+			t._fix()
 		}
 	})
 }
@@ -94,7 +94,7 @@ func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 //  we need to do something to support IP->key lookups, e.g. a way to return the closest key and let the caller check if it's a match
 //  we need to remove unreachable nodes from the network (somehow) -- though technically speaking, we can save that for last
 
-func (t *crdtree) _fix(force bool) {
+func (t *crdtree) _fix() {
 	bestRoot := t.core.crypto.publicKey
 	bestParent := t.core.crypto.publicKey
 	self := t.infos[t.core.crypto.publicKey]
@@ -116,13 +116,13 @@ func (t *crdtree) _fix(force bool) {
 			bestRoot, bestParent = pRoot, pk
 		}
 		// TODO? switch to another parent (to the same root) if they're "better", at least sometimes
-		if force || bestParent != self.parent {
-			if pRoot == bestRoot && t.responses[pk].resSeq < t.responses[bestParent].resSeq {
+		if t.refresh || bestParent != self.parent {
+			if pRoot == bestRoot {
 				bestRoot, bestParent = pRoot, pk
 			}
 		}
 	}
-	if force || self.parent != bestParent {
+	if t.refresh || self.parent != bestParent {
 		res, isIn := t.responses[bestParent] // FIXME only use if bestParent isIn t.responses!
 		switch {
 		case isIn && bestRoot != t.core.crypto.publicKey && t._useResponse(bestParent, &res):
@@ -145,6 +145,7 @@ func (t *crdtree) _fix(force bool) {
 				}
 			}
 		}
+		t.refresh = false
 		t.requests = make(map[publicKey]crdtreeSigReq)
 		t.responses = make(map[publicKey]crdtreeSigRes)
 		for pk, ps := range t.peers {
@@ -170,7 +171,7 @@ func (t *crdtree) _becomeRoot() bool {
 	req := t._newReq()
 	bs := req.bytesForSig(t.core.crypto.publicKey, t.core.crypto.publicKey)
 	sig := t.core.crypto.privateKey.sign(bs)
-	res := crdtreeSigRes{*req, sig, 0}
+	res := crdtreeSigRes{*req, sig}
 	ann := crdtreeAnnounce{
 		key:           t.core.crypto.publicKey,
 		parent:        t.core.crypto.publicKey,
@@ -187,7 +188,7 @@ func (t *crdtree) _handleRequest(p *peer, req *crdtreeSigReq) {
 	// TODO sanity check that this wouldn't loop, only sign/respond if it's safe
 	bs := req.bytesForSig(p.key, t.core.crypto.publicKey)
 	sig := t.core.crypto.privateKey.sign(bs)
-	res := crdtreeSigRes{*req, sig, 0}
+	res := crdtreeSigRes{*req, sig}
 	p.sendSigRes(t, &res)
 }
 
@@ -199,10 +200,8 @@ func (t *crdtree) handleRequest(from phony.Actor, p *peer, req *crdtreeSigReq) {
 
 func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
 	if t.requests[p.key] == res.crdtreeSigReq {
-		res.resSeq = t.resSeq
-		t.resSeq++
 		t.responses[p.key] = *res
-		t._fix(false) // This could become our new parent, FIXME but it flaps like crazy
+		t._fix() // This could become our new parent, FIXME but it flaps like crazy
 	}
 }
 
@@ -267,7 +266,8 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 			t.Act(nil, func() {
 				if t.infos[key] == info {
 					//delete(t.infos, key)
-					t._fix(true)
+					t.refresh = true
+					t._fix()
 				}
 			})
 		})
@@ -277,7 +277,7 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 				if t.infos[key] == info {
 					delete(t.infos, key)
 					// TODO only call fix if this was in our ancestry
-					t._fix(false)
+					t._fix()
 				}
 			})
 		})
@@ -300,7 +300,7 @@ func (t *crdtree) _handleAnnounce(p *peer, ann *crdtreeAnnounce) {
 				p.sendAnnounce(t, ann)
 			}
 		}
-		t._fix(false) // This could require us to change parents
+		t._fix() // This could require us to change parents
 	}
 }
 
@@ -505,8 +505,7 @@ func (req *crdtreeSigReq) decode(data []byte) error {
 
 type crdtreeSigRes struct {
 	crdtreeSigReq
-	psig   signature
-	resSeq uint64 // TODO? store elsewhere, so it's not kept around in the crdtreeInfo
+	psig signature
 }
 
 func (res *crdtreeSigRes) check(node, parent publicKey) bool {
