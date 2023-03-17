@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"errors"
+
 	//"fmt"
 	"net"
 	"sync"
@@ -23,8 +24,8 @@ func TestTwoNodes(t *testing.T) {
 	cA, cB := newDummyConn(pubA, pubB)
 	defer cA.Close()
 	defer cB.Close()
-	go a.HandleConn(pubB, cA)
-	go b.HandleConn(pubA, cB)
+	go a.HandleConn(pubB, cA, 0)
+	go b.HandleConn(pubA, cB, 0)
 	waitForRoot([]*PacketConn{a, b}, 30*time.Second)
 	timer := time.NewTimer(time.Second)
 	defer func() { timer.Stop() }()
@@ -146,12 +147,12 @@ func TestLineNetwork(t *testing.T) {
 		defer linkB.Close()
 		go func() {
 			<-wait
-			prev.HandleConn(keyB, linkA)
+			prev.HandleConn(keyB, linkA, 0)
 			//linkA.Close()
 		}()
 		go func() {
 			<-wait
-			here.HandleConn(keyA, linkB)
+			here.HandleConn(keyA, linkB, 0)
 			//linkB.Close()
 		}()
 	}
@@ -266,11 +267,11 @@ func TestRandomTreeNetwork(t *testing.T) {
 			defer linkB.Close()
 			go func() {
 				<-wait
-				conn.HandleConn(keyB, linkA)
+				conn.HandleConn(keyB, linkA, 0)
 			}()
 			go func() {
 				<-wait
-				p.HandleConn(keyA, linkB)
+				p.HandleConn(keyA, linkB, 0)
 			}()
 		}
 		conns = append(conns, conn)

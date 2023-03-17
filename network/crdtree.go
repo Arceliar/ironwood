@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	mrand "math/rand"
 	"time"
+
 	//"fmt"
 
 	"github.com/Arceliar/phony"
@@ -421,16 +422,21 @@ func (t *crdtree) _lookup(dest publicKey) *peer {
 		}
 		if dist < bestDist {
 			for p := range ps {
-				// TODO decide which peer is best
-				// FIXME this sends randomly across peer links to the same node
-				//  we know that's bad, it at least needs to be deterministic
-				//  for real-world applications to not choke on reordering / packet loss
-				bestPeer = p
-				break
+				switch {
+				case bestPeer != nil && p.prio > bestPeer.prio:
+					// Skip worse priority links
+					continue
+				case bestPeer != nil && p.time.After(bestPeer.time):
+					// Skip links that have been up for less time
+					continue
+				default:
+					bestPeer = p
+				}
 			}
 			bestDist = dist
 		}
 	}
+
 	return bestPeer
 }
 
