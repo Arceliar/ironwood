@@ -38,6 +38,9 @@ type crdtree struct {
 	resSeqs   map[publicKey]uint64
 	resSeqCtr uint64
 	refresh   bool
+	doRoot1   bool
+	doRoot2   bool
+	fixTimer  *time.Timer
 }
 
 func (t *crdtree) init(c *core) {
@@ -47,6 +50,7 @@ func (t *crdtree) init(c *core) {
 	t.requests = make(map[publicKey]crdtreeSigReq)
 	t.responses = make(map[publicKey]crdtreeSigRes)
 	t.resSeqs = make(map[publicKey]uint64)
+	t.fixTimer = time.AfterFunc(0, func() {})
 	// Kick off actor to do initial work / become root
 	t.Act(nil, t._fix)
 }
@@ -150,17 +154,22 @@ func (t *crdtree) _fix() {
 			}
 		}
 	}
-	if t.refresh || self.parent != bestParent {
+	if t.refresh || t.doRoot1 || t.doRoot2 || self.parent != bestParent {
 		res, isIn := t.responses[bestParent] // FIXME only use if bestParent isIn t.responses!
 		switch {
-		case isIn && bestRoot != t.core.crypto.publicKey && t._useResponse(bestParent, &res):
+		case isIn && bestRoot != t.core.crypto.publicKey: // && t._useResponse(bestParent, &res):
 			// Somebody else should be root
-			/*
-				if !t._useResponse(bestParent, &res) {
-					panic("this should never happen")
-				}
-			*/
-		default:
+			//*
+			if !t._useResponse(bestParent, &res) {
+				panic("this should never happen")
+			}
+			//*/
+			t.fixTimer.Stop()
+			t.refresh = false
+			t.doRoot1 = false
+			t.doRoot2 = false // TODO panic to check that this was already false
+			t._sendReqs()
+		case t.doRoot2:
 			// Become root
 			if !t._becomeRoot() {
 				panic("this should never happen")
@@ -172,9 +181,27 @@ func (t *crdtree) _fix() {
 					p.sendAnnounce(t, ann)
 				}
 			}
+			t.refresh = false
+			t.doRoot1 = false
+			t.doRoot2 = false
+			t.fixTimer.Stop()
+			t._sendReqs()
+		case !t.doRoot1:
+			t.fixTimer = time.AfterFunc(time.Second, func() {
+				t.Act(nil, func() {
+					if t.doRoot1 {
+						t.doRoot2 = true
+						t._fix()
+					}
+				})
+			})
+			t.doRoot1 = true
+			t._sendReqs()
+		default:
+			// We need to self-root, but we already started a timer to do that later
+			// So this is a no-op
+			// TODO skip all the parent checking logic in this case
 		}
-		t.refresh = false
-		t._sendReqs()
 	}
 }
 
