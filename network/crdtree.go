@@ -16,6 +16,21 @@ import (
  ***********/
 
 // TODO if we stay soft state and no DHT, then implement some kind of fisheye update logic? No need to immediately send info that we can prove won't affect other node's next-hop calculations (and isn't needed to avoid timeouts)
+//  We really do need something like the above
+//  Then we send updates relatively frequently, and let the fisheye logic throttle things
+//  Since watermarks prevent routing loops, we can do a few things:
+//    1. Forward updates from our ancestry immediately (but maybe not from our descendants)
+//      Nodes will know their own location in the tree, and that of their peers, with relatively good accuracy
+//      Other info doesn't need to be perfectly accurate for routing to (usually) work
+//    2. Don't send any info upon peer connection, only in response to receiving an update
+//      We'll learn our local neighborhood quickly, due to fisheye logic, and learn remote nodes at some later point
+//      Not ideal, but it means it's useful for local stuff (almost) immediately at least...
+//      This prevents outdated info from being kept alive indefinitely in a highly dynamic network
+//    3. Set timeouts independently per node info, based on how often we expect to hear updates
+//  This begs the question of what the fisheye logic should look like...
+//    Note: only forwarding updates along parent/child relationships gives us causal messaging (in stable networks at least), simplifies some things...
+//    E.g. we could forward along the tree, and only forward every 2nd update for non-ancestor updates...
+//    May run into some bootstrap problems?... Can't join the tree if we don't already have a parent... can't pick a parent without knowing the tree...
 
 const (
 	crdtreeRefresh = 23 * time.Hour //time.Minute
