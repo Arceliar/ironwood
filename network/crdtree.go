@@ -18,9 +18,8 @@ import (
 // TODO if we stay soft state and no DHT, then implement some kind of fisheye update logic? No need to immediately send info that we can prove won't affect other node's next-hop calculations (and isn't needed to avoid timeouts)
 
 const (
-	crdtreeRefresh = 23 * time.Hour     //time.Minute
-	crdtreeTimeout = 24 * time.Hour     //crdtreeRefresh + 10*time.Second
-	crdtreeCleanup = 2 * crdtreeTimeout // extra time between timeout and final deletion
+	crdtreeRefresh = 23 * time.Hour //time.Minute
+	crdtreeTimeout = 24 * time.Hour //crdtreeRefresh + 10*time.Second
 )
 
 type crdtree struct {
@@ -68,13 +67,14 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 		// TODO? instead of sending everything, send only the info we need for local consistency (to avoid routing loops)
 		//  I think that means ourself, our ancestry, and all our descendants
 		//  Though we still need to send everything *once* for new nodes, at some point, maybe on their request
-		//*
-		for key, info := range t.infos {
-			if info.expired {
-				continue
+		/*
+			for key, info := range t.infos {
+				if info.expired {
+					continue
+				}
+				p.sendAnnounce(t, info.getAnnounce(key))
 			}
-			p.sendAnnounce(t, info.getAnnounce(key))
-		}
+			//*/
 	})
 }
 
@@ -314,7 +314,7 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 			t.Act(nil, func() {
 				if t.infos[key] == info {
 					//delete(t.infos, key)
-					info.expired = true
+					//info.expired = true
 					t.refresh = true
 					t._fix()
 				}
@@ -324,17 +324,19 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 		info.timer = time.AfterFunc(crdtreeTimeout, func() {
 			t.Act(nil, func() {
 				if t.infos[key] == info {
-					info.expired = true
-					//delete(t.infos, key)
+					//info.expired = true
+					delete(t.infos, key)
 					// TODO only call fix if this was in our ancestry
 					t._fix()
-					info.timer = time.AfterFunc(crdtreeCleanup, func() {
-						t.Act(nil, func() {
-							if t.infos[key] == info {
-								delete(t.infos, key)
-							}
+					/*
+						info.timer = time.AfterFunc(crdtreeCleanup, func() {
+							t.Act(nil, func() {
+								if t.infos[key] == info {
+									delete(t.infos, key)
+								}
+							})
 						})
-					})
+						//*/
 				}
 			})
 		})
@@ -374,7 +376,7 @@ func (t *crdtree) sendTraffic(from phony.Actor, tr *traffic) {
 
 func (t *crdtree) handleTraffic(from phony.Actor, tr *traffic) {
 	t.Act(from, func() {
-		if p := t._lookup(tr.dest); p != nil {
+		if p := t._lookup(tr); p != nil {
 			p.sendTraffic(t, tr)
 		} else {
 			t.core.pconn.handleTraffic(tr)
@@ -417,39 +419,41 @@ func (t *crdtree) _keyLookup(dest publicKey) publicKey {
 	return dest
 }
 
-func (t *crdtree) _lookup(dest publicKey) *peer {
-	_, isIn := t.infos[dest]
+func (t *crdtree) _lookup(tr *traffic) *peer {
+	_, isIn := t.infos[tr.dest]
 	if !isIn {
 		return nil // TODO? comment out to enable DHT-style routing
-		// Switch dest to the closest known key, so out-of-band stuff works
-		// This would be a hack to make the example code run without modification
-		// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
-		var lowest *publicKey
-		var best *publicKey
-		for key := range t.infos {
-			if lowest == nil || key.less(*lowest) {
-				k := key
-				lowest = &k
+		/*
+			// Switch dest to the closest known key, so out-of-band stuff works
+			// This would be a hack to make the example code run without modification
+			// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
+			var lowest *publicKey
+			var best *publicKey
+			for key := range t.infos {
+				if lowest == nil || key.less(*lowest) {
+					k := key
+					lowest = &k
+				}
+				if best == nil && key.less(dest) {
+					k := key
+					best = &k
+				}
+				if key.less(dest) && best.less(key) {
+					k := key
+					best = &k
+				}
 			}
-			if best == nil && key.less(dest) {
-				k := key
-				best = &k
+			if best == nil {
+				best = lowest
 			}
-			if key.less(dest) && best.less(key) {
-				k := key
-				best = &k
+			if best == nil {
+				return nil
 			}
-		}
-		if best == nil {
-			best = lowest
-		}
-		if best == nil {
-			return nil
-		}
-		dest = *best
+			dest = *best
+		*/
 	}
 	// Look up the next hop (in treespace) towards the destination
-	_, dists := t._getRootAndDists(dest)
+	_, dists := t._getRootAndDists(tr.dest)
 	getDist := func(key publicKey) (uint64, bool) {
 		var dist uint64
 		visited := make(map[publicKey]struct{})
@@ -469,8 +473,11 @@ func (t *crdtree) _lookup(dest publicKey) *peer {
 	}
 	var bestPeer *peer
 	bestDist := ^uint64(0)
-	if dist, ok := getDist(t.core.crypto.publicKey); ok {
+	if dist, ok := getDist(t.core.crypto.publicKey); ok && dist < tr.watermark {
 		bestDist = dist // Self dist, so other nodes must be strictly better by distance
+		tr.watermark = dist
+	} else {
+		return nil
 	}
 	for k, ps := range t.peers {
 		dist, ok := getDist(k)
@@ -507,7 +514,7 @@ func (t *crdtree) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uin
 		if _, isIn := dists[next]; isIn {
 			break
 		}
-		if info, isIn := t.infos[next]; isIn && !info.expired {
+		if info, isIn := t.infos[next]; isIn { // && !info.expired {
 			root = next
 			dists[next] = dist
 			dist++
@@ -652,9 +659,8 @@ func (ann *crdtreeAnnounce) decode(data []byte) error {
 type crdtreeInfo struct {
 	parent publicKey
 	crdtreeSigRes
-	sig     signature
-	timer   *time.Timer
-	expired bool
+	sig   signature
+	timer *time.Timer
 }
 
 func (info *crdtreeInfo) getAnnounce(key publicKey) *crdtreeAnnounce {

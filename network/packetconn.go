@@ -84,6 +84,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	var tr traffic
 	tr.source = pc.core.crypto.publicKey
 	copy(tr.dest[:], dest)
+	tr.watermark = ^uint64(0)
 	tr.kind = wireTrafficStandard
 	tr.payload = append(tr.payload, p...)
 	pc.core.crdtree.sendTraffic(nil, &tr)
@@ -175,6 +176,7 @@ func (pc *PacketConn) SendOutOfBand(toKey ed25519.PublicKey, data []byte) error 
 	var tr traffic
 	tr.source = pc.core.crypto.publicKey
 	copy(tr.dest[:], toKey)
+	tr.watermark = ^uint64(0)
 	tr.kind = wireTrafficOutOfBand
 	tr.payload = append(tr.payload, data...)
 	pc.core.crdtree.sendTraffic(nil, &tr)
