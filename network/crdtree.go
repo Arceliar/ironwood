@@ -15,17 +15,12 @@ import (
  * crdtree *
  ***********/
 
-// TODO have some way to gc / expire unused data eventually... soft state?
-
-// TODO further soft state experiments, we need a way to keep track of keys/seqs that have expired, and to inform peers that their current seq is already expired (if e.g. they disconnect and reconnect)... easy way would be to save the whole expired info/ann and to send it back when we get an old/worse info, with some caveats about loops happening if different nodes can use a different definition of "worse"
-
-// TODO the above expired stuff, we can also use that to check when our own info has expired / what seq to use, so we can remove the "refresh" field to track when our own info is nearing timeout, and use the same logic for any expired info (be it ourself or someone else -- just with different timing for ourself)
-
 // TODO if we stay soft state and no DHT, then implement some kind of fisheye update logic? No need to immediately send info that we can prove won't affect other node's next-hop calculations (and isn't needed to avoid timeouts)
 
 const (
-	crdtreeRefresh = 23 * time.Hour //time.Minute
-	crdtreeTimeout = 24 * time.Hour //crdtreeRefresh + 10*time.Second
+	crdtreeRefresh = 23 * time.Hour     //time.Minute
+	crdtreeTimeout = 24 * time.Hour     //crdtreeRefresh + 10*time.Second
+	crdtreeCleanup = 2 * crdtreeTimeout // extra time between timeout and final deletion
 )
 
 type crdtree struct {
@@ -75,6 +70,9 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 		//  Though we still need to send everything *once* for new nodes, at some point, maybe on their request
 		//*
 		for key, info := range t.infos {
+			if info.expired {
+				continue
+			}
 			p.sendAnnounce(t, info.getAnnounce(key))
 		}
 	})
@@ -316,6 +314,7 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 			t.Act(nil, func() {
 				if t.infos[key] == info {
 					//delete(t.infos, key)
+					info.expired = true
 					t.refresh = true
 					t._fix()
 				}
@@ -325,9 +324,17 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 		info.timer = time.AfterFunc(crdtreeTimeout, func() {
 			t.Act(nil, func() {
 				if t.infos[key] == info {
-					delete(t.infos, key)
+					info.expired = true
+					//delete(t.infos, key)
 					// TODO only call fix if this was in our ancestry
 					t._fix()
+					info.timer = time.AfterFunc(crdtreeCleanup, func() {
+						t.Act(nil, func() {
+							if t.infos[key] == info {
+								delete(t.infos, key)
+							}
+						})
+					})
 				}
 			})
 		})
@@ -500,7 +507,7 @@ func (t *crdtree) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uin
 		if _, isIn := dists[next]; isIn {
 			break
 		}
-		if info, isIn := t.infos[next]; isIn {
+		if info, isIn := t.infos[next]; isIn && !info.expired {
 			root = next
 			dists[next] = dist
 			dist++
@@ -645,8 +652,9 @@ func (ann *crdtreeAnnounce) decode(data []byte) error {
 type crdtreeInfo struct {
 	parent publicKey
 	crdtreeSigRes
-	sig   signature
-	timer *time.Timer
+	sig     signature
+	timer   *time.Timer
+	expired bool
 }
 
 func (info *crdtreeInfo) getAnnounce(key publicKey) *crdtreeAnnounce {
