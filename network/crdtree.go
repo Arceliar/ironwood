@@ -196,11 +196,12 @@ func (t *crdtree) _fix() {
 				})
 			})
 			t.doRoot1 = true
-			t._sendReqs()
+			// No need to sendReqs in this case
+			//  either we already have a req, or we've already requested one
+			//  so resetting and re-requesting is just a waste of bandwidth
 		default:
 			// We need to self-root, but we already started a timer to do that later
 			// So this is a no-op
-			// TODO skip all the parent checking logic in this case
 		}
 	}
 }
