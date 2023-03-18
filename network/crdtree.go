@@ -64,17 +64,14 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 			req := t.requests[p.key]
 			p.sendSigReq(t, &req)
 		}
-		// TODO? instead of sending everything, send only the info we need for local consistency (to avoid routing loops)
-		//  I think that means ourself, our ancestry, and all our descendants
-		//  Though we still need to send everything *once* for new nodes, at some point, maybe on their request
-		/*
-			for key, info := range t.infos {
-				if info.expired {
-					continue
-				}
-				p.sendAnnounce(t, info.getAnnounce(key))
-			}
-			//*/
+		// Send our own ancestry, at least
+		// We *could* send a full view of the network, but this can cause state to persist long past timeout
+		// Ancestry technically can cause the same problem, but it's much less likely to happen by accident, since that's the state being actively maintained by reachable nodes
+		_, dists := t._getRootAndDists(t.core.crypto.publicKey)
+		for k := range dists {
+			info := t.infos[k] // Should always be there, that's where dists come from
+			p.sendAnnounce(t, info.getAnnounce(k))
+		}
 	})
 }
 
