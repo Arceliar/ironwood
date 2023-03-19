@@ -84,13 +84,9 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 			req := t.requests[p.key]
 			p.sendSigReq(t, &req)
 		}
-		// Send our own ancestry, at least
-		// We *could* send a full view of the network, but this can cause state to persist long past timeout
-		// Ancestry technically can cause the same problem, but it's much less likely to happen by accident, since that's the state being actively maintained by reachable nodes
-		_, dists := t._getRootAndDists(t.core.crypto.publicKey)
-		for k := range dists {
-			info := t.infos[k] // Should always be there, that's where dists come from
-			p.sendAnnounce(t, info.getAnnounce(k))
+		// TODO something better than immediately sending a full snapshot of the network
+		for key, info := range t.infos {
+			p.sendAnnounce(t, info.getAnnounce(key))
 		}
 	})
 }
@@ -133,14 +129,6 @@ func (t *crdtree) _sendReqs() {
 	}
 }
 
-// TODO all the actual work:
-//  something (fix?) needs to root ourself
-//  something (fix?) needs to send a request when it makes sense to do so
-//  lookups need to work
-//  we need to handle traffic
-//  we need to do something to support IP->key lookups, e.g. a way to return the closest key and let the caller check if it's a match
-//  we need to remove unreachable nodes from the network (somehow) -- though technically speaking, we can save that for last
-
 func (t *crdtree) _fix() {
 	bestRoot := t.core.crypto.publicKey
 	bestParent := t.core.crypto.publicKey
@@ -174,11 +162,9 @@ func (t *crdtree) _fix() {
 		switch {
 		case isIn && bestRoot != t.core.crypto.publicKey: // && t._useResponse(bestParent, &res):
 			// Somebody else should be root
-			//*
 			if !t._useResponse(bestParent, &res) {
 				panic("this should never happen")
 			}
-			//*/
 			t.fixTimer.Stop()
 			t.refresh = false
 			t.doRoot1 = false
@@ -248,7 +234,6 @@ func (t *crdtree) _becomeRoot() bool {
 }
 
 func (t *crdtree) _handleRequest(p *peer, req *crdtreeSigReq) {
-	// TODO sanity check that this wouldn't loop, only sign/respond if it's safe
 	bs := req.bytesForSig(p.key, t.core.crypto.publicKey)
 	sig := t.core.crypto.privateKey.sign(bs)
 	res := crdtreeSigRes{*req, sig}
@@ -266,7 +251,7 @@ func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
 		t.resSeqCtr++
 		t.resSeqs[p.key] = t.resSeqCtr
 		t.responses[p.key] = *res
-		t._fix() // This could become our new parent, FIXME but it flaps like crazy
+		t._fix() // This could become our new parent
 	}
 }
 
@@ -300,14 +285,11 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 		switch {
 		case info.seq > ann.seq:
 			// This is an old seq, so exit
-			//fmt.Println("DEBUG1")
 			return false
 		case info.seq < ann.seq:
 			// This is a newer seq, so don't exit
 		case info.parent.less(ann.parent):
 			// same seq, worse (higher) parent
-			//fmt.Println(info.parent, info.seq, ann.parent, ann.seq)
-			//fmt.Println("DEBUG2")
 			return false
 		case ann.parent.less(info.parent):
 			// same seq, better (lower) parent, so don't exit
@@ -315,7 +297,6 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 			// same seq and parent, lower nonce, so don't exit
 		default:
 			// same seq and parent, same or worse nonce, so exit
-			//fmt.Println("DEBUG3")
 			return false
 		}
 	}
@@ -330,8 +311,6 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 		info.timer = time.AfterFunc(delay, func() {
 			t.Act(nil, func() {
 				if t.infos[key] == info {
-					//delete(t.infos, key)
-					//info.expired = true
 					t.refresh = true
 					t._fix()
 				}
@@ -341,19 +320,8 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 		info.timer = time.AfterFunc(crdtreeTimeout, func() {
 			t.Act(nil, func() {
 				if t.infos[key] == info {
-					//info.expired = true
 					delete(t.infos, key)
-					// TODO only call fix if this was in our ancestry
 					t._fix()
-					/*
-						info.timer = time.AfterFunc(crdtreeCleanup, func() {
-							t.Act(nil, func() {
-								if t.infos[key] == info {
-									delete(t.infos, key)
-								}
-							})
-						})
-						//*/
 				}
 			})
 		})
@@ -387,7 +355,7 @@ func (t *crdtree) handleAnnounce(from phony.Actor, p *peer, ann *crdtreeAnnounce
 }
 
 func (t *crdtree) sendTraffic(from phony.Actor, tr *traffic) {
-	// TODO any sort of additional sanity checks (in an Act)
+	// TODO? any sort of additional sanity checks (in an Act)
 	t.handleTraffic(from, tr)
 }
 
@@ -403,8 +371,7 @@ func (t *crdtree) handleTraffic(from phony.Actor, tr *traffic) {
 
 func (t *crdtree) _keyLookup(dest publicKey) publicKey {
 	// Returns the key that's the closest match to the destination publicKey
-	_, isIn := t.infos[dest]
-	if !isIn {
+	if _, isIn := t.infos[dest]; !isIn {
 		// Switch dest to the closest known key, so out-of-band stuff works
 		// This would be a hack to make the example code run without modification
 		// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
@@ -437,37 +404,8 @@ func (t *crdtree) _keyLookup(dest publicKey) publicKey {
 }
 
 func (t *crdtree) _lookup(tr *traffic) *peer {
-	_, isIn := t.infos[tr.dest]
-	if !isIn {
-		return nil // TODO? comment out to enable DHT-style routing
-		/*
-			// Switch dest to the closest known key, so out-of-band stuff works
-			// This would be a hack to make the example code run without modification
-			// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
-			var lowest *publicKey
-			var best *publicKey
-			for key := range t.infos {
-				if lowest == nil || key.less(*lowest) {
-					k := key
-					lowest = &k
-				}
-				if best == nil && key.less(dest) {
-					k := key
-					best = &k
-				}
-				if key.less(dest) && best.less(key) {
-					k := key
-					best = &k
-				}
-			}
-			if best == nil {
-				best = lowest
-			}
-			if best == nil {
-				return nil
-			}
-			dest = *best
-		*/
+	if _, isIn := t.infos[tr.dest]; !isIn {
+		return nil // If we want to restore DHT-like logic, it's mostly copy/paste from _keyLookup
 	}
 	// Look up the next hop (in treespace) towards the destination
 	_, dists := t._getRootAndDists(tr.dest)
