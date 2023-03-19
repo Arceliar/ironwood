@@ -60,7 +60,9 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	if len(p) < len(tr.payload) {
 		n = len(p)
 	}
-	from = tr.source.addr()
+	fromKey := tr.source // copy, since tr is going back in the pool
+	from = fromKey.addr()
+	freeTraffic(tr)
 	return
 }
 
@@ -81,12 +83,12 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if uint64(len(p)) > pc.MTU() {
 		return 0, errors.New("oversized message")
 	}
-	var tr traffic
+	tr := allocTraffic()
 	tr.source = pc.core.crypto.publicKey
 	copy(tr.dest[:], dest)
 	tr.watermark = ^uint64(0)
 	tr.payload = append(tr.payload, p...)
-	pc.core.crdtree.sendTraffic(nil, &tr)
+	pc.core.crdtree.sendTraffic(nil, tr)
 	return len(p), nil
 }
 

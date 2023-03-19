@@ -138,9 +138,8 @@ func (m *peerMonitor) recv(pType wirePacketType) {
 
 type peerWriter struct {
 	phony.Inbox
-	peer     *peer
-	writeBuf []byte
-	seq      uint64
+	peer *peer
+	seq  uint64
 }
 
 func (w *peerWriter) _write(bs []byte, pType wirePacketType) {
@@ -157,18 +156,20 @@ func (w *peerWriter) _write(bs []byte, pType wirePacketType) {
 
 func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 	w.Act(nil, func() {
-		w.writeBuf = append(w.writeBuf[:0], 0x00, 0x00) // This will be the length
+		writeBuf := allocBytes(2)
+		defer freeBytes(writeBuf)
+		writeBuf = append(writeBuf[:0], 0x00, 0x00) // This will be the length
 		var err error
-		w.writeBuf, err = wireEncode(w.writeBuf, byte(pType), data)
+		writeBuf, err = wireEncode(writeBuf, byte(pType), data)
 		if err != nil {
 			panic(err)
 		}
-		bs := w.writeBuf[2:] // The message part
+		bs := writeBuf[2:] // The message part
 		if len(bs) > int(^uint16(0)) {
 			return
 		}
-		binary.BigEndian.PutUint16(w.writeBuf[:2], uint16(len(bs)))
-		w._write(w.writeBuf, pType)
+		binary.BigEndian.PutUint16(writeBuf[:2], uint16(len(bs)))
+		w._write(writeBuf, pType)
 	})
 }
 
@@ -193,20 +194,21 @@ func (p *peer) handler() error {
 	p.peers.core.crdtree.addPeer(p, p)
 	// Now allocate buffers and start reading / handling packets...
 	var lenBuf [2]byte // packet length is a uint16
-	bs := make([]byte, 65535)
 	for {
 		if _, err := io.ReadFull(p.conn, lenBuf[:]); err != nil {
 			return err
 		}
 		size := int(binary.BigEndian.Uint16(lenBuf[:]))
-		bs = bs[:size]
+		bs := allocBytes(size)
 		if _, err := io.ReadFull(p.conn, bs); err != nil {
+			freeBytes(bs)
 			return err
 		}
 		var err error
 		phony.Block(p, func() {
 			err = p._handlePacket(bs)
 		})
+		freeBytes(bs)
 		if err != nil {
 			return err
 		}
@@ -291,7 +293,7 @@ func (p *peer) sendAnnounce(from phony.Actor, ann *crdtreeAnnounce) {
 }
 
 func (p *peer) _handleTraffic(bs []byte) error {
-	tr := new(traffic)
+	tr := allocTraffic()
 	if err := tr.decode(bs); err != nil {
 		return err // This is just to check that it unmarshals correctly
 	}
@@ -305,47 +307,30 @@ func (p *peer) sendTraffic(from phony.Actor, tr *traffic) {
 	})
 }
 
-func (p *peer) _push(packet wireEncodeable) {
+func (p *peer) _push(tr *traffic) {
 	if p.ready {
 		var pType wirePacketType
-		switch packet.(type) {
-		case *traffic:
-			pType = wireTraffic
-		default:
-			panic("this should never happen")
-		}
-		p.writer.sendPacket(pType, packet)
+		pType = wireTraffic
+		p.writer.sendPacket(pType, tr)
 		p.ready = false
 		return
 	}
 	// We're waiting, so queue the packet up for later
-	var sKey, dKey publicKey
-	var size int
-	switch tr := packet.(type) {
-	case *traffic:
-		sKey, dKey = tr.source, tr.dest
-		size = len(tr.payload)
-	default:
-		panic("this should never happen")
-	}
+	sKey, dKey := tr.source, tr.dest
+	size := len(tr.payload)
 	if info, ok := p.queue.peek(); ok && time.Since(info.time) > 25*time.Millisecond {
 		// The queue already has a significant delay
 		// Drop the oldest packet from the larget queue to make room
 		p.queue.drop()
 	}
 	// Add the packet to the queue
-	p.queue.push(sKey, dKey, packet, size)
+	p.queue.push(sKey, dKey, tr, size)
 }
 
 func (p *peer) pop() {
 	p.Act(nil, func() {
 		if info, ok := p.queue.pop(); ok {
-			switch info.packet.(type) {
-			case *traffic:
-				p.writer.sendPacket(wireTraffic, info.packet)
-			default:
-				panic("this should never happen")
-			}
+			p.writer.sendPacket(wireTraffic, info.packet)
 		} else {
 			p.ready = true
 		}

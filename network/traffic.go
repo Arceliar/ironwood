@@ -13,17 +13,17 @@ type traffic struct {
 	payload   []byte
 }
 
-func (t *traffic) encode(out []byte) ([]byte, error) {
-	out = append(out, t.source[:]...)
-	out = append(out, t.dest[:]...)
+func (tr *traffic) encode(out []byte) ([]byte, error) {
+	out = append(out, tr.source[:]...)
+	out = append(out, tr.dest[:]...)
 	var wm [8]byte
-	binary.BigEndian.PutUint64(wm[:], t.watermark)
+	binary.BigEndian.PutUint64(wm[:], tr.watermark)
 	out = append(out, wm[:]...)
-	out = append(out, t.payload...)
+	out = append(out, tr.payload...)
 	return out, nil
 }
 
-func (t *traffic) decode(data []byte) error {
+func (tr *traffic) decode(data []byte) error {
 	var tmp traffic
 	var wm [8]byte
 	if !wireChopSlice(tmp.source[:], &data) {
@@ -34,7 +34,7 @@ func (t *traffic) decode(data []byte) error {
 		return wireDecodeError
 	}
 	tmp.watermark = binary.BigEndian.Uint64(wm[:])
-	tmp.payload = append(tmp.payload[:0], data...)
-	*t = tmp
+	*tr = tmp
+	tr.payload = append(tr.payload[:0], data...)
 	return nil
 }
