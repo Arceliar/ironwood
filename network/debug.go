@@ -17,10 +17,8 @@ func (d *Debug) init(c *core) {
 }
 
 type DebugSelfInfo struct {
-	Key     ed25519.PublicKey
-	Root    ed25519.PublicKey
-	Coords  []uint64
-	Updated time.Time
+	Key            ed25519.PublicKey
+	RoutingEntries uint64
 }
 
 type DebugPeerInfo struct {
@@ -46,6 +44,9 @@ type DebugPathInfo struct {
 
 func (d *Debug) GetSelf() (info DebugSelfInfo) {
 	info.Key = append(info.Key[:0], d.c.crypto.publicKey[:]...)
+	phony.Block(&d.c.crdtree, func() {
+		info.RoutingEntries = uint64(len(d.c.crdtree.infos))
+	})
 	return
 }
 
