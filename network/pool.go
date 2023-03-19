@@ -1,22 +1,34 @@
 package network
 
-import "sync"
+import (
+	"math"
+	"sync"
+)
 
-var bytePool = sync.Pool{New: func() interface{} { return []byte(nil) }}
+const bytePoolSz = math.MaxUint16 // packet length field is uint16
+
+var bytePool = sync.Pool{
+	New: func() interface{} {
+		b := [bytePoolSz]byte{}
+		return &b
+	},
+}
 
 func allocBytes(size int) []byte {
-	bs := bytePool.Get().([]byte)
-	if cap(bs) < size {
-		bs = make([]byte, size)
-	}
+	bs := bytePool.Get().(*[bytePoolSz]byte)
 	return bs[:size]
 }
 
 func freeBytes(bs []byte) {
-	bytePool.Put(bs[:0])
+	b := (*[bytePoolSz]byte)(bs[:bytePoolSz])
+	bytePool.Put(b)
 }
 
-var trafficPool = sync.Pool{New: func() interface{} { return new(traffic) }}
+var trafficPool = sync.Pool{
+	New: func() interface{} {
+		return &traffic{}
+	},
+}
 
 func allocTraffic() *traffic {
 	tr := trafficPool.Get().(*traffic)
