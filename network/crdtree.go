@@ -32,6 +32,11 @@ import (
 //    E.g. we could forward along the tree, and only forward every 2nd update for non-ancestor updates...
 //    May run into some bootstrap problems?... Can't join the tree if we don't already have a parent... can't pick a parent without knowing the tree...
 
+// TODO alternatively, we don't fisheye things:
+//  1. Send a full view when needed, and just live with things potentially hanging around the network indefinitely in highly dynamic networks
+//  2. Don't proactively send a full view, let the remote side ask for a merkel tree root (or proactively send just that much) and navigate the tree to find differences
+//  On the plus side, merkel tree logic is needed if/when we switch to hard state, so it would be useful to have anyway...
+
 const (
 	crdtreeRefresh = 23 * time.Hour //time.Minute
 	crdtreeTimeout = 24 * time.Hour //crdtreeRefresh + 10*time.Second
