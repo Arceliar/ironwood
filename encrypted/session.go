@@ -143,7 +143,7 @@ func (mgr *sessionManager) _handleTraffic(pub *edPub, msg []byte) {
 }
 
 func (mgr *sessionManager) writeTo(toKey edPub, msg []byte) {
-	mgr.Act(nil, func() {
+	phony.Block(mgr, func() {
 		if info := mgr.sessions[toKey]; info != nil {
 			info.doSend(mgr, msg)
 		} else {
@@ -293,7 +293,7 @@ func (info *sessionInfo) _handleUpdate(init *sessionInit) {
 
 func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 	// TODO? some worker pool to multi-thread this
-	info.Act(from, func() {
+	phony.Block(info, func() {
 		defer info.mgr.pool.Put(msg[:0]) // nolint:staticcheck
 		info.sendNonce += 1              // Advance the nonce before anything else
 		if info.sendNonce == 0 {
