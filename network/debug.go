@@ -4,7 +4,8 @@ import (
 	"crypto/ed25519"
 	"net"
 	"time"
-	//"github.com/Arceliar/phony"
+
+	"github.com/Arceliar/phony"
 )
 
 type Debug struct {
@@ -25,7 +26,6 @@ type DebugSelfInfo struct {
 type DebugPeerInfo struct {
 	Key      ed25519.PublicKey
 	Root     ed25519.PublicKey
-	Coords   []uint64
 	Port     uint64
 	Priority uint8
 	RX       uint64
@@ -37,84 +37,44 @@ type DebugPeerInfo struct {
 type DebugDHTInfo struct {
 	Key  ed25519.PublicKey
 	Port uint64
-	//Rest uint64
 }
 
 type DebugPathInfo struct {
-	Key    ed25519.PublicKey
-	Coords []uint64
+	Key      ed25519.PublicKey
+	Sequence uint64
 }
 
 func (d *Debug) GetSelf() (info DebugSelfInfo) {
-	/*
-		phony.Block(&d.c.dhtree, func() {
-			info.Key = append(info.Key, d.c.crypto.publicKey[:]...)
-			info.Root = append(info.Root, d.c.dhtree.self.root[:]...)
-			info.Coords = make([]uint64, 0)
-			for _, hop := range d.c.dhtree.self.hops {
-				info.Coords = append(info.Coords, uint64(hop.port))
-			}
-			info.Updated = d.c.dhtree.self.time
-		})
-	*/
+	info.Key = append(info.Key[:0], d.c.crypto.publicKey[:]...)
 	return
 }
 
 func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
-	/*
-		phony.Block(&d.c.dhtree, func() {
-			for p, tinfo := range d.c.dhtree.tinfos {
-				var info DebugPeerInfo
-				info.Key = append(info.Key, p.key[:]...)
-				info.Root = append(info.Root, tinfo.root[:]...)
-				info.Coords = make([]uint64, 0)
-				for _, hop := range tinfo.hops {
-					info.Coords = append(info.Coords, uint64(hop.port))
-				}
-				info.Coords = info.Coords[:len(info.Coords)-1] // Last hop is the port back to self
-				info.Port = uint64(p.port)
-				info.Updated = tinfo.time
-				info.Conn = p.conn
-				infos = append(infos, info)
-			}
-		})
-	*/
+	phony.Block(&d.c.peers, func() {
+		for port, peer := range d.c.peers.peers {
+			var info DebugPeerInfo
+			info.Port = uint64(port)
+			info.Key = append(info.Key[:0], peer.key[:]...)
+			info.Priority = peer.prio
+			info.Conn = peer.conn
+			infos = append(infos, info)
+		}
+	})
 	return
 }
 
 func (d *Debug) GetDHT() (infos []DebugDHTInfo) {
-	/*
-		phony.Block(&d.c.dhtree, func() {
-			for _, dinfo := range d.c.dhtree.dinfos {
-				var info DebugDHTInfo
-				info.Key = append(info.Key, dinfo.key[:]...)
-				//			if dinfo.peer != nil {
-				//				info.Port = uint64(dinfo.peer.port)
-				//			}
-				// TODO path
-				//if dinfo.rest != nil {
-				//	info.Rest = uint64(dinfo.rest.port)
-				//}
-				infos = append(infos, info)
-			}
-		})
-	*/
 	return
 }
 
 func (d *Debug) GetPaths() (infos []DebugPathInfo) {
-	/*
-		phony.Block(&d.c.dhtree, func() {
-			for key, pinfo := range d.c.dhtree.pathfinder.paths {
-				var info DebugPathInfo
-				info.Key = append(info.Key, key[:]...)
-				info.Coords = make([]uint64, 0)
-				for _, hop := range pinfo.path {
-					info.Coords = append(info.Coords, uint64(hop))
-				}
-				infos = append(infos, info)
-			}
-		})
-	*/
+	phony.Block(&d.c.crdtree, func() {
+		for key, pinfo := range d.c.crdtree.infos {
+			var info DebugPathInfo
+			info.Key = append(info.Key[:0], key[:]...)
+			info.Sequence = pinfo.seq
+			infos = append(infos, info)
+		}
+	})
 	return
 }
