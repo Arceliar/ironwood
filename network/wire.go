@@ -13,6 +13,7 @@ const (
 	wireProtoSigReq
 	wireProtoSigRes
 	wireProtoAnnounce
+	wireProtoMirrorReq
 	wireTraffic
 )
 

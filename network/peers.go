@@ -234,6 +234,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleSigRes(bs[1:])
 	case wireProtoAnnounce:
 		return p._handleAnnounce(bs[1:])
+	case wireProtoMirrorReq:
+		return p._handleMirrorReq(bs[1:])
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
@@ -289,6 +291,22 @@ func (p *peer) _handleAnnounce(bs []byte) error {
 func (p *peer) sendAnnounce(from phony.Actor, ann *crdtreeAnnounce) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoAnnounce, ann)
+	})
+}
+
+func (p *peer) _handleMirrorReq(bs []byte) error {
+	if len(bs) != 0 {
+		return errors.New("bad mirror request")
+	}
+	p.peers.core.crdtree.handleMirrorReq(p, p)
+	return nil
+}
+
+func (p *peer) sendMirrorReq(from phony.Actor) {
+	p.Act(from, func() {
+		p.writer.Act(nil, func() {
+			p.writer._write([]byte{0x00, 0x01, byte(wireProtoMirrorReq)}, wireProtoMirrorReq)
+		})
 	})
 }
 

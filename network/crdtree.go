@@ -37,6 +37,16 @@ import (
 //  2. Don't proactively send a full view, let the remote side ask for a merkel tree root (or proactively send just that much) and navigate the tree to find differences
 //  On the plus side, merkel tree logic is needed if/when we switch to hard state, so it would be useful to have anyway...
 
+// In place of the above, we now request a mirror of the remote node's network, and they could decline to respond if they wanted to
+//  TODO: come up with some logic to determine when we should request
+//  TODO Also, it probably makes sense to export some logic to make requsts denyable on a per peer object (network link) basis, to e.g. only do a full mirror over ethernet and wifi, never over data (don't request or reply to requests on forbidden links)
+
+// TODO allow for some kind of application-configurable limit on the number of nodes we keep track of, for OOM/DoS mitigation
+//  Only keep track of the X closest nodes to you (in the tree)
+//  Probably give exceptional priority to ancestors and the ancestry of your peers, so you can still route locally
+//    Or don't, and make you pick the best root from the split part of the network?...
+//  This is just a temporary stopgap to prevent OOM from node flooding attacks, until a good DHT can be designed and implemented
+
 const (
 	crdtreeRefresh = 23 * time.Hour //time.Minute
 	crdtreeTimeout = 24 * time.Hour //crdtreeRefresh + 10*time.Second
@@ -45,7 +55,7 @@ const (
 type crdtree struct {
 	phony.Inbox
 	core      *core
-	peers     map[publicKey]map[*peer]struct{}
+	peers     map[publicKey]map[*peer]bool // True if we're allowed to send a mirror to this peer (but have not done so already)
 	infos     map[publicKey]crdtreeInfo
 	requests  map[publicKey]crdtreeSigReq
 	responses map[publicKey]crdtreeSigRes
@@ -59,7 +69,7 @@ type crdtree struct {
 
 func (t *crdtree) init(c *core) {
 	t.core = c
-	t.peers = make(map[publicKey]map[*peer]struct{})
+	t.peers = make(map[publicKey]map[*peer]bool)
 	t.infos = make(map[publicKey]crdtreeInfo)
 	t.requests = make(map[publicKey]crdtreeSigReq)
 	t.responses = make(map[publicKey]crdtreeSigRes)
@@ -74,9 +84,10 @@ func (t *crdtree) _shutdown() {} // TODO cleanup (stop any timers etc)
 func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 	t.Act(from, func() {
 		if _, isIn := t.peers[p.key]; !isIn {
-			t.peers[p.key] = make(map[*peer]struct{})
+			t.peers[p.key] = make(map[*peer]bool)
 		}
-		t.peers[p.key][p] = struct{}{}
+		// TODO? In some cases, should this be false? Depending on the link type maybe?
+		t.peers[p.key][p] = true
 		if _, isIn := t.responses[p.key]; !isIn {
 			if _, isIn := t.requests[p.key]; !isIn {
 				t.requests[p.key] = *t._newReq()
@@ -84,9 +95,27 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 			req := t.requests[p.key]
 			p.sendSigReq(t, &req)
 		}
-		// TODO something better than immediately sending a full snapshot of the network
-		for key, info := range t.infos {
-			p.sendAnnounce(t, info.getAnnounce(key))
+		// TODO don't unconditionally ask for peers, at least not immediately?
+		//p.sendMirrorReq(t)
+		var doReq bool
+		if _, isIn := t.infos[p.key]; !isIn {
+			// If we don't know about a peer, this is probably sufficient cause to ask for their network
+			// It suggests we were in different connected components until now
+			// But it's probably not the only case where we should request it...
+			doReq = true
+		}
+		if !doReq {
+			selfRoot, _ := t._getRootAndDists(t.core.crypto.publicKey)
+			peerRoot, _ := t._getRootAndDists(p.key)
+			if peerRoot != selfRoot {
+				// We were in different connected components
+				// This only fixes the situation for one of the two nodes...
+				// Still, probably better than nothing
+				doReq = true
+			}
+		}
+		if doReq {
+			p.sendMirrorReq(t)
 		}
 	})
 }
@@ -351,6 +380,18 @@ func (t *crdtree) _handleAnnounce(p *peer, ann *crdtreeAnnounce) {
 func (t *crdtree) handleAnnounce(from phony.Actor, p *peer, ann *crdtreeAnnounce) {
 	t.Act(from, func() {
 		t._handleAnnounce(p, ann)
+	})
+}
+
+func (t *crdtree) handleMirrorReq(from phony.Actor, p *peer) {
+	t.Act(from, func() {
+		if t.peers[p.key][p] {
+			t.peers[p.key][p] = false
+			p.sendMirrorReq(t) // Synchronize in both directions, if possible (done first, so they don't needlessly send us back everything we send them)
+			for key, info := range t.infos {
+				p.sendAnnounce(t, info.getAnnounce(key))
+			}
+		}
 	})
 }
 
