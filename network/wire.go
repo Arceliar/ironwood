@@ -16,14 +16,6 @@ const (
 	wireTraffic
 )
 
-// TODO? proper packet types for out-of-band, instead of embedding into ordinary traffic
-
-const (
-	wireTrafficDummy = iota
-	wireTrafficStandard
-	wireTrafficOutOfBand
-)
-
 var wireEncodeError = errors.New("wire encode error")
 var wireDecodeError = errors.New("wire decode error")
 

@@ -85,7 +85,6 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	tr.source = pc.core.crypto.publicKey
 	copy(tr.dest[:], dest)
 	tr.watermark = ^uint64(0)
-	tr.kind = wireTrafficStandard
 	tr.payload = append(tr.payload, p...)
 	pc.core.crdtree.sendTraffic(nil, &tr)
 	return len(p), nil
@@ -161,45 +160,6 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn, prio uint
 	return err
 }
 
-// SendOutOfBand sends some out-of-band data to a key.
-// The data will be forwarded towards the destination key as far as possible, and then handled by the out-of-band handler of the terminal node.
-// This could be used to do e.g. key discovery based on an incomplete key, or to implement application-specific helpers for debugging and analytics.
-func (pc *PacketConn) SendOutOfBand(toKey ed25519.PublicKey, data []byte) error {
-	select {
-	case <-pc.closed:
-		return errors.New("closed")
-	default:
-	}
-	if len(toKey) != publicKeySize {
-		return errors.New("incorrect address length")
-	}
-	var tr traffic
-	tr.source = pc.core.crypto.publicKey
-	copy(tr.dest[:], toKey)
-	tr.watermark = ^uint64(0)
-	tr.kind = wireTrafficOutOfBand
-	tr.payload = append(tr.payload, data...)
-	pc.core.crdtree.sendTraffic(nil, &tr)
-	return nil
-}
-
-// SetOutOfBandHandler sets a function to handle out-of-band data.
-// This function will be called every time out-of-band data is received.
-// If no handler has been set, then any received out-of-band data is dropped.
-func (pc *PacketConn) SetOutOfBandHandler(handler func(fromKey, toKey ed25519.PublicKey, data []byte)) error {
-	var err error
-	phony.Block(&pc.actor, func() {
-		select {
-		case <-pc.closed:
-			err = errors.New("closed")
-			return
-		default:
-		}
-		pc.oobHandler = handler
-	})
-	return err
-}
-
 // IsClosed returns true if and only if the connection is closed.
 // This is to check if the PacketConn is closed without potentially being stuck on a blocking operation (e.g. a read or write).
 func (pc *PacketConn) IsClosed() bool {
@@ -234,26 +194,11 @@ func (pc *PacketConn) MTU() uint64 {
 
 func (pc *PacketConn) handleTraffic(tr *traffic) {
 	pc.actor.Act(nil, func() {
-		switch tr.kind {
-		case wireTrafficDummy:
-			// Drop the traffic
-		case wireTrafficStandard:
-			if tr.dest.equal(pc.core.crypto.publicKey) {
-				select {
-				case pc.recv <- tr:
-				case <-pc.closed:
-				}
+		if tr.dest.equal(pc.core.crypto.publicKey) {
+			select {
+			case pc.recv <- tr:
+			case <-pc.closed:
 			}
-		case wireTrafficOutOfBand:
-			if pc.oobHandler != nil {
-				source := append(ed25519.PublicKey(nil), tr.source[:]...)
-				dest := append(ed25519.PublicKey(nil), tr.dest[:]...)
-				msg := append([]byte(nil), tr.payload[:]...)
-				// TODO something smarter than spamming goroutines
-				go pc.oobHandler(source, dest, msg)
-			}
-		default:
-			// Drop the traffic
 		}
 	})
 }
