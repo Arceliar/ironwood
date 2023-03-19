@@ -42,14 +42,17 @@ import (
 //  TODO Also, it probably makes sense to export some logic to make requsts denyable on a per peer object (network link) basis, to e.g. only do a full mirror over ethernet and wifi, never over data (don't request or reply to requests on forbidden links)
 
 // TODO allow for some kind of application-configurable limit on the number of nodes we keep track of, for OOM/DoS mitigation
-//  Only keep track of the X closest nodes to you (in the tree)
+//  Only keep track of the X closest nodes to you (in the tree), or something like that
+//    Not as easy as it sounds, naively doing this leads to nodes infinitely spamming updates at each other
 //  Probably give exceptional priority to ancestors and the ancestry of your peers, so you can still route locally
 //    Or don't, and make you pick the best root from the split part of the network?...
 //  This is just a temporary stopgap to prevent OOM from node flooding attacks, until a good DHT can be designed and implemented
+//  A very dumb TOFU version of this is currently in place, but it's probably not a good solution for real world usage
 
 const (
-	crdtreeRefresh = 23 * time.Hour //time.Minute
-	crdtreeTimeout = 24 * time.Hour //crdtreeRefresh + 10*time.Second
+	crdtreeRefresh  = 23 * time.Hour //time.Minute
+	crdtreeTimeout  = 24 * time.Hour //crdtreeRefresh + 10*time.Second
+	crdtreeMaxInfos = 65535          // TODO make configurable at init time, use more intelligently
 )
 
 type crdtree struct {
@@ -362,12 +365,22 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 	return true
 }
 
-func (t *crdtree) _handleAnnounce(p *peer, ann *crdtreeAnnounce) {
-	if t._update(ann) {
-		orig := p
+func (t *crdtree) _handleAnnounce(sender *peer, ann *crdtreeAnnounce) {
+	var doUpdate bool
+	if len(t.infos) < crdtreeMaxInfos {
+		doUpdate = true
+	} else if _, isIn := t.infos[ann.key]; !isIn {
+		// We're at (or somehow, above) our max size, but this is a node we already know about
+		// Updating won't increase our size, so it's still safe
+		// This is basically TOFU for the network
+		// TODO something more intelligent, evict "bad" info to make space for "good" info
+		//  That is much harder than it sounds, nodes tend to spam each other with updates if we try
+		doUpdate = true
+	}
+	if doUpdate && t._update(ann) {
 		for _, ps := range t.peers {
 			for p := range ps {
-				if p == orig {
+				if p == sender {
 					continue
 				}
 				p.sendAnnounce(t, ann)
@@ -444,39 +457,40 @@ func (t *crdtree) _keyLookup(dest publicKey) publicKey {
 	return dest
 }
 
+func (t *crdtree) _getDist(dists map[publicKey]uint64, key publicKey) (uint64, bool) {
+	var dist uint64
+	visited := make(map[publicKey]struct{})
+	visited[publicKey{}] = struct{}{}
+	here := key
+	for {
+		if _, isIn := visited[here]; isIn {
+			return 0, false
+		}
+		if d, isIn := dists[here]; isIn {
+			return dist + d, true
+		}
+		dist++
+		visited[here] = struct{}{}
+		here = t.infos[here].parent
+	}
+}
+
 func (t *crdtree) _lookup(tr *traffic) *peer {
 	if _, isIn := t.infos[tr.dest]; !isIn {
 		return nil // If we want to restore DHT-like logic, it's mostly copy/paste from _keyLookup
 	}
 	// Look up the next hop (in treespace) towards the destination
 	_, dists := t._getRootAndDists(tr.dest)
-	getDist := func(key publicKey) (uint64, bool) {
-		var dist uint64
-		visited := make(map[publicKey]struct{})
-		visited[publicKey{}] = struct{}{}
-		here := key
-		for {
-			if _, isIn := visited[here]; isIn {
-				return 0, false
-			}
-			if d, isIn := dists[here]; isIn {
-				return dist + d, true
-			}
-			dist++
-			visited[here] = struct{}{}
-			here = t.infos[here].parent
-		}
-	}
 	var bestPeer *peer
 	bestDist := ^uint64(0)
-	if dist, ok := getDist(t.core.crypto.publicKey); ok && dist < tr.watermark {
+	if dist, ok := t._getDist(dists, t.core.crypto.publicKey); ok && dist < tr.watermark {
 		bestDist = dist // Self dist, so other nodes must be strictly better by distance
 		tr.watermark = dist
 	} else {
 		return nil
 	}
 	for k, ps := range t.peers {
-		dist, ok := getDist(k)
+		dist, ok := t._getDist(dists, k)
 		if !ok {
 			continue
 		}
