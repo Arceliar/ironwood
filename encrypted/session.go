@@ -138,7 +138,8 @@ func (mgr *sessionManager) _handleTraffic(pub *edPub, msg []byte) {
 }
 
 func (mgr *sessionManager) writeTo(toKey edPub, msg []byte) {
-	mgr.Act(nil, func() {
+	// WARNING: unsafe to call from within an actor, must only be exposed over the PacketConn functions (which are, themselves, unsafe for actors to call in most cases, since they may block)
+	phony.Block(mgr, func() {
 		if info := mgr.sessions[toKey]; info != nil {
 			info.doSend(mgr, msg)
 		} else {

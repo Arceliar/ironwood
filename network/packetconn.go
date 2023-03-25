@@ -88,7 +88,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	copy(tr.dest[:], dest)
 	tr.watermark = ^uint64(0)
 	tr.payload = append(tr.payload, p...)
-	pc.core.crdtree.sendTraffic(nil, tr)
+	pc.core.crdtree.sendTraffic(tr)
 	return len(p), nil
 }
 
@@ -194,8 +194,8 @@ func (pc *PacketConn) MTU() uint64 {
 	return MTU
 }
 
-func (pc *PacketConn) handleTraffic(tr *traffic) {
-	pc.actor.Act(nil, func() {
+func (pc *PacketConn) handleTraffic(from phony.Actor, tr *traffic) {
+	pc.actor.Act(from, func() {
 		if tr.dest.equal(pc.core.crypto.publicKey) {
 			select {
 			case pc.recv <- tr:

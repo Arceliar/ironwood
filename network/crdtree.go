@@ -408,9 +408,11 @@ func (t *crdtree) handleMirrorReq(from phony.Actor, p *peer) {
 	})
 }
 
-func (t *crdtree) sendTraffic(from phony.Actor, tr *traffic) {
-	// TODO? any sort of additional sanity checks (in an Act)
-	t.handleTraffic(from, tr)
+func (t *crdtree) sendTraffic(tr *traffic) {
+	// This must be non-blocking, to prevent deadlocks between read/write paths in the encrypted package
+	// Basically, WriteTo and ReadFrom can't be allowed to block each other, but they could if we allowed backpressure here
+	// There may be a better way to handle this, but it practice it probably won't be an issue (we'll throw the packet in a queue somewhere, or drop it)
+	t.handleTraffic(nil, tr)
 }
 
 func (t *crdtree) handleTraffic(from phony.Actor, tr *traffic) {
@@ -418,7 +420,7 @@ func (t *crdtree) handleTraffic(from phony.Actor, tr *traffic) {
 		if p := t._lookup(tr); p != nil {
 			p.sendTraffic(t, tr)
 		} else {
-			t.core.pconn.handleTraffic(tr)
+			t.core.pconn.handleTraffic(t, tr)
 		}
 	})
 }
