@@ -38,6 +38,16 @@ func wireChopBytes(out *[]byte, data *[]byte, size int) bool {
 	return true
 }
 
+func wireChopUvarint(out *uint64, data *[]byte) bool {
+	var u uint64
+	var l int
+	if u, l = binary.Uvarint(*data); l <= 0 {
+		return false
+	}
+	*out, *data = u, (*data)[l:]
+	return true
+}
+
 type wireEncodeable interface {
 	encode(out []byte) ([]byte, error)
 }

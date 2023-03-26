@@ -16,24 +16,20 @@ type traffic struct {
 func (tr *traffic) encode(out []byte) ([]byte, error) {
 	out = append(out, tr.source[:]...)
 	out = append(out, tr.dest[:]...)
-	var wm [8]byte
-	binary.BigEndian.PutUint64(wm[:], tr.watermark)
-	out = append(out, wm[:]...)
+	out = binary.AppendUvarint(out, tr.watermark)
 	out = append(out, tr.payload...)
 	return out, nil
 }
 
 func (tr *traffic) decode(data []byte) error {
 	var tmp traffic
-	var wm [8]byte
 	if !wireChopSlice(tmp.source[:], &data) {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.dest[:], &data) {
 		return wireDecodeError
-	} else if !wireChopSlice(wm[:], &data) {
+	} else if !wireChopUvarint(&tmp.watermark, &data) {
 		return wireDecodeError
 	}
-	tmp.watermark = binary.BigEndian.Uint64(wm[:])
 	*tr = tmp
 	tr.payload = append(tr.payload[:0], data...)
 	return nil

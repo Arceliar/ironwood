@@ -556,21 +556,31 @@ func (req *crdtreeSigReq) bytesForSig(node, parent publicKey) []byte {
 }
 
 func (req *crdtreeSigReq) encode(out []byte) ([]byte, error) {
-	var tmp [8]byte
-	binary.BigEndian.PutUint64(tmp[:], req.seq)
-	out = append(out, tmp[:]...)
-	binary.BigEndian.PutUint64(tmp[:], req.nonce)
-	out = append(out, tmp[:]...)
+	out = binary.AppendUvarint(out, req.seq)
+	out = binary.AppendUvarint(out, req.nonce)
 	return out, nil
+}
+
+func (req *crdtreeSigReq) chop(data *[]byte) error {
+	var tmp crdtreeSigReq
+	orig := *data
+	if !wireChopUvarint(&tmp.seq, &orig) {
+		return wireDecodeError
+	} else if !wireChopUvarint(&tmp.nonce, &orig) {
+		return wireDecodeError
+	}
+	*req = tmp
+	*data = orig
+	return nil
 }
 
 func (req *crdtreeSigReq) decode(data []byte) error {
 	var tmp crdtreeSigReq
-	if len(data) != 16 {
+	if err := tmp.chop(&data); err != nil {
+		return err
+	} else if len(data) != 0 {
 		return wireDecodeError
 	}
-	tmp.seq, data = binary.BigEndian.Uint64(data[:8]), data[8:]
-	tmp.nonce, data = binary.BigEndian.Uint64(data[:8]), data[8:]
 	*req = tmp
 	return nil
 }
@@ -599,14 +609,23 @@ func (res *crdtreeSigRes) encode(out []byte) ([]byte, error) {
 	return out, nil
 }
 
+func (res *crdtreeSigRes) chop(data *[]byte) error {
+	orig := *data
+	var tmp crdtreeSigRes
+	if err := tmp.crdtreeSigReq.chop(&orig); err != nil {
+		return err
+	} else if !wireChopSlice(tmp.psig[:], &orig) {
+		return wireDecodeError
+	}
+	*res = tmp
+	*data = orig
+	return nil
+}
+
 func (res *crdtreeSigRes) decode(data []byte) error {
 	var tmp crdtreeSigRes
-	if err := tmp.crdtreeSigReq.decode(data[:16]); err != nil {
+	if err := tmp.chop(&data); err != nil {
 		return err
-	}
-	data = data[16:]
-	if !wireChopSlice(tmp.psig[:], &data) {
-		return wireDecodeError
 	} else if len(data) != 0 {
 		return wireDecodeError
 	}
@@ -649,11 +668,9 @@ func (ann *crdtreeAnnounce) decode(data []byte) error {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.parent[:], &data) {
 		return wireDecodeError
-	} else if err := tmp.crdtreeSigRes.decode(data[:16+64]); err != nil {
+	} else if err := tmp.crdtreeSigRes.chop(&data); err != nil {
 		return err
-	}
-	data = data[16+64:]
-	if !wireChopSlice(tmp.sig[:], &data) {
+	} else if !wireChopSlice(tmp.sig[:], &data) {
 		return wireDecodeError
 	} else if len(data) != 0 {
 		return wireDecodeError

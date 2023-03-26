@@ -1,6 +1,7 @@
 package network
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -57,6 +58,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 		p.prio = prio
 		p.monitor.peer = p
 		p.writer.peer = p
+		p.writer.wbuf = bufio.NewWriter(p.conn)
 		p.time = time.Now()
 		ps.peers[port] = p
 	})
@@ -139,12 +141,14 @@ func (m *peerMonitor) recv(pType wirePacketType) {
 type peerWriter struct {
 	phony.Inbox
 	peer *peer
+	wbuf *bufio.Writer
 	seq  uint64
 }
 
 func (w *peerWriter) _write(bs []byte, pType wirePacketType) {
 	w.peer.monitor.sent(pType)
-	_, _ = w.peer.conn.Write(bs)
+	// _, _ = w.peer.conn.Write(bs)
+	_, _ = w.wbuf.Write(bs)
 	w.seq++
 	seq := w.seq
 	w.Act(nil, func() {
@@ -156,19 +160,19 @@ func (w *peerWriter) _write(bs []byte, pType wirePacketType) {
 
 func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 	w.Act(nil, func() {
-		writeBuf := allocBytes(2)
+		writeBuf := allocBytes(0)
 		defer freeBytes(writeBuf)
-		writeBuf = append(writeBuf[:0], 0x00, 0x00) // This will be the length
+		encodeBuf := allocBytes(0)
+		defer freeBytes(encodeBuf)
 		var err error
-		writeBuf, err = wireEncode(writeBuf, byte(pType), data)
+		encodeBuf, err = wireEncode(encodeBuf[:0], byte(pType), data)
 		if err != nil {
 			panic(err)
 		}
-		bs := writeBuf[2:] // The message part
-		if len(bs) > int(^uint16(0)) {
-			return
-		}
-		binary.BigEndian.PutUint16(writeBuf[:2], uint16(len(bs)))
+		// TODO packet size checks
+		writeBuf = binary.AppendUvarint(writeBuf[:0], uint64(len(encodeBuf)))
+		// TODO get rid of this extra copy, requires knowing how much space we'll eventually need before encoding
+		writeBuf = append(writeBuf, encodeBuf...)
 		w._write(writeBuf, pType)
 	})
 }
@@ -187,24 +191,26 @@ func (p *peer) handler() error {
 		default:
 		}
 		p.writer.Act(nil, func() {
-			p.writer._write([]byte{0x00, 0x01, byte(wireKeepAlive)}, wireKeepAlive)
+			p.writer._write([]byte{0x01, byte(wireKeepAlive)}, wireKeepAlive)
 		})
 	}
 	// Add peer to the crdtree, to kick off protocol exchanges
 	p.peers.core.crdtree.addPeer(p, p)
 	// Now allocate buffers and start reading / handling packets...
-	var lenBuf [2]byte // packet length is a uint16
+	rbuf := bufio.NewReader(p.conn)
 	for {
-		if _, err := io.ReadFull(p.conn, lenBuf[:]); err != nil {
+		var usize uint64
+		var err error
+		if usize, err = binary.ReadUvarint(rbuf); err != nil {
 			return err
 		}
-		size := int(binary.BigEndian.Uint16(lenBuf[:]))
+		// TODO max packet size logic
+		size := int(usize)
 		bs := allocBytes(size)
-		if _, err := io.ReadFull(p.conn, bs); err != nil {
+		if _, err = io.ReadFull(rbuf, bs); err != nil {
 			freeBytes(bs)
 			return err
 		}
-		var err error
 		phony.Block(p, func() {
 			err = p._handlePacket(bs)
 		})
@@ -305,7 +311,7 @@ func (p *peer) _handleMirrorReq(bs []byte) error {
 func (p *peer) sendMirrorReq(from phony.Actor) {
 	p.Act(from, func() {
 		p.writer.Act(nil, func() {
-			p.writer._write([]byte{0x00, 0x01, byte(wireProtoMirrorReq)}, wireProtoMirrorReq)
+			p.writer._write([]byte{0x01, byte(wireProtoMirrorReq)}, wireProtoMirrorReq)
 		})
 	})
 }
@@ -351,6 +357,9 @@ func (p *peer) pop() {
 			p.writer.sendPacket(wireTraffic, info.packet)
 		} else {
 			p.ready = true
+			p.writer.Act(nil, func() {
+				p.writer.wbuf.Flush()
+			})
 		}
 	})
 }
