@@ -13,11 +13,25 @@ type traffic struct {
 	payload   []byte
 }
 
+func (tr *traffic) size() int {
+	size := len(tr.source)
+	size += len(tr.dest)
+	var wm [10]byte
+	size += binary.PutUvarint(wm[:], tr.watermark)
+	size += len(tr.payload)
+	return size
+}
+
 func (tr *traffic) encode(out []byte) ([]byte, error) {
+	start := len(out)
 	out = append(out, tr.source[:]...)
 	out = append(out, tr.dest[:]...)
 	out = binary.AppendUvarint(out, tr.watermark)
 	out = append(out, tr.payload...)
+	end := len(out)
+	if end-start != tr.size() {
+		panic("this should never happen")
+	}
 	return out, nil
 }
 

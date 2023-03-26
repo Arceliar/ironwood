@@ -614,9 +614,21 @@ func (req *crdtreeSigReq) bytesForSig(node, parent publicKey) []byte {
 	return out
 }
 
+func (req *crdtreeSigReq) size() int {
+	var tmp [10]byte
+	size := binary.PutUvarint(tmp[:], req.seq)
+	size += binary.PutUvarint(tmp[:], req.nonce)
+	return size
+}
+
 func (req *crdtreeSigReq) encode(out []byte) ([]byte, error) {
+	start := len(out)
 	out = binary.AppendUvarint(out, req.seq)
 	out = binary.AppendUvarint(out, req.nonce)
+	end := len(out)
+	if end-start != req.size() {
+		panic("this should never happen")
+	}
 	return out, nil
 }
 
@@ -658,13 +670,24 @@ func (res *crdtreeSigRes) check(node, parent publicKey) bool {
 	return parent.verify(bs, &res.psig)
 }
 
+func (res *crdtreeSigRes) size() int {
+	size := res.crdtreeSigReq.size()
+	size += len(res.psig)
+	return size
+}
+
 func (res *crdtreeSigRes) encode(out []byte) ([]byte, error) {
+	start := len(out)
 	var err error
 	out, err = res.crdtreeSigReq.encode(out)
 	if err != nil {
 		return nil, err
 	}
 	out = append(out, res.psig[:]...)
+	end := len(out)
+	if end-start != res.size() {
+		panic("this should never happen")
+	}
 	return out, nil
 }
 
@@ -708,7 +731,16 @@ func (ann *crdtreeAnnounce) check() bool {
 	return ann.key.verify(bs, &ann.sig) && ann.parent.verify(bs, &ann.psig)
 }
 
+func (ann *crdtreeAnnounce) size() int {
+	size := len(ann.key)
+	size += len(ann.parent)
+	size += ann.crdtreeSigRes.size()
+	size += len(ann.sig)
+	return size
+}
+
 func (ann *crdtreeAnnounce) encode(out []byte) ([]byte, error) {
+	start := len(out)
 	var err error
 	out = append(out, ann.key[:]...)
 	out = append(out, ann.parent[:]...)
@@ -717,6 +749,10 @@ func (ann *crdtreeAnnounce) encode(out []byte) ([]byte, error) {
 		return nil, err
 	}
 	out = append(out, ann.sig[:]...)
+	end := len(out)
+	if end-start != ann.size() {
+		panic("this should never happen")
+	}
 	return out, nil
 }
 

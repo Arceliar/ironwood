@@ -49,6 +49,7 @@ func wireChopUvarint(out *uint64, data *[]byte) bool {
 }
 
 type wireEncodeable interface {
+	size() int
 	encode(out []byte) ([]byte, error)
 }
 

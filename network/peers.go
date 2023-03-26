@@ -160,19 +160,16 @@ func (w *peerWriter) _write(bs []byte, pType wirePacketType) {
 
 func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 	w.Act(nil, func() {
+		// TODO packet size checks (right now there's no max, that's bad)
 		writeBuf := allocBytes(0)
 		defer freeBytes(writeBuf)
-		encodeBuf := allocBytes(0)
-		defer freeBytes(encodeBuf)
+		// The +1 is from 1 byte for the pType
+		writeBuf = binary.AppendUvarint(writeBuf[:], uint64(data.size()+1))
 		var err error
-		encodeBuf, err = wireEncode(encodeBuf[:0], byte(pType), data)
+		writeBuf, err = wireEncode(writeBuf, byte(pType), data)
 		if err != nil {
 			panic(err)
 		}
-		// TODO packet size checks
-		writeBuf = binary.AppendUvarint(writeBuf[:0], uint64(len(encodeBuf)))
-		// TODO get rid of this extra copy, requires knowing how much space we'll eventually need before encoding
-		writeBuf = append(writeBuf, encodeBuf...)
 		w._write(writeBuf, pType)
 	})
 }
@@ -204,7 +201,7 @@ func (p *peer) handler() error {
 		if usize, err = binary.ReadUvarint(rbuf); err != nil {
 			return err
 		}
-		// TODO max packet size logic
+		// TODO max packet size logic (right now there's no max, that's bad)
 		size := int(usize)
 		bs := allocBytes(size)
 		if _, err = io.ReadFull(rbuf, bs); err != nil {
