@@ -20,7 +20,8 @@ type PacketConn struct {
 	actor        phony.Inbox
 	core         *core
 	recv         chan *traffic //read buffer
-	oobHandler   func(ed25519.PublicKey, ed25519.PublicKey, []byte)
+	recvReady    uint64
+	recvq        packetQueue
 	readDeadline *deadline
 	closeMutex   sync.Mutex
 	closed       chan struct{}
@@ -48,6 +49,7 @@ func (pc *PacketConn) init(c *core) {
 // Note that failing to call ReadFrom may cause the connection to block and/or leak memory.
 func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	var tr *traffic
+	pc.doPop()
 	select {
 	case <-pc.closed:
 		return 0, nil, errors.New("closed")
@@ -195,12 +197,39 @@ func (pc *PacketConn) MTU() uint64 {
 }
 
 func (pc *PacketConn) handleTraffic(from phony.Actor, tr *traffic) {
+	// FIXME? if there are multiple concurrent ReadFrom calls, packets can be returned out-of-order
 	pc.actor.Act(from, func() {
-		if tr.dest.equal(pc.core.crypto.publicKey) {
+		if !tr.dest.equal(pc.core.crypto.publicKey) {
+			// Wrong key, do nothing
+		} else if pc.recvReady > 0 {
+			// Send immediately
 			select {
 			case pc.recv <- tr:
+				pc.recvReady -= 1
 			case <-pc.closed:
 			}
+		} else {
+			if info, ok := pc.recvq.peek(); ok && time.Since(info.time) > 25*time.Millisecond {
+				// The queue already has a significant delay
+				// Drop the oldest packet from the larget queue to make room
+				pc.recvq.drop()
+			}
+			pc.recvq.push(tr.source, tr.dest, tr, len(tr.payload))
+		}
+	})
+}
+
+func (pc *PacketConn) doPop() {
+	pc.actor.Act(nil, func() {
+		if info, ok := pc.recvq.pop(); ok {
+			select {
+			case pc.recv <- info.packet:
+			case <-pc.closed:
+			default:
+				panic("this should never happen")
+			}
+		} else {
+			pc.recvReady += 1
 		}
 	})
 }
