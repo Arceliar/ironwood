@@ -189,6 +189,10 @@ func (t *crdtree) _fix() {
 	}
 	// Check if we know a better root/parent
 	for pk := range t.responses {
+		if _, isIn := t.infos[pk]; !isIn {
+			// We don't know where this peer is
+			continue
+		}
 		pRoot, pDists := t._getRootAndDists(pk)
 		if _, isIn := pDists[t.core.crypto.publicKey]; isIn {
 			// This would loop through us already
@@ -369,8 +373,8 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 			t.Act(nil, func() {
 				if t.infos[key] == info {
 					delete(t.infos, key)
-					t._fix()
 					t._resetCache()
+					t._fix()
 				}
 			})
 		})
