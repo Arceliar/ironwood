@@ -55,11 +55,17 @@ const (
 	crdtreeMaxInfos = 65535          // TODO make configurable at init time, use more intelligently
 )
 
+type crdtreeCacheInfo struct {
+	peer *peer
+	dist uint64
+}
+
 type crdtree struct {
 	phony.Inbox
 	core      *core
 	peers     map[publicKey]map[*peer]bool // True if we're allowed to send a mirror to this peer (but have not done so already)
 	infos     map[publicKey]crdtreeInfo
+	cache     map[publicKey]crdtreeCacheInfo // Cache of next hop for each destination
 	requests  map[publicKey]crdtreeSigReq
 	responses map[publicKey]crdtreeSigRes
 	resSeqs   map[publicKey]uint64
@@ -74,6 +80,7 @@ func (t *crdtree) init(c *core) {
 	t.core = c
 	t.peers = make(map[publicKey]map[*peer]bool)
 	t.infos = make(map[publicKey]crdtreeInfo)
+	t.cache = make(map[publicKey]crdtreeCacheInfo)
 	t.requests = make(map[publicKey]crdtreeSigReq)
 	t.responses = make(map[publicKey]crdtreeSigRes)
 	t.resSeqs = make(map[publicKey]uint64)
@@ -84,8 +91,15 @@ func (t *crdtree) init(c *core) {
 
 func (t *crdtree) _shutdown() {} // TODO cleanup (stop any timers etc)
 
+func (t *crdtree) _resetCache() {
+	for k := range t.cache {
+		delete(t.cache, k)
+	}
+}
+
 func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 	t.Act(from, func() {
+		t._resetCache()
 		if _, isIn := t.peers[p.key]; !isIn {
 			t.peers[p.key] = make(map[*peer]bool)
 		}
@@ -125,6 +139,7 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 
 func (t *crdtree) removePeer(from phony.Actor, p *peer) {
 	t.Act(from, func() {
+		t._resetCache()
 		ps := t.peers[p.key]
 		delete(ps, p)
 		if len(ps) == 0 {
@@ -332,6 +347,7 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 			return false
 		}
 	}
+	t._resetCache()
 	info := crdtreeInfo{
 		parent:        ann.parent,
 		crdtreeSigRes: ann.crdtreeSigRes,
@@ -354,6 +370,7 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 				if t.infos[key] == info {
 					delete(t.infos, key)
 					t._fix()
+					t._resetCache()
 				}
 			})
 		})
@@ -478,6 +495,14 @@ func (t *crdtree) _getDist(dists map[publicKey]uint64, key publicKey) (uint64, b
 }
 
 func (t *crdtree) _lookup(tr *traffic) *peer {
+	if info, isIn := t.cache[tr.dest]; isIn {
+		if info.dist < tr.watermark {
+			tr.watermark = info.dist
+			return info.peer
+		} else {
+			return nil
+		}
+	}
 	if _, isIn := t.infos[tr.dest]; !isIn {
 		return nil // If we want to restore DHT-like logic, it's mostly copy/paste from _keyLookup
 	}
@@ -513,6 +538,7 @@ func (t *crdtree) _lookup(tr *traffic) *peer {
 		}
 	}
 
+	t.cache[tr.dest] = crdtreeCacheInfo{bestPeer, tr.watermark}
 	return bestPeer
 }
 
