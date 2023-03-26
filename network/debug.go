@@ -33,14 +33,17 @@ type DebugPeerInfo struct {
 }
 
 type DebugDHTInfo struct {
-	Key  ed25519.PublicKey
-	Port uint64
+	Key      ed25519.PublicKey
+	Parent   ed25519.PublicKey
+	Sequence uint64
 }
 
+/*
 type DebugPathInfo struct {
 	Key      ed25519.PublicKey
 	Sequence uint64
 }
+*/
 
 func (d *Debug) GetSelf() (info DebugSelfInfo) {
 	info.Key = append(info.Key[:0], d.c.crypto.publicKey[:]...)
@@ -65,17 +68,20 @@ func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 }
 
 func (d *Debug) GetDHT() (infos []DebugDHTInfo) {
-	return
-}
-
-func (d *Debug) GetPaths() (infos []DebugPathInfo) {
 	phony.Block(&d.c.crdtree, func() {
-		for key, pinfo := range d.c.crdtree.infos {
-			var info DebugPathInfo
+		for key, dinfo := range d.c.crdtree.infos {
+			var info DebugDHTInfo
 			info.Key = append(info.Key[:0], key[:]...)
-			info.Sequence = pinfo.seq
+			info.Parent = append(info.Parent[:0], dinfo.parent[:]...)
+			info.Sequence = dinfo.seq
 			infos = append(infos, info)
 		}
 	})
 	return
 }
+
+/*
+func (d *Debug) GetPaths() (infos []DebugPathInfo) {
+	return
+}
+*/
