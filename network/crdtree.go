@@ -48,6 +48,7 @@ import (
 //    Or don't, and make you pick the best root from the split part of the network?...
 //  This is just a temporary stopgap to prevent OOM from node flooding attacks, until a good DHT can be designed and implemented
 //  A very dumb TOFU version of this is currently in place, but it's probably not a good solution for real world usage
+//  EDIT: not anymore, now we keep track of the lowest keys (plus ourself), so it's at least deterministic...
 
 const (
 	crdtreeRefresh  = 23 * time.Hour //time.Minute
@@ -388,15 +389,37 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 
 func (t *crdtree) _handleAnnounce(sender *peer, ann *crdtreeAnnounce) {
 	var doUpdate bool
+	var worst publicKey
+	var found bool
 	if len(t.infos) < crdtreeMaxInfos {
+		// We're not at max capacity yet, so we have room to add more
 		doUpdate = true
-	} else if _, isIn := t.infos[ann.key]; !isIn {
-		// We're at (or somehow, above) our max size, but this is a node we already know about
-		// Updating won't increase our size, so it's still safe
-		// This is basically TOFU for the network
-		// TODO something more intelligent, evict "bad" info to make space for "good" info
-		//  That is much harder than it sounds, nodes tend to spam each other with updates if we try
+	} else if _, isIn := t.infos[ann.key]; isIn {
+		// We're at capacity (or, somehow, above) but we alread know about this
+		// Therefore, there's no harm in accepting the update (we can't force anything else out)
+		// If this was or last check, then this is basically TOFU for the network
 		doUpdate = true
+	} else {
+		// We're at or above capacity, and this is a new node
+		// It may be "better" than something we already know about
+		// We define better to mean lower key (so e.g. we all know the root)
+		// We also special case or own info, to avoid timer problems
+		for k := range t.infos {
+			if k == t.core.crypto.publicKey {
+				// Skip self
+				continue
+			}
+			if !found || worst.less(k) {
+				// This is the worst (non-self) node we've seen so far
+				worst = k
+				found = true
+			}
+		}
+		if ann.key.less(worst) {
+			// This means ann.key is better than some node we already know
+			// We will try to _update, and remove the worst node if we do
+			doUpdate = true
+		}
 	}
 	if doUpdate && t._update(ann) {
 		for _, ps := range t.peers {
@@ -406,6 +429,12 @@ func (t *crdtree) _handleAnnounce(sender *peer, ann *crdtreeAnnounce) {
 				}
 				p.sendAnnounce(t, ann)
 			}
+		}
+		if found {
+			// Cleanup worst
+			t.infos[worst].timer.Stop()
+			delete(t.infos, worst)
+			t._resetCache()
 		}
 		t._fix() // This could require us to change parents
 	}
