@@ -152,8 +152,12 @@ func (m *peerMonitor) sent(pType wirePacketType) {
 		case pType == wirePing:
 			m.pDelay += 1
 			delay := time.Duration(m.pDelay) * time.Second // TODO? slightly randomize
-			if delay < peer_PING_MAXDELAY && m.pingTimer == nil {
-				m.pingTimer = time.AfterFunc(delay, m.doPing)
+			if delay < peer_PING_MAXDELAY {
+				select {
+				case <-m.peer.done:
+				default:
+					m.pingTimer = time.AfterFunc(delay, m.doPing)
+				}
 			} else if m.pingTimer != nil {
 				m.pingTimer.Stop()
 				m.pingTimer = nil
@@ -181,7 +185,11 @@ func (m *peerMonitor) recv(pType wirePacketType) {
 			// We just received non-keepalive traffic
 			// The other side is expecting some kind of response, at least a keepalive
 			// We set a timer to trigger a response later, if we don't send any traffic in the mean time
-			m.keepAliveTimer = time.AfterFunc(peer_KEEPALIVE_DELAY, m.keepAlive)
+			select {
+			case <-m.peer.done:
+			default:
+				m.keepAliveTimer = time.AfterFunc(peer_KEEPALIVE_DELAY, m.keepAlive)
+			}
 		}
 	})
 }
