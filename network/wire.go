@@ -10,6 +10,7 @@ type wirePacketType byte
 const (
 	wireDummy wirePacketType = iota // unused
 	wireKeepAlive
+	wirePing
 	wireProtoSigReq
 	wireProtoSigRes
 	wireProtoAnnounce

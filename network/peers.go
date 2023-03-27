@@ -16,6 +16,8 @@ import (
 const (
 	peer_KEEPALIVE_DELAY = time.Second
 	peer_TIMEOUT         = peer_KEEPALIVE_DELAY + 2*time.Second
+	peer_PING_INCREMENT  = time.Second
+	peer_PING_MAXDELAY   = time.Minute
 )
 
 type peerPort uint64
@@ -53,6 +55,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 		p = new(peer)
 		p.peers = ps
 		p.conn = conn
+		p.done = make(chan struct{})
 		p.key = key
 		p.port = port
 		p.prio = prio
@@ -81,6 +84,7 @@ type peer struct {
 	phony.Inbox // Only used to process or send some protocol traffic
 	peers       *peers
 	conn        net.Conn
+	done        chan struct{}
 	key         publicKey
 	port        peerPort
 	prio        uint8
@@ -93,24 +97,68 @@ type peer struct {
 
 type peerMonitor struct {
 	phony.Inbox
-	peer      *peer
-	keepAlive func()
-	timer     *time.Timer
-	deadlined bool
+	peer           *peer
+	keepAliveTimer *time.Timer
+	pingTimer      *time.Timer
+	pDelay         uint64
+	deadlined      bool
+}
+
+func (m *peerMonitor) keepAlive() {
+	m.Act(nil, func() {
+		select {
+		case <-m.peer.done:
+			return
+		default:
+		}
+		m.peer.writer.Act(m, func() {
+			m.peer.writer._write([]byte{0x01, byte(wireKeepAlive)}, wireKeepAlive)
+		})
+	})
+}
+
+func (m *peerMonitor) doPing() {
+	m.Act(nil, func() {
+		select {
+		case <-m.peer.done:
+			return
+		default:
+		}
+		m.peer.writer.Act(m, func() {
+			m.peer.writer._write([]byte{0x01, byte(wirePing)}, wirePing)
+		})
+	})
 }
 
 func (m *peerMonitor) sent(pType wirePacketType) {
 	m.Act(&m.peer.writer, func() {
-		if m.timer != nil {
+		defer func() {
+			if m.pingTimer != nil {
+				// In a defer so we reset to the new delay
+				delay := time.Duration(m.pDelay) * time.Second // TODO? slightly randomize
+				m.pingTimer.Reset(delay)
+			}
+		}()
+		if m.keepAliveTimer != nil {
 			// We're sending a packet, so we definitely don't need to send a keepalive after this
-			m.timer.Stop()
-			m.timer = nil
+			m.keepAliveTimer.Stop()
+			m.keepAliveTimer = nil
 		}
 		switch {
 		case m.deadlined:
 			return
 		case pType == wireDummy:
 		case pType == wireKeepAlive:
+		case pType == wirePing:
+			m.pDelay += 1
+			delay := time.Duration(m.pDelay) * time.Second // TODO? slightly randomize
+			if delay < peer_PING_MAXDELAY && m.pingTimer == nil {
+				m.pingTimer = time.AfterFunc(delay, m.doPing)
+			} else if m.pingTimer != nil {
+				m.pingTimer.Stop()
+				m.pingTimer = nil
+			}
+			fallthrough
 		default:
 			// We're sending non-keepalive traffic
 			// This means we expect some kind of acknowledgement (at least a keepalive)
@@ -126,14 +174,14 @@ func (m *peerMonitor) recv(pType wirePacketType) {
 		m.peer.conn.SetReadDeadline(time.Time{})
 		m.deadlined = false
 		switch {
-		case m.timer != nil:
+		case m.keepAliveTimer != nil:
 		case pType == wireDummy:
 		case pType == wireKeepAlive:
 		default:
 			// We just received non-keepalive traffic
 			// The other side is expecting some kind of response, at least a keepalive
 			// We set a timer to trigger a response later, if we don't send any traffic in the mean time
-			m.timer = time.AfterFunc(peer_KEEPALIVE_DELAY, m.keepAlive)
+			m.keepAliveTimer = time.AfterFunc(peer_KEEPALIVE_DELAY, m.keepAlive)
 		}
 	})
 }
@@ -178,19 +226,23 @@ func (p *peer) handler() error {
 	defer func() {
 		p.peers.core.crdtree.removePeer(nil, p)
 	}()
-	done := make(chan struct{})
-	defer close(done)
-	p.conn.SetDeadline(time.Time{})
-	p.monitor.keepAlive = func() {
-		select {
-		case <-done:
-			return
-		default:
+	defer p.monitor.Act(nil, func() {
+		if p.monitor.keepAliveTimer != nil {
+			p.monitor.keepAliveTimer.Stop()
+			p.monitor.keepAliveTimer = nil
 		}
-		p.writer.Act(nil, func() {
-			p.writer._write([]byte{0x01, byte(wireKeepAlive)}, wireKeepAlive)
-		})
-	}
+	})
+	defer p.monitor.Act(nil, func() {
+		if p.monitor.pingTimer != nil {
+			p.monitor.pingTimer.Stop()
+			p.monitor.pingTimer = nil
+		}
+	})
+	defer close(p.done)
+	p.conn.SetDeadline(time.Time{})
+	// Calling doPing here ensures that it's the first traffic we ever send
+	// That helps to e.g. initialize the pingTimer
+	p.monitor.doPing()
 	// Add peer to the crdtree, to kick off protocol exchanges
 	p.peers.core.crdtree.addPeer(p, p)
 	// Now allocate buffers and start reading / handling packets...
@@ -230,6 +282,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 	case wireDummy:
 		return nil
 	case wireKeepAlive:
+		return nil
+	case wirePing:
 		return nil
 	case wireProtoSigReq:
 		return p._handleSigReq(bs[1:])
