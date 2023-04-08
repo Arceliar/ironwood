@@ -66,6 +66,7 @@ type crdtree struct {
 	core      *core
 	peers     map[publicKey]map[*peer]bool // True if we're allowed to send a mirror to this peer (but have not done so already)
 	infos     map[publicKey]crdtreeInfo
+	timers    map[publicKey]*time.Timer
 	cache     map[publicKey]crdtreeCacheInfo // Cache of next hop for each destination
 	requests  map[publicKey]crdtreeSigReq
 	responses map[publicKey]crdtreeSigRes
@@ -81,6 +82,7 @@ func (t *crdtree) init(c *core) {
 	t.core = c
 	t.peers = make(map[publicKey]map[*peer]bool)
 	t.infos = make(map[publicKey]crdtreeInfo)
+	t.timers = make(map[publicKey]*time.Timer)
 	t.cache = make(map[publicKey]crdtreeCacheInfo)
 	t.requests = make(map[publicKey]crdtreeSigReq)
 	t.responses = make(map[publicKey]crdtreeSigRes)
@@ -122,18 +124,31 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 			// But it's probably not the only case where we should request it...
 			doReq = true
 		}
-		if !doReq {
-			selfRoot, _ := t._getRootAndDists(t.core.crypto.publicKey)
-			peerRoot, _ := t._getRootAndDists(p.key)
-			if peerRoot != selfRoot {
-				// We were in different connected components
-				// This only fixes the situation for one of the two nodes...
-				// Still, probably better than nothing
-				doReq = true
-			}
+		selfRoot, selfDists := t._getRootAndDists(t.core.crypto.publicKey)
+		peerRoot, peerDists := t._getRootAndDists(p.key)
+		if peerRoot != selfRoot {
+			// We were in different connected components
+			// This only fixes the situation for one of the two nodes...
+			// Still, probably better than nothing
+			doReq = true
 		}
 		if doReq {
 			p.sendMirrorReq(t)
+		}
+		// Now send self and peer info (maybe could be self-only?)
+		toSend := make(map[publicKey]struct{})
+		for k := range selfDists {
+			toSend[k] = struct{}{}
+		}
+		for k := range peerDists {
+			toSend[k] = struct{}{}
+		}
+		for k := range toSend {
+			if info, isIn := t.infos[k]; isIn {
+				p.sendAnnounce(t, info.getAnnounce(k))
+			} else {
+				panic("this should never happen")
+			}
 		}
 	})
 }
@@ -359,31 +374,35 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 		sig:           ann.sig,
 	}
 	key := ann.key
+	var timer *time.Timer
 	if key == t.core.crypto.publicKey {
 		delay := crdtreeRefresh + time.Millisecond*time.Duration(mrand.Intn(1024))
-		info.timer = time.AfterFunc(delay, func() {
+		timer = time.AfterFunc(delay, func() {
 			t.Act(nil, func() {
-				if t.infos[key] == info {
+				if t.timers[key] == timer {
 					t.refresh = true
 					t._fix()
 				}
 			})
 		})
 	} else {
-		info.timer = time.AfterFunc(crdtreeTimeout, func() {
+		timer = time.AfterFunc(crdtreeTimeout, func() {
 			t.Act(nil, func() {
-				if t.infos[key] == info {
+				if t.timers[key] == timer {
+					timer.Stop() // Shouldn't matter, but just to be safe...
 					delete(t.infos, key)
+					delete(t.timers, key)
 					t._resetCache()
 					t._fix()
 				}
 			})
 		})
 	}
-	if oldInfo, isIn := t.infos[key]; isIn {
-		oldInfo.timer.Stop()
+	if oldTimer, isIn := t.timers[key]; isIn {
+		oldTimer.Stop()
 	}
 	t.infos[key] = info
+	t.timers[key] = timer
 	return true
 }
 
@@ -432,8 +451,9 @@ func (t *crdtree) _handleAnnounce(sender *peer, ann *crdtreeAnnounce) {
 		}
 		if found {
 			// Cleanup worst
-			t.infos[worst].timer.Stop()
+			t.timers[worst].Stop()
 			delete(t.infos, worst)
+			delete(t.timers, worst)
 			t._resetCache()
 		}
 		t._fix() // This could require us to change parents
@@ -783,8 +803,7 @@ func (ann *crdtreeAnnounce) decode(data []byte) error {
 type crdtreeInfo struct {
 	parent publicKey
 	crdtreeSigRes
-	sig   signature
-	timer *time.Timer
+	sig signature
 }
 
 func (info *crdtreeInfo) getAnnounce(key publicKey) *crdtreeAnnounce {
