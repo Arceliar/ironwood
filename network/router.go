@@ -12,7 +12,7 @@ import (
 )
 
 /***********
- * crdtree *
+ * router *
  ***********/
 
 // TODO if we stay soft state and no DHT, then implement some kind of fisheye update logic? No need to immediately send info that we can prove won't affect other node's next-hop calculations (and isn't needed to avoid timeouts)
@@ -50,20 +50,20 @@ import (
 //  A very dumb TOFU version of this is currently in place, but it's probably not a good solution for real world usage
 //  EDIT: not anymore, now we keep track of the lowest keys (plus ourself), so it's at least deterministic...
 
-type crdtreeCacheInfo struct {
+type routerCacheInfo struct {
 	peer *peer
 	dist uint64
 }
 
-type crdtree struct {
+type router struct {
 	phony.Inbox
 	core      *core
 	peers     map[publicKey]map[*peer]bool // True if we're allowed to send a mirror to this peer (but have not done so already)
-	infos     map[publicKey]crdtreeInfo
+	infos     map[publicKey]routerInfo
 	timers    map[publicKey]*time.Timer
-	cache     map[publicKey]crdtreeCacheInfo // Cache of next hop for each destination
-	requests  map[publicKey]crdtreeSigReq
-	responses map[publicKey]crdtreeSigRes
+	cache     map[publicKey]routerCacheInfo // Cache of next hop for each destination
+	requests  map[publicKey]routerSigReq
+	responses map[publicKey]routerSigRes
 	resSeqs   map[publicKey]uint64
 	resSeqCtr uint64
 	refresh   bool
@@ -72,54 +72,54 @@ type crdtree struct {
 	fixTimer  *time.Timer
 }
 
-func (t *crdtree) init(c *core) {
-	t.core = c
-	t.peers = make(map[publicKey]map[*peer]bool)
-	t.infos = make(map[publicKey]crdtreeInfo)
-	t.timers = make(map[publicKey]*time.Timer)
-	t.cache = make(map[publicKey]crdtreeCacheInfo)
-	t.requests = make(map[publicKey]crdtreeSigReq)
-	t.responses = make(map[publicKey]crdtreeSigRes)
-	t.resSeqs = make(map[publicKey]uint64)
-	t.fixTimer = time.AfterFunc(0, func() {})
+func (r *router) init(c *core) {
+	r.core = c
+	r.peers = make(map[publicKey]map[*peer]bool)
+	r.infos = make(map[publicKey]routerInfo)
+	r.timers = make(map[publicKey]*time.Timer)
+	r.cache = make(map[publicKey]routerCacheInfo)
+	r.requests = make(map[publicKey]routerSigReq)
+	r.responses = make(map[publicKey]routerSigRes)
+	r.resSeqs = make(map[publicKey]uint64)
+	r.fixTimer = time.AfterFunc(0, func() {})
 	// Kick off actor to do initial work / become root
-	t.Act(nil, t._fix)
+	r.Act(nil, r._fix)
 }
 
-func (t *crdtree) _shutdown() {} // TODO cleanup (stop any timers etc)
+func (r *router) _shutdown() {} // TODO cleanup (stop any timers etc)
 
-func (t *crdtree) _resetCache() {
-	for k := range t.cache {
-		delete(t.cache, k)
+func (r *router) _resetCache() {
+	for k := range r.cache {
+		delete(r.cache, k)
 	}
 }
 
-func (t *crdtree) addPeer(from phony.Actor, p *peer) {
-	t.Act(from, func() {
-		t._resetCache()
-		if _, isIn := t.peers[p.key]; !isIn {
-			t.peers[p.key] = make(map[*peer]bool)
+func (r *router) addPeer(from phony.Actor, p *peer) {
+	r.Act(from, func() {
+		r._resetCache()
+		if _, isIn := r.peers[p.key]; !isIn {
+			r.peers[p.key] = make(map[*peer]bool)
 		}
 		// TODO? In some cases, should this be false? Depending on the link type maybe?
-		t.peers[p.key][p] = true
-		if _, isIn := t.responses[p.key]; !isIn {
-			if _, isIn := t.requests[p.key]; !isIn {
-				t.requests[p.key] = *t._newReq()
+		r.peers[p.key][p] = true
+		if _, isIn := r.responses[p.key]; !isIn {
+			if _, isIn := r.requests[p.key]; !isIn {
+				r.requests[p.key] = *r._newReq()
 			}
-			req := t.requests[p.key]
-			p.sendSigReq(t, &req)
+			req := r.requests[p.key]
+			p.sendSigReq(r, &req)
 		}
 		// TODO don't unconditionally ask for peers, at least not immediately?
 		//p.sendMirrorReq(t)
 		var doReq bool
-		if _, isIn := t.infos[p.key]; !isIn {
+		if _, isIn := r.infos[p.key]; !isIn {
 			// If we don't know about a peer, this is probably sufficient cause to ask for their network
 			// It suggests we were in different connected components until now
 			// But it's probably not the only case where we should request it...
 			doReq = true
 		}
-		selfRoot, selfDists := t._getRootAndDists(t.core.crypto.publicKey)
-		peerRoot, peerDists := t._getRootAndDists(p.key)
+		selfRoot, selfDists := r._getRootAndDists(r.core.crypto.publicKey)
+		peerRoot, peerDists := r._getRootAndDists(p.key)
 		if peerRoot != selfRoot {
 			// We were in different connected components
 			// This only fixes the situation for one of the two nodes...
@@ -127,7 +127,7 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 			doReq = true
 		}
 		if doReq {
-			p.sendMirrorReq(t)
+			p.sendMirrorReq(r)
 		}
 		// Now send self and peer info (maybe could be self-only?)
 		toSend := make(map[publicKey]struct{})
@@ -138,8 +138,8 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 			toSend[k] = struct{}{}
 		}
 		for k := range toSend {
-			if info, isIn := t.infos[k]; isIn {
-				p.sendAnnounce(t, info.getAnnounce(k))
+			if info, isIn := r.infos[k]; isIn {
+				p.sendAnnounce(r, info.getAnnounce(k))
 			} else {
 				panic("this should never happen")
 			}
@@ -147,64 +147,64 @@ func (t *crdtree) addPeer(from phony.Actor, p *peer) {
 	})
 }
 
-func (t *crdtree) removePeer(from phony.Actor, p *peer) {
-	t.Act(from, func() {
-		t._resetCache()
-		ps := t.peers[p.key]
+func (r *router) removePeer(from phony.Actor, p *peer) {
+	r.Act(from, func() {
+		r._resetCache()
+		ps := r.peers[p.key]
 		delete(ps, p)
 		if len(ps) == 0 {
-			delete(t.peers, p.key)
-			delete(t.requests, p.key)
-			delete(t.responses, p.key)
-			delete(t.resSeqs, p.key)
-			t._fix()
+			delete(r.peers, p.key)
+			delete(r.requests, p.key)
+			delete(r.responses, p.key)
+			delete(r.resSeqs, p.key)
+			r._fix()
 		}
 	})
 }
 
-func (t *crdtree) _clearReqs() {
-	for k := range t.requests {
-		delete(t.requests, k)
+func (r *router) _clearReqs() {
+	for k := range r.requests {
+		delete(r.requests, k)
 	}
-	for k := range t.responses {
-		delete(t.responses, k)
+	for k := range r.responses {
+		delete(r.responses, k)
 	}
-	for k := range t.resSeqs {
-		delete(t.resSeqs, k)
+	for k := range r.resSeqs {
+		delete(r.resSeqs, k)
 	}
-	t.resSeqCtr = 0
+	r.resSeqCtr = 0
 }
 
-func (t *crdtree) _sendReqs() {
-	t._clearReqs()
-	for pk, ps := range t.peers {
-		req := t._newReq()
-		t.requests[pk] = *req
+func (r *router) _sendReqs() {
+	r._clearReqs()
+	for pk, ps := range r.peers {
+		req := r._newReq()
+		r.requests[pk] = *req
 		for p := range ps {
-			p.sendSigReq(t, req)
+			p.sendSigReq(r, req)
 		}
 	}
 }
 
-func (t *crdtree) _fix() {
-	bestRoot := t.core.crypto.publicKey
-	bestParent := t.core.crypto.publicKey
-	self := t.infos[t.core.crypto.publicKey]
+func (r *router) _fix() {
+	bestRoot := r.core.crypto.publicKey
+	bestParent := r.core.crypto.publicKey
+	self := r.infos[r.core.crypto.publicKey]
 	// Check if our current parent leads to a better root than ourself
-	if _, isIn := t.peers[self.parent]; isIn {
-		root, _ := t._getRootAndDists(t.core.crypto.publicKey)
+	if _, isIn := r.peers[self.parent]; isIn {
+		root, _ := r._getRootAndDists(r.core.crypto.publicKey)
 		if root.less(bestRoot) {
 			bestRoot, bestParent = root, self.parent
 		}
 	}
 	// Check if we know a better root/parent
-	for pk := range t.responses {
-		if _, isIn := t.infos[pk]; !isIn {
+	for pk := range r.responses {
+		if _, isIn := r.infos[pk]; !isIn {
 			// We don't know where this peer is
 			continue
 		}
-		pRoot, pDists := t._getRootAndDists(pk)
-		if _, isIn := pDists[t.core.crypto.publicKey]; isIn {
+		pRoot, pDists := r._getRootAndDists(pk)
+		if _, isIn := pDists[r.core.crypto.publicKey]; isIn {
 			// This would loop through us already
 			continue
 		}
@@ -212,52 +212,52 @@ func (t *crdtree) _fix() {
 			bestRoot, bestParent = pRoot, pk
 		}
 		// TODO? switch to another parent (to the same root) if they're "better", at least sometimes
-		if t.refresh || bestParent != self.parent {
-			if pRoot == bestRoot && t.resSeqs[pk] < t.resSeqs[bestParent] {
+		if r.refresh || bestParent != self.parent {
+			if pRoot == bestRoot && r.resSeqs[pk] < r.resSeqs[bestParent] {
 				bestRoot, bestParent = pRoot, pk
 			}
 		}
 	}
-	if t.refresh || t.doRoot1 || t.doRoot2 || self.parent != bestParent {
-		res, isIn := t.responses[bestParent] // FIXME only use if bestParent isIn t.responses!
+	if r.refresh || r.doRoot1 || r.doRoot2 || self.parent != bestParent {
+		res, isIn := r.responses[bestParent] // FIXME only use if bestParent isIn t.responses!
 		switch {
-		case isIn && bestRoot != t.core.crypto.publicKey: // && t._useResponse(bestParent, &res):
+		case isIn && bestRoot != r.core.crypto.publicKey: // && t._useResponse(bestParent, &res):
 			// Somebody else should be root
-			if !t._useResponse(bestParent, &res) {
+			if !r._useResponse(bestParent, &res) {
 				panic("this should never happen")
 			}
-			t.fixTimer.Stop()
-			t.refresh = false
-			t.doRoot1 = false
-			t.doRoot2 = false // TODO panic to check that this was already false
-			t._sendReqs()
-		case t.doRoot2:
+			r.fixTimer.Stop()
+			r.refresh = false
+			r.doRoot1 = false
+			r.doRoot2 = false // TODO panic to check that this was already false
+			r._sendReqs()
+		case r.doRoot2:
 			// Become root
-			if !t._becomeRoot() {
+			if !r._becomeRoot() {
 				panic("this should never happen")
 			}
-			self = t.infos[t.core.crypto.publicKey]
-			ann := self.getAnnounce(t.core.crypto.publicKey)
-			for _, ps := range t.peers {
+			self = r.infos[r.core.crypto.publicKey]
+			ann := self.getAnnounce(r.core.crypto.publicKey)
+			for _, ps := range r.peers {
 				for p := range ps {
-					p.sendAnnounce(t, ann)
+					p.sendAnnounce(r, ann)
 				}
 			}
-			t.refresh = false
-			t.doRoot1 = false
-			t.doRoot2 = false
-			t.fixTimer.Stop()
-			t._sendReqs()
-		case !t.doRoot1:
-			t.fixTimer = time.AfterFunc(time.Second, func() {
-				t.Act(nil, func() {
-					if t.doRoot1 {
-						t.doRoot2 = true
-						t._fix()
+			r.refresh = false
+			r.doRoot1 = false
+			r.doRoot2 = false
+			r.fixTimer.Stop()
+			r._sendReqs()
+		case !r.doRoot1:
+			r.fixTimer = time.AfterFunc(time.Second, func() {
+				r.Act(nil, func() {
+					if r.doRoot1 {
+						r.doRoot2 = true
+						r._fix()
 					}
 				})
 			})
-			t.doRoot1 = true
+			r.doRoot1 = true
 			// No need to sendReqs in this case
 			//  either we already have a req, or we've already requested one
 			//  so resetting and re-requesting is just a waste of bandwidth
@@ -268,66 +268,66 @@ func (t *crdtree) _fix() {
 	}
 }
 
-func (t *crdtree) _newReq() *crdtreeSigReq {
-	var req crdtreeSigReq
+func (r *router) _newReq() *routerSigReq {
+	var req routerSigReq
 	nonce := make([]byte, 8)
 	crand.Read(nonce) // If there's an error, there's not much to do...
 	req.nonce = binary.BigEndian.Uint64(nonce)
-	req.seq = t.infos[t.core.crypto.publicKey].seq + 1
+	req.seq = r.infos[r.core.crypto.publicKey].seq + 1
 	return &req
 }
 
-func (t *crdtree) _becomeRoot() bool {
-	req := t._newReq()
-	bs := req.bytesForSig(t.core.crypto.publicKey, t.core.crypto.publicKey)
-	sig := t.core.crypto.privateKey.sign(bs)
-	res := crdtreeSigRes{*req, sig}
-	ann := crdtreeAnnounce{
-		key:           t.core.crypto.publicKey,
-		parent:        t.core.crypto.publicKey,
-		crdtreeSigRes: res,
-		sig:           sig,
+func (r *router) _becomeRoot() bool {
+	req := r._newReq()
+	bs := req.bytesForSig(r.core.crypto.publicKey, r.core.crypto.publicKey)
+	sig := r.core.crypto.privateKey.sign(bs)
+	res := routerSigRes{*req, sig}
+	ann := routerAnnounce{
+		key:          r.core.crypto.publicKey,
+		parent:       r.core.crypto.publicKey,
+		routerSigRes: res,
+		sig:          sig,
 	}
 	if !ann.check() {
 		panic("this should never happen")
 	}
-	return t._update(&ann)
+	return r._update(&ann)
 }
 
-func (t *crdtree) _handleRequest(p *peer, req *crdtreeSigReq) {
-	bs := req.bytesForSig(p.key, t.core.crypto.publicKey)
-	sig := t.core.crypto.privateKey.sign(bs)
-	res := crdtreeSigRes{*req, sig}
-	p.sendSigRes(t, &res)
+func (r *router) _handleRequest(p *peer, req *routerSigReq) {
+	bs := req.bytesForSig(p.key, r.core.crypto.publicKey)
+	sig := r.core.crypto.privateKey.sign(bs)
+	res := routerSigRes{*req, sig}
+	p.sendSigRes(r, &res)
 }
 
-func (t *crdtree) handleRequest(from phony.Actor, p *peer, req *crdtreeSigReq) {
-	t.Act(from, func() {
-		t._handleRequest(p, req)
+func (r *router) handleRequest(from phony.Actor, p *peer, req *routerSigReq) {
+	r.Act(from, func() {
+		r._handleRequest(p, req)
 	})
 }
 
-func (t *crdtree) _handleResponse(p *peer, res *crdtreeSigRes) {
-	if _, isIn := t.responses[p.key]; !isIn && t.requests[p.key] == res.crdtreeSigReq {
-		t.resSeqCtr++
-		t.resSeqs[p.key] = t.resSeqCtr
-		t.responses[p.key] = *res
-		t._fix() // This could become our new parent
+func (r *router) _handleResponse(p *peer, res *routerSigRes) {
+	if _, isIn := r.responses[p.key]; !isIn && r.requests[p.key] == res.routerSigReq {
+		r.resSeqCtr++
+		r.resSeqs[p.key] = r.resSeqCtr
+		r.responses[p.key] = *res
+		r._fix() // This could become our new parent
 	}
 }
 
-func (t *crdtree) _useResponse(peerKey publicKey, res *crdtreeSigRes) bool {
-	bs := res.bytesForSig(t.core.crypto.publicKey, peerKey)
-	info := crdtreeInfo{
-		parent:        peerKey,
-		crdtreeSigRes: *res,
-		sig:           t.core.crypto.privateKey.sign(bs),
+func (r *router) _useResponse(peerKey publicKey, res *routerSigRes) bool {
+	bs := res.bytesForSig(r.core.crypto.publicKey, peerKey)
+	info := routerInfo{
+		parent:       peerKey,
+		routerSigRes: *res,
+		sig:          r.core.crypto.privateKey.sign(bs),
 	}
-	ann := info.getAnnounce(t.core.crypto.publicKey)
-	if t._update(ann) {
-		for _, ps := range t.peers {
+	ann := info.getAnnounce(r.core.crypto.publicKey)
+	if r._update(ann) {
+		for _, ps := range r.peers {
 			for p := range ps {
-				p.sendAnnounce(t, ann)
+				p.sendAnnounce(r, ann)
 			}
 		}
 		return true
@@ -335,14 +335,14 @@ func (t *crdtree) _useResponse(peerKey publicKey, res *crdtreeSigRes) bool {
 	return false
 }
 
-func (t *crdtree) handleResponse(from phony.Actor, p *peer, res *crdtreeSigRes) {
-	t.Act(from, func() {
-		t._handleResponse(p, res)
+func (r *router) handleResponse(from phony.Actor, p *peer, res *routerSigRes) {
+	r.Act(from, func() {
+		r._handleResponse(p, res)
 	})
 }
 
-func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
-	if info, isIn := t.infos[ann.key]; isIn {
+func (r *router) _update(ann *routerAnnounce) bool {
+	if info, isIn := r.infos[ann.key]; isIn {
 		switch {
 		case info.seq > ann.seq:
 			// This is an old seq, so exit
@@ -361,53 +361,53 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 			return false
 		}
 	}
-	t._resetCache()
-	info := crdtreeInfo{
-		parent:        ann.parent,
-		crdtreeSigRes: ann.crdtreeSigRes,
-		sig:           ann.sig,
+	r._resetCache()
+	info := routerInfo{
+		parent:       ann.parent,
+		routerSigRes: ann.routerSigRes,
+		sig:          ann.sig,
 	}
 	key := ann.key
 	var timer *time.Timer
-	if key == t.core.crypto.publicKey {
-		delay := t.core.config.crdtreeRefresh + time.Millisecond*time.Duration(mrand.Intn(1024))
+	if key == r.core.crypto.publicKey {
+		delay := r.core.config.routerRefresh + time.Millisecond*time.Duration(mrand.Intn(1024))
 		timer = time.AfterFunc(delay, func() {
-			t.Act(nil, func() {
-				if t.timers[key] == timer {
-					t.refresh = true
-					t._fix()
+			r.Act(nil, func() {
+				if r.timers[key] == timer {
+					r.refresh = true
+					r._fix()
 				}
 			})
 		})
 	} else {
-		timer = time.AfterFunc(t.core.config.crdtreeTimeout, func() {
-			t.Act(nil, func() {
-				if t.timers[key] == timer {
+		timer = time.AfterFunc(r.core.config.routerTimeout, func() {
+			r.Act(nil, func() {
+				if r.timers[key] == timer {
 					timer.Stop() // Shouldn't matter, but just to be safe...
-					delete(t.infos, key)
-					delete(t.timers, key)
-					t._resetCache()
-					t._fix()
+					delete(r.infos, key)
+					delete(r.timers, key)
+					r._resetCache()
+					r._fix()
 				}
 			})
 		})
 	}
-	if oldTimer, isIn := t.timers[key]; isIn {
+	if oldTimer, isIn := r.timers[key]; isIn {
 		oldTimer.Stop()
 	}
-	t.infos[key] = info
-	t.timers[key] = timer
+	r.infos[key] = info
+	r.timers[key] = timer
 	return true
 }
 
-func (t *crdtree) _handleAnnounce(sender *peer, ann *crdtreeAnnounce) {
+func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 	var doUpdate bool
 	var worst publicKey
 	var found bool
-	if len(t.infos) < int(t.core.config.crdtreeMaxInfos) {
+	if len(r.infos) < int(r.core.config.routerMaxInfos) {
 		// We're not at max capacity yet, so we have room to add more
 		doUpdate = true
-	} else if _, isIn := t.infos[ann.key]; isIn {
+	} else if _, isIn := r.infos[ann.key]; isIn {
 		// We're at capacity (or, somehow, above) but we alread know about this
 		// Therefore, there's no harm in accepting the update (we can't force anything else out)
 		// If this was or last check, then this is basically TOFU for the network
@@ -417,8 +417,8 @@ func (t *crdtree) _handleAnnounce(sender *peer, ann *crdtreeAnnounce) {
 		// It may be "better" than something we already know about
 		// We define better to mean lower key (so e.g. we all know the root)
 		// We also special case or own info, to avoid timer problems
-		for k := range t.infos {
-			if k == t.core.crypto.publicKey {
+		for k := range r.infos {
+			if k == r.core.crypto.publicKey {
 				// Skip self
 				continue
 			}
@@ -434,70 +434,70 @@ func (t *crdtree) _handleAnnounce(sender *peer, ann *crdtreeAnnounce) {
 			doUpdate = true
 		}
 	}
-	if doUpdate && t._update(ann) {
-		for _, ps := range t.peers {
+	if doUpdate && r._update(ann) {
+		for _, ps := range r.peers {
 			for p := range ps {
 				if p == sender {
 					continue
 				}
-				p.sendAnnounce(t, ann)
+				p.sendAnnounce(r, ann)
 			}
 		}
 		if found {
 			// Cleanup worst
-			t.timers[worst].Stop()
-			delete(t.infos, worst)
-			delete(t.timers, worst)
-			t._resetCache()
+			r.timers[worst].Stop()
+			delete(r.infos, worst)
+			delete(r.timers, worst)
+			r._resetCache()
 		}
-		t._fix() // This could require us to change parents
+		r._fix() // This could require us to change parents
 	}
 }
 
-func (t *crdtree) handleAnnounce(from phony.Actor, p *peer, ann *crdtreeAnnounce) {
-	t.Act(from, func() {
-		t._handleAnnounce(p, ann)
+func (r *router) handleAnnounce(from phony.Actor, p *peer, ann *routerAnnounce) {
+	r.Act(from, func() {
+		r._handleAnnounce(p, ann)
 	})
 }
 
-func (t *crdtree) handleMirrorReq(from phony.Actor, p *peer) {
-	t.Act(from, func() {
-		if t.peers[p.key][p] {
-			t.peers[p.key][p] = false
-			p.sendMirrorReq(t) // Synchronize in both directions, if possible (done first, so they don't needlessly send us back everything we send them)
-			for key, info := range t.infos {
-				p.sendAnnounce(t, info.getAnnounce(key))
+func (r *router) handleMirrorReq(from phony.Actor, p *peer) {
+	r.Act(from, func() {
+		if r.peers[p.key][p] {
+			r.peers[p.key][p] = false
+			p.sendMirrorReq(r) // Synchronize in both directions, if possible (done first, so they don't needlessly send us back everything we send them)
+			for key, info := range r.infos {
+				p.sendAnnounce(r, info.getAnnounce(key))
 			}
 		}
 	})
 }
 
-func (t *crdtree) sendTraffic(tr *traffic) {
+func (r *router) sendTraffic(tr *traffic) {
 	// This must be non-blocking, to prevent deadlocks between read/write paths in the encrypted package
 	// Basically, WriteTo and ReadFrom can't be allowed to block each other, but they could if we allowed backpressure here
 	// There may be a better way to handle this, but it practice it probably won't be an issue (we'll throw the packet in a queue somewhere, or drop it)
-	t.handleTraffic(nil, tr)
+	r.handleTraffic(nil, tr)
 }
 
-func (t *crdtree) handleTraffic(from phony.Actor, tr *traffic) {
-	t.Act(from, func() {
-		if p := t._lookup(tr); p != nil {
-			p.sendTraffic(t, tr)
+func (r *router) handleTraffic(from phony.Actor, tr *traffic) {
+	r.Act(from, func() {
+		if p := r._lookup(tr); p != nil {
+			p.sendTraffic(r, tr)
 		} else {
-			t.core.pconn.handleTraffic(t, tr)
+			r.core.pconn.handleTraffic(r, tr)
 		}
 	})
 }
 
-func (t *crdtree) _keyLookup(dest publicKey) publicKey {
+func (r *router) _keyLookup(dest publicKey) publicKey {
 	// Returns the key that's the closest match to the destination publicKey
-	if _, isIn := t.infos[dest]; !isIn {
+	if _, isIn := r.infos[dest]; !isIn {
 		// Switch dest to the closest known key, so out-of-band stuff works
 		// This would be a hack to make the example code run without modification
 		// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
 		var lowest *publicKey
 		var best *publicKey
-		for key := range t.infos {
+		for key := range r.infos {
 			if lowest == nil || key.less(*lowest) {
 				k := key
 				lowest = &k
@@ -523,7 +523,7 @@ func (t *crdtree) _keyLookup(dest publicKey) publicKey {
 	return dest
 }
 
-func (t *crdtree) _getDist(dists map[publicKey]uint64, key publicKey) (uint64, bool) {
+func (r *router) _getDist(dists map[publicKey]uint64, key publicKey) (uint64, bool) {
 	var dist uint64
 	visited := make(map[publicKey]struct{})
 	visited[publicKey{}] = struct{}{}
@@ -537,12 +537,12 @@ func (t *crdtree) _getDist(dists map[publicKey]uint64, key publicKey) (uint64, b
 		}
 		dist++
 		visited[here] = struct{}{}
-		here = t.infos[here].parent
+		here = r.infos[here].parent
 	}
 }
 
-func (t *crdtree) _lookup(tr *traffic) *peer {
-	if info, isIn := t.cache[tr.dest]; isIn {
+func (r *router) _lookup(tr *traffic) *peer {
+	if info, isIn := r.cache[tr.dest]; isIn {
 		if info.dist < tr.watermark {
 			tr.watermark = info.dist
 			return info.peer
@@ -550,21 +550,21 @@ func (t *crdtree) _lookup(tr *traffic) *peer {
 			return nil
 		}
 	}
-	if _, isIn := t.infos[tr.dest]; !isIn {
+	if _, isIn := r.infos[tr.dest]; !isIn {
 		return nil // If we want to restore DHT-like logic, it's mostly copy/paste from _keyLookup
 	}
 	// Look up the next hop (in treespace) towards the destination
-	_, dists := t._getRootAndDists(tr.dest)
+	_, dists := r._getRootAndDists(tr.dest)
 	var bestPeer *peer
 	bestDist := ^uint64(0)
-	if dist, ok := t._getDist(dists, t.core.crypto.publicKey); ok && dist < tr.watermark {
+	if dist, ok := r._getDist(dists, r.core.crypto.publicKey); ok && dist < tr.watermark {
 		bestDist = dist // Self dist, so other nodes must be strictly better by distance
 		tr.watermark = dist
 	} else {
 		return nil
 	}
-	for k, ps := range t.peers {
-		dist, ok := t._getDist(dists, k)
+	for k, ps := range r.peers {
+		dist, ok := r._getDist(dists, k)
 		if !ok {
 			continue
 		}
@@ -585,11 +585,11 @@ func (t *crdtree) _lookup(tr *traffic) *peer {
 		}
 	}
 
-	t.cache[tr.dest] = crdtreeCacheInfo{bestPeer, tr.watermark}
+	r.cache[tr.dest] = routerCacheInfo{bestPeer, tr.watermark}
 	return bestPeer
 }
 
-func (t *crdtree) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint64) {
+func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint64) {
 	// This returns the distances from the destination's root for the destination and each of its ancestors
 	dists := make(map[publicKey]uint64)
 	next := dest
@@ -599,7 +599,7 @@ func (t *crdtree) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uin
 		if _, isIn := dists[next]; isIn {
 			break
 		}
-		if info, isIn := t.infos[next]; isIn { // && !info.expired {
+		if info, isIn := r.infos[next]; isIn {
 			root = next
 			dists[next] = dist
 			dist++
@@ -612,15 +612,15 @@ func (t *crdtree) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uin
 }
 
 /*****************
- * crdtreeSigReq *
+ * routerSigReq *
  *****************/
 
-type crdtreeSigReq struct {
+type routerSigReq struct {
 	seq   uint64
 	nonce uint64
 }
 
-func (req *crdtreeSigReq) bytesForSig(node, parent publicKey) []byte {
+func (req *routerSigReq) bytesForSig(node, parent publicKey) []byte {
 	out := make([]byte, 0, publicKeySize*2+8+8)
 	out = append(out, node[:]...)
 	out = append(out, parent[:]...)
@@ -628,14 +628,14 @@ func (req *crdtreeSigReq) bytesForSig(node, parent publicKey) []byte {
 	return out
 }
 
-func (req *crdtreeSigReq) size() int {
+func (req *routerSigReq) size() int {
 	var tmp [10]byte
 	size := binary.PutUvarint(tmp[:], req.seq)
 	size += binary.PutUvarint(tmp[:], req.nonce)
 	return size
 }
 
-func (req *crdtreeSigReq) encode(out []byte) ([]byte, error) {
+func (req *routerSigReq) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	out = binary.AppendUvarint(out, req.seq)
 	out = binary.AppendUvarint(out, req.nonce)
@@ -646,8 +646,8 @@ func (req *crdtreeSigReq) encode(out []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (req *crdtreeSigReq) chop(data *[]byte) error {
-	var tmp crdtreeSigReq
+func (req *routerSigReq) chop(data *[]byte) error {
+	var tmp routerSigReq
 	orig := *data
 	if !wireChopUvarint(&tmp.seq, &orig) {
 		return wireDecodeError
@@ -659,8 +659,8 @@ func (req *crdtreeSigReq) chop(data *[]byte) error {
 	return nil
 }
 
-func (req *crdtreeSigReq) decode(data []byte) error {
-	var tmp crdtreeSigReq
+func (req *routerSigReq) decode(data []byte) error {
+	var tmp routerSigReq
 	if err := tmp.chop(&data); err != nil {
 		return err
 	} else if len(data) != 0 {
@@ -671,29 +671,29 @@ func (req *crdtreeSigReq) decode(data []byte) error {
 }
 
 /*****************
- * crdtreeSigRes *
+ * routerSigRes *
  *****************/
 
-type crdtreeSigRes struct {
-	crdtreeSigReq
+type routerSigRes struct {
+	routerSigReq
 	psig signature
 }
 
-func (res *crdtreeSigRes) check(node, parent publicKey) bool {
+func (res *routerSigRes) check(node, parent publicKey) bool {
 	bs := res.bytesForSig(node, parent)
 	return parent.verify(bs, &res.psig)
 }
 
-func (res *crdtreeSigRes) size() int {
-	size := res.crdtreeSigReq.size()
+func (res *routerSigRes) size() int {
+	size := res.routerSigReq.size()
 	size += len(res.psig)
 	return size
 }
 
-func (res *crdtreeSigRes) encode(out []byte) ([]byte, error) {
+func (res *routerSigRes) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	var err error
-	out, err = res.crdtreeSigReq.encode(out)
+	out, err = res.routerSigReq.encode(out)
 	if err != nil {
 		return nil, err
 	}
@@ -705,10 +705,10 @@ func (res *crdtreeSigRes) encode(out []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (res *crdtreeSigRes) chop(data *[]byte) error {
+func (res *routerSigRes) chop(data *[]byte) error {
 	orig := *data
-	var tmp crdtreeSigRes
-	if err := tmp.crdtreeSigReq.chop(&orig); err != nil {
+	var tmp routerSigRes
+	if err := tmp.routerSigReq.chop(&orig); err != nil {
 		return err
 	} else if !wireChopSlice(tmp.psig[:], &orig) {
 		return wireDecodeError
@@ -718,8 +718,8 @@ func (res *crdtreeSigRes) chop(data *[]byte) error {
 	return nil
 }
 
-func (res *crdtreeSigRes) decode(data []byte) error {
-	var tmp crdtreeSigRes
+func (res *routerSigRes) decode(data []byte) error {
+	var tmp routerSigRes
 	if err := tmp.chop(&data); err != nil {
 		return err
 	} else if len(data) != 0 {
@@ -730,35 +730,35 @@ func (res *crdtreeSigRes) decode(data []byte) error {
 }
 
 /*******************
- * crdtreeAnnounce *
+ * routerAnnounce *
  *******************/
 
-type crdtreeAnnounce struct {
+type routerAnnounce struct {
 	key    publicKey
 	parent publicKey
-	crdtreeSigRes
+	routerSigRes
 	sig signature
 }
 
-func (ann *crdtreeAnnounce) check() bool {
+func (ann *routerAnnounce) check() bool {
 	bs := ann.bytesForSig(ann.key, ann.parent)
 	return ann.key.verify(bs, &ann.sig) && ann.parent.verify(bs, &ann.psig)
 }
 
-func (ann *crdtreeAnnounce) size() int {
+func (ann *routerAnnounce) size() int {
 	size := len(ann.key)
 	size += len(ann.parent)
-	size += ann.crdtreeSigRes.size()
+	size += ann.routerSigRes.size()
 	size += len(ann.sig)
 	return size
 }
 
-func (ann *crdtreeAnnounce) encode(out []byte) ([]byte, error) {
+func (ann *routerAnnounce) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	var err error
 	out = append(out, ann.key[:]...)
 	out = append(out, ann.parent[:]...)
-	out, err = ann.crdtreeSigRes.encode(out)
+	out, err = ann.routerSigRes.encode(out)
 	if err != nil {
 		return nil, err
 	}
@@ -770,14 +770,14 @@ func (ann *crdtreeAnnounce) encode(out []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (ann *crdtreeAnnounce) decode(data []byte) error {
+func (ann *routerAnnounce) decode(data []byte) error {
 	// TODO clean this up, give "chop" versions of decode to the embedded structs?
-	var tmp crdtreeAnnounce
+	var tmp routerAnnounce
 	if !wireChopSlice(tmp.key[:], &data) {
 		return wireDecodeError
 	} else if !wireChopSlice(tmp.parent[:], &data) {
 		return wireDecodeError
-	} else if err := tmp.crdtreeSigRes.chop(&data); err != nil {
+	} else if err := tmp.routerSigRes.chop(&data); err != nil {
 		return err
 	} else if !wireChopSlice(tmp.sig[:], &data) {
 		return wireDecodeError
@@ -789,22 +789,22 @@ func (ann *crdtreeAnnounce) decode(data []byte) error {
 }
 
 /***************
- * crdtreeInfo *
+ * routerInfo *
  ***************/
 
 // This is the value stored in a key,value map
 
-type crdtreeInfo struct {
+type routerInfo struct {
 	parent publicKey
-	crdtreeSigRes
+	routerSigRes
 	sig signature
 }
 
-func (info *crdtreeInfo) getAnnounce(key publicKey) *crdtreeAnnounce {
-	return &crdtreeAnnounce{
-		key:           key,
-		parent:        info.parent,
-		crdtreeSigRes: info.crdtreeSigRes,
-		sig:           info.sig,
+func (info *routerInfo) getAnnounce(key publicKey) *routerAnnounce {
+	return &routerAnnounce{
+		key:          key,
+		parent:       info.parent,
+		routerSigRes: info.routerSigRes,
+		sig:          info.sig,
 	}
 }

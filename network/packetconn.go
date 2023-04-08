@@ -90,7 +90,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	copy(tr.dest[:], dest)
 	tr.watermark = ^uint64(0)
 	tr.payload = append(tr.payload, p...)
-	pc.core.crdtree.sendTraffic(tr)
+	pc.core.router.sendTraffic(tr)
 	return len(p), nil
 }
 
@@ -109,7 +109,7 @@ func (pc *PacketConn) Close() error {
 			p.conn.Close()
 		}
 	})
-	phony.Block(&pc.core.crdtree, pc.core.crdtree._shutdown)
+	phony.Block(&pc.core.router, pc.core.router._shutdown)
 	return nil
 }
 
@@ -183,18 +183,9 @@ func (pc *PacketConn) PrivateKey() ed25519.PrivateKey {
 
 // MTU returns the maximum transmission unit of the PacketConn, i.e. maximum safe message size to send over the network.
 func (pc *PacketConn) MTU() uint64 {
-	// TODO update this for packet format changes, it needs to read from the config now...
-	const maxPeerMessageSize = 65535
-	const messageTypeSize = 1
-	const rootSeqSize = 8
-	const treeUpdateOverhead = messageTypeSize + publicKeySize + rootSeqSize
-	const maxPortSize = 10 // maximum vuint size in bytes
-	const treeHopSize = publicKeySize + maxPortSize + signatureSize
-	const maxHops = (maxPeerMessageSize - treeUpdateOverhead) / treeHopSize
-	const maxPathBytes = publicKeySize + maxPortSize*maxHops + 1 // root + treespace coords + 0 (terminate coords)
-	const pathTrafficOverhead = messageTypeSize + maxPathBytes + publicKeySize + publicKeySize + messageTypeSize
-	const MTU = maxPeerMessageSize - pathTrafficOverhead
-	return MTU
+	var tr traffic
+	overhead := uint64(tr.size()) + 1 // 1 byte type overhead
+	return pc.core.config.peerMaxMessageSize - overhead
 }
 
 func (pc *PacketConn) handleTraffic(from phony.Actor, tr *traffic) {
@@ -283,10 +274,10 @@ func (d *deadline) getCancel() chan struct{} {
 /////
 
 func (pc *PacketConn) GetKeyFor(target ed25519.PublicKey) (key ed25519.PublicKey) {
-	phony.Block(&pc.core.crdtree, func() {
+	phony.Block(&pc.core.router, func() {
 		var k publicKey
 		copy(k[:], target[:])
-		k = pc.core.crdtree._keyLookup(k)
+		k = pc.core.router._keyLookup(k)
 		key = ed25519.PublicKey(k[:])
 	})
 	return

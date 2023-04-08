@@ -3,9 +3,9 @@ package network
 import "time"
 
 type config struct {
-	crdtreeRefresh     time.Duration
-	crdtreeTimeout     time.Duration
-	crdtreeMaxInfos    uint64
+	routerRefresh      time.Duration
+	routerTimeout      time.Duration
+	routerMaxInfos     uint64
 	peerKeepAliveDelay time.Duration
 	peerTimeout        time.Duration
 	peerPingIncrement  time.Duration
@@ -17,9 +17,9 @@ type Option func(*config)
 
 func configDefaults() Option {
 	return func(c *config) {
-		c.crdtreeRefresh = 23 * time.Hour
-		c.crdtreeTimeout = 23 * time.Hour
-		c.crdtreeMaxInfos = 65535
+		c.routerRefresh = 23 * time.Hour
+		c.routerTimeout = 23 * time.Hour
+		c.routerMaxInfos = 65535
 		c.peerKeepAliveDelay = time.Second
 		c.peerTimeout = 3 * time.Second
 		c.peerPingIncrement = time.Second

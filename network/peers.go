@@ -237,7 +237,7 @@ func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 
 func (p *peer) handler() error {
 	defer func() {
-		p.peers.core.crdtree.removePeer(nil, p)
+		p.peers.core.router.removePeer(nil, p)
 	}()
 	defer p.monitor.Act(nil, func() {
 		if p.monitor.keepAliveTimer != nil {
@@ -256,8 +256,8 @@ func (p *peer) handler() error {
 	// Calling doPing here ensures that it's the first traffic we ever send
 	// That helps to e.g. initialize the pingTimer
 	p.monitor.doPing()
-	// Add peer to the crdtree, to kick off protocol exchanges
-	p.peers.core.crdtree.addPeer(p, p)
+	// Add peer to the router, to kick off protocol exchanges
+	p.peers.core.router.addPeer(p, p)
 	// Now allocate buffers and start reading / handling packets...
 	rbuf := bufio.NewReader(p.conn)
 	for {
@@ -317,51 +317,51 @@ func (p *peer) _handlePacket(bs []byte) error {
 }
 
 func (p *peer) _handleSigReq(bs []byte) error {
-	req := new(crdtreeSigReq)
+	req := new(routerSigReq)
 	if err := req.decode(bs); err != nil {
 		return err
 	}
-	p.peers.core.crdtree.handleRequest(p, p, req)
+	p.peers.core.router.handleRequest(p, p, req)
 	return nil
 }
 
-func (p *peer) sendSigReq(from phony.Actor, req *crdtreeSigReq) {
+func (p *peer) sendSigReq(from phony.Actor, req *routerSigReq) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoSigReq, req)
 	})
 }
 
 func (p *peer) _handleSigRes(bs []byte) error {
-	res := new(crdtreeSigRes)
+	res := new(routerSigRes)
 	if err := res.decode(bs); err != nil {
 		return err
 	}
 	if !res.check(p.peers.core.crypto.publicKey, p.key) {
 		return errors.New("bad SigRes")
 	}
-	p.peers.core.crdtree.handleResponse(p, p, res)
+	p.peers.core.router.handleResponse(p, p, res)
 	return nil
 }
 
-func (p *peer) sendSigRes(from phony.Actor, res *crdtreeSigRes) {
+func (p *peer) sendSigRes(from phony.Actor, res *routerSigRes) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoSigRes, res)
 	})
 }
 
 func (p *peer) _handleAnnounce(bs []byte) error {
-	ann := new(crdtreeAnnounce)
+	ann := new(routerAnnounce)
 	if err := ann.decode(bs); err != nil {
 		return err
 	}
 	if !ann.check() {
 		return errors.New("bad Announce")
 	}
-	p.peers.core.crdtree.handleAnnounce(p, p, ann)
+	p.peers.core.router.handleAnnounce(p, p, ann)
 	return nil
 }
 
-func (p *peer) sendAnnounce(from phony.Actor, ann *crdtreeAnnounce) {
+func (p *peer) sendAnnounce(from phony.Actor, ann *routerAnnounce) {
 	p.Act(from, func() {
 		p.writer.sendPacket(wireProtoAnnounce, ann)
 	})
@@ -371,7 +371,7 @@ func (p *peer) _handleMirrorReq(bs []byte) error {
 	if len(bs) != 0 {
 		return errors.New("bad mirror request")
 	}
-	p.peers.core.crdtree.handleMirrorReq(p, p)
+	p.peers.core.router.handleMirrorReq(p, p)
 	return nil
 }
 
@@ -388,7 +388,7 @@ func (p *peer) _handleTraffic(bs []byte) error {
 	if err := tr.decode(bs); err != nil {
 		return err // This is just to check that it unmarshals correctly
 	}
-	p.peers.core.crdtree.handleTraffic(p, tr)
+	p.peers.core.router.handleTraffic(p, tr)
 	return nil
 }
 
