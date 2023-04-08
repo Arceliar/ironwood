@@ -16,8 +16,8 @@ type PacketConn struct {
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
-func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
-	pc, err := network.NewPacketConn(secret)
+func NewPacketConn(secret ed25519.PrivateKey, options ...network.Option) (*PacketConn, error) {
+	pc, err := network.NewPacketConn(secret, options...)
 	if err != nil {
 		return nil, err
 	}
