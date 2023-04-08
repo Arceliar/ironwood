@@ -44,7 +44,7 @@ func (tr *traffic) decode(data []byte) error {
 	} else if !wireChopUvarint(&tmp.watermark, &data) {
 		return wireDecodeError
 	}
+	tmp.payload = append(tr.payload[:0], data...)
 	*tr = tmp
-	tr.payload = append(tr.payload[:0], data...)
 	return nil
 }

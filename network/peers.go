@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	peer_KEEPALIVE_DELAY = time.Second
-	peer_TIMEOUT         = peer_KEEPALIVE_DELAY + 2*time.Second
-	peer_PING_INCREMENT  = time.Second
-	peer_PING_MAXDELAY   = time.Minute
+	peer_KEEPALIVE_DELAY  = time.Second
+	peer_TIMEOUT          = peer_KEEPALIVE_DELAY + 2*time.Second
+	peer_PING_INCREMENT   = time.Second
+	peer_PING_MAXDELAY    = time.Minute
+	peer_MAX_MESSAGE_SIZE = 1048576 // 1 megabyte, TODO make this an application level configurable
 )
 
 type peerPort uint64
@@ -216,17 +217,27 @@ func (w *peerWriter) _write(bs []byte, pType wirePacketType) {
 
 func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 	w.Act(nil, func() {
+		bufSize := uint64(data.size() + 1)
+		if bufSize > peer_MAX_MESSAGE_SIZE {
+			return
+		}
 		// TODO packet size checks (right now there's no max, that's bad)
 		writeBuf := allocBytes(0)
 		defer freeBytes(writeBuf)
 		// The +1 is from 1 byte for the pType
-		writeBuf = binary.AppendUvarint(writeBuf[:], uint64(data.size()+1))
+		writeBuf = binary.AppendUvarint(writeBuf[:], bufSize)
 		var err error
 		writeBuf, err = wireEncode(writeBuf, byte(pType), data)
 		if err != nil {
 			panic(err)
 		}
 		w._write(writeBuf, pType)
+		switch tr := data.(type) {
+		case *traffic:
+			freeTraffic(tr)
+		default:
+			// Not a special case, don't free anything
+		}
 	})
 }
 
@@ -260,6 +271,9 @@ func (p *peer) handler() error {
 		var err error
 		if usize, err = binary.ReadUvarint(rbuf); err != nil {
 			return err
+		}
+		if usize > peer_MAX_MESSAGE_SIZE {
+			return errors.New("oversized packet")
 		}
 		// TODO max packet size logic (right now there's no max, that's bad)
 		size := int(usize)
