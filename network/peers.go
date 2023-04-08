@@ -3,7 +3,6 @@ package network
 import (
 	"bufio"
 	"encoding/binary"
-	"errors"
 	"io"
 
 	//"math"
@@ -35,7 +34,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 	defer ps.core.pconn.closeMutex.Unlock()
 	select {
 	case <-ps.core.pconn.closed:
-		return nil, errors.New("cannot add peer to closed PacketConn")
+		return nil, new(ClosedError)
 	default:
 	}
 	phony.Block(ps, func() {
@@ -67,7 +66,7 @@ func (ps *peers) removePeer(port peerPort) error {
 	var err error
 	phony.Block(ps, func() {
 		if _, isIn := ps.peers[port]; !isIn {
-			err = errors.New("peer not found")
+			err = new(PeerNotFoundError)
 		} else {
 			delete(ps.peers, port)
 		}
@@ -267,7 +266,7 @@ func (p *peer) handler() error {
 			return err
 		}
 		if usize > p.peers.core.config.peerMaxMessageSize {
-			return errors.New("oversized packet")
+			return new(OversizedMessageError)
 		}
 		// TODO max packet size logic (right now there's no max, that's bad)
 		size := int(usize)
@@ -290,7 +289,7 @@ func (p *peer) _handlePacket(bs []byte) error {
 	// Note: this function should be non-blocking.
 	// Individual handlers should send actor messages as needed.
 	if len(bs) == 0 {
-		return errors.New("empty packet")
+		return new(EmptyMessageError)
 	}
 	pType := wirePacketType(bs[0])
 	p.monitor.recv(pType)
@@ -312,7 +311,7 @@ func (p *peer) _handlePacket(bs []byte) error {
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
-		return errors.New("unrecognized packet type")
+		return new(UnrecognizedMessageError)
 	}
 }
 
@@ -337,7 +336,7 @@ func (p *peer) _handleSigRes(bs []byte) error {
 		return err
 	}
 	if !res.check(p.peers.core.crypto.publicKey, p.key) {
-		return errors.New("bad SigRes")
+		return new(BadMessageError)
 	}
 	p.peers.core.router.handleResponse(p, p, res)
 	return nil
@@ -355,7 +354,7 @@ func (p *peer) _handleAnnounce(bs []byte) error {
 		return err
 	}
 	if !ann.check() {
-		return errors.New("bad Announce")
+		return new(BadMessageError)
 	}
 	p.peers.core.router.handleAnnounce(p, p, ann)
 	return nil
@@ -369,7 +368,7 @@ func (p *peer) sendAnnounce(from phony.Actor, ann *routerAnnounce) {
 
 func (p *peer) _handleMirrorReq(bs []byte) error {
 	if len(bs) != 0 {
-		return errors.New("bad mirror request")
+		return new(BadMessageError)
 	}
 	p.peers.core.router.handleMirrorReq(p, p)
 	return nil

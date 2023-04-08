@@ -2,7 +2,6 @@ package network
 
 import (
 	"crypto/ed25519"
-	"errors"
 	"net"
 	"sync"
 	"time"
@@ -52,9 +51,9 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	pc.doPop()
 	select {
 	case <-pc.closed:
-		return 0, nil, errors.New("closed")
+		return 0, nil, new(ClosedError)
 	case <-pc.readDeadline.getCancel():
-		return 0, nil, errors.New("deadline exceeded")
+		return 0, nil, new(DeadlineError)
 	case tr = <-pc.recv:
 	}
 	copy(p, tr.payload)
@@ -72,18 +71,18 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	select {
 	case <-pc.closed:
-		return 0, errors.New("closed")
+		return 0, new(ClosedError)
 	default:
 	}
 	if _, ok := addr.(types.Addr); !ok {
-		return 0, errors.New("incorrect address type, expected types.Addr")
+		return 0, new(BadAddressError)
 	}
 	dest := addr.(types.Addr)
 	if len(dest) != publicKeySize {
-		return 0, errors.New("incorrect address length")
+		return 0, new(BadAddressError)
 	}
 	if uint64(len(p)) > pc.MTU() {
-		return 0, errors.New("oversized message")
+		return 0, new(OversizedMessageError)
 	}
 	tr := allocTraffic()
 	tr.source = pc.core.crypto.publicKey
@@ -100,7 +99,7 @@ func (pc *PacketConn) Close() error {
 	defer pc.closeMutex.Unlock()
 	select {
 	case <-pc.closed:
-		return errors.New("closed")
+		return new(ClosedError)
 	default:
 	}
 	close(pc.closed)
@@ -146,12 +145,12 @@ func (pc *PacketConn) SetWriteDeadline(t time.Time) error {
 func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn, prio uint8) error {
 	defer conn.Close()
 	if len(key) != publicKeySize {
-		return errors.New("incorrect key length")
+		return new(BadKeyError)
 	}
 	var pk publicKey
 	copy(pk[:], key)
 	if pc.core.crypto.publicKey.equal(pk) {
-		return errors.New("attempted to connect to self")
+		return new(BadKeyError)
 	}
 	p, err := pc.core.peers.addPeer(pk, conn, prio)
 	if err != nil {

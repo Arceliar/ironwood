@@ -650,9 +650,9 @@ func (req *routerSigReq) chop(data *[]byte) error {
 	var tmp routerSigReq
 	orig := *data
 	if !wireChopUvarint(&tmp.seq, &orig) {
-		return wireDecodeError
+		return DecodeError{}
 	} else if !wireChopUvarint(&tmp.nonce, &orig) {
-		return wireDecodeError
+		return DecodeError{}
 	}
 	*req = tmp
 	*data = orig
@@ -664,7 +664,7 @@ func (req *routerSigReq) decode(data []byte) error {
 	if err := tmp.chop(&data); err != nil {
 		return err
 	} else if len(data) != 0 {
-		return wireDecodeError
+		return DecodeError{}
 	}
 	*req = tmp
 	return nil
@@ -711,7 +711,7 @@ func (res *routerSigRes) chop(data *[]byte) error {
 	if err := tmp.routerSigReq.chop(&orig); err != nil {
 		return err
 	} else if !wireChopSlice(tmp.psig[:], &orig) {
-		return wireDecodeError
+		return DecodeError{}
 	}
 	*res = tmp
 	*data = orig
@@ -723,7 +723,7 @@ func (res *routerSigRes) decode(data []byte) error {
 	if err := tmp.chop(&data); err != nil {
 		return err
 	} else if len(data) != 0 {
-		return wireDecodeError
+		return DecodeError{}
 	}
 	*res = tmp
 	return nil
@@ -774,15 +774,15 @@ func (ann *routerAnnounce) decode(data []byte) error {
 	// TODO clean this up, give "chop" versions of decode to the embedded structs?
 	var tmp routerAnnounce
 	if !wireChopSlice(tmp.key[:], &data) {
-		return wireDecodeError
+		return DecodeError{}
 	} else if !wireChopSlice(tmp.parent[:], &data) {
-		return wireDecodeError
+		return DecodeError{}
 	} else if err := tmp.routerSigRes.chop(&data); err != nil {
 		return err
 	} else if !wireChopSlice(tmp.sig[:], &data) {
-		return wireDecodeError
+		return DecodeError{}
 	} else if len(data) != 0 {
-		return wireDecodeError
+		return DecodeError{}
 	}
 	*ann = tmp
 	return nil

@@ -38,11 +38,11 @@ func (tr *traffic) encode(out []byte) ([]byte, error) {
 func (tr *traffic) decode(data []byte) error {
 	var tmp traffic
 	if !wireChopSlice(tmp.source[:], &data) {
-		return wireDecodeError
+		return DecodeError{}
 	} else if !wireChopSlice(tmp.dest[:], &data) {
-		return wireDecodeError
+		return DecodeError{}
 	} else if !wireChopUvarint(&tmp.watermark, &data) {
-		return wireDecodeError
+		return DecodeError{}
 	}
 	tmp.payload = append(tr.payload[:0], data...)
 	*tr = tmp

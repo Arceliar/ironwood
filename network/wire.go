@@ -1,9 +1,6 @@
 package network
 
-import (
-	"encoding/binary"
-	"errors"
-)
+import "encoding/binary"
 
 type wirePacketType byte
 
@@ -17,9 +14,6 @@ const (
 	wireProtoMirrorReq
 	wireTraffic
 )
-
-var wireEncodeError = errors.New("wire encode error")
-var wireDecodeError = errors.New("wire decode error")
 
 func wireChopSlice(out []byte, data *[]byte) bool {
 	if len(*data) < len(out) {
