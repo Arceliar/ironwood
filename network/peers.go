@@ -13,13 +13,7 @@ import (
 	"github.com/Arceliar/phony"
 )
 
-const (
-	peer_KEEPALIVE_DELAY  = time.Second
-	peer_TIMEOUT          = peer_KEEPALIVE_DELAY + 2*time.Second
-	peer_PING_INCREMENT   = time.Second
-	peer_PING_MAXDELAY    = time.Minute
-	peer_MAX_MESSAGE_SIZE = 1048576 // 1 megabyte, TODO make this an application level configurable
-)
+// TODO? copy relevant config info to structs here, to avoid needing to dereference pointers all the way back to the core
 
 type peerPort uint64
 
@@ -153,7 +147,7 @@ func (m *peerMonitor) sent(pType wirePacketType) {
 		case pType == wirePing:
 			m.pDelay += 1
 			delay := time.Duration(m.pDelay) * time.Second // TODO? slightly randomize
-			if delay < peer_PING_MAXDELAY {
+			if delay < m.peer.peers.core.config.peerPingMaxDelay {
 				select {
 				case <-m.peer.done:
 				default:
@@ -168,7 +162,7 @@ func (m *peerMonitor) sent(pType wirePacketType) {
 			// We're sending non-keepalive traffic
 			// This means we expect some kind of acknowledgement (at least a keepalive)
 			// Set a read deadline for that (and make a note that we did so)
-			m.peer.conn.SetReadDeadline(time.Now().Add(peer_TIMEOUT))
+			m.peer.conn.SetReadDeadline(time.Now().Add(m.peer.peers.core.config.peerTimeout))
 			m.deadlined = true
 		}
 	})
@@ -189,7 +183,7 @@ func (m *peerMonitor) recv(pType wirePacketType) {
 			select {
 			case <-m.peer.done:
 			default:
-				m.keepAliveTimer = time.AfterFunc(peer_KEEPALIVE_DELAY, m.keepAlive)
+				m.keepAliveTimer = time.AfterFunc(m.peer.peers.core.config.peerKeepAliveDelay, m.keepAlive)
 			}
 		}
 	})
@@ -218,7 +212,7 @@ func (w *peerWriter) _write(bs []byte, pType wirePacketType) {
 func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 	w.Act(nil, func() {
 		bufSize := uint64(data.size() + 1)
-		if bufSize > peer_MAX_MESSAGE_SIZE {
+		if bufSize > w.peer.peers.core.config.peerMaxMessageSize {
 			return
 		}
 		// TODO packet size checks (right now there's no max, that's bad)
@@ -272,7 +266,7 @@ func (p *peer) handler() error {
 		if usize, err = binary.ReadUvarint(rbuf); err != nil {
 			return err
 		}
-		if usize > peer_MAX_MESSAGE_SIZE {
+		if usize > p.peers.core.config.peerMaxMessageSize {
 			return errors.New("oversized packet")
 		}
 		// TODO max packet size logic (right now there's no max, that's bad)

@@ -50,12 +50,6 @@ import (
 //  A very dumb TOFU version of this is currently in place, but it's probably not a good solution for real world usage
 //  EDIT: not anymore, now we keep track of the lowest keys (plus ourself), so it's at least deterministic...
 
-const (
-	crdtreeRefresh  = 23 * time.Hour //time.Minute
-	crdtreeTimeout  = 24 * time.Hour //crdtreeRefresh + 10*time.Second
-	crdtreeMaxInfos = 65535          // TODO make configurable at init time, use more intelligently
-)
-
 type crdtreeCacheInfo struct {
 	peer *peer
 	dist uint64
@@ -376,7 +370,7 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 	key := ann.key
 	var timer *time.Timer
 	if key == t.core.crypto.publicKey {
-		delay := crdtreeRefresh + time.Millisecond*time.Duration(mrand.Intn(1024))
+		delay := t.core.config.crdtreeRefresh + time.Millisecond*time.Duration(mrand.Intn(1024))
 		timer = time.AfterFunc(delay, func() {
 			t.Act(nil, func() {
 				if t.timers[key] == timer {
@@ -386,7 +380,7 @@ func (t *crdtree) _update(ann *crdtreeAnnounce) bool {
 			})
 		})
 	} else {
-		timer = time.AfterFunc(crdtreeTimeout, func() {
+		timer = time.AfterFunc(t.core.config.crdtreeTimeout, func() {
 			t.Act(nil, func() {
 				if t.timers[key] == timer {
 					timer.Stop() // Shouldn't matter, but just to be safe...
@@ -410,7 +404,7 @@ func (t *crdtree) _handleAnnounce(sender *peer, ann *crdtreeAnnounce) {
 	var doUpdate bool
 	var worst publicKey
 	var found bool
-	if len(t.infos) < crdtreeMaxInfos {
+	if len(t.infos) < int(t.core.config.crdtreeMaxInfos) {
 		// We're not at max capacity yet, so we have room to add more
 		doUpdate = true
 	} else if _, isIn := t.infos[ann.key]; isIn {

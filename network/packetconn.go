@@ -29,9 +29,9 @@ type PacketConn struct {
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
-func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
+func NewPacketConn(secret ed25519.PrivateKey, options ...Option) (*PacketConn, error) {
 	c := new(core)
-	if err := c.init(secret); err != nil {
+	if err := c.init(secret, options...); err != nil {
 		return nil, err
 	}
 	return &c.pconn, nil
@@ -183,6 +183,7 @@ func (pc *PacketConn) PrivateKey() ed25519.PrivateKey {
 
 // MTU returns the maximum transmission unit of the PacketConn, i.e. maximum safe message size to send over the network.
 func (pc *PacketConn) MTU() uint64 {
+	// TODO update this for packet format changes, it needs to read from the config now...
 	const maxPeerMessageSize = 65535
 	const messageTypeSize = 1
 	const rootSeqSize = 8
