@@ -306,8 +306,10 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleSigRes(bs[1:])
 	case wireProtoAnnounce:
 		return p._handleAnnounce(bs[1:])
-	case wireProtoMirrorReq:
-		return p._handleMirrorReq(bs[1:])
+	case wireProtoMerkleReq:
+		return p._handleMerkleReq(bs[1:])
+	case wireProtoMerkleRes:
+		return p._handleMerkleRes(bs[1:])
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
@@ -366,19 +368,37 @@ func (p *peer) sendAnnounce(from phony.Actor, ann *routerAnnounce) {
 	})
 }
 
-func (p *peer) _handleMirrorReq(bs []byte) error {
-	if len(bs) != 0 {
+func (p *peer) _handleMerkleReq(bs []byte) error {
+	req := new(routerMerkleReq)
+	if err := req.decode(bs); err != nil {
+		return err
+	} else if !req.check() {
 		return new(BadMessageError)
 	}
-	p.peers.core.router.handleMirrorReq(p, p)
+	p.peers.core.router.handleMerkleReq(p, p, req)
 	return nil
 }
 
-func (p *peer) sendMirrorReq(from phony.Actor) {
+func (p *peer) sendMerkleReq(from phony.Actor, req *routerMerkleReq) {
 	p.Act(from, func() {
-		p.writer.Act(nil, func() {
-			p.writer._write([]byte{0x01, byte(wireProtoMirrorReq)}, wireProtoMirrorReq)
-		})
+		p.writer.sendPacket(wireProtoMerkleReq, req)
+	})
+}
+
+func (p *peer) _handleMerkleRes(bs []byte) error {
+	res := new(routerMerkleRes)
+	if err := res.decode(bs); err != nil {
+		return err
+	} else if !res.check() {
+		return new(BadMessageError)
+	}
+	p.peers.core.router.handleMerkleRes(p, p, res)
+	return nil
+}
+
+func (p *peer) sendMerkleRes(from phony.Actor, res *routerMerkleRes) {
+	p.Act(from, func() {
+		p.writer.sendPacket(wireProtoMerkleRes, res)
 	})
 }
 

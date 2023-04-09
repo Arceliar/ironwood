@@ -11,7 +11,8 @@ const (
 	wireProtoSigReq
 	wireProtoSigRes
 	wireProtoAnnounce
-	wireProtoMirrorReq
+	wireProtoMerkleReq
+	wireProtoMerkleRes
 	wireTraffic
 )
 
