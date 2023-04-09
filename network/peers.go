@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Arceliar/phony"
+
+	"github.com/Arceliar/ironwood/types"
 )
 
 // TODO? copy relevant config info to structs here, to avoid needing to dereference pointers all the way back to the core
@@ -34,7 +36,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 	defer ps.core.pconn.closeMutex.Unlock()
 	select {
 	case <-ps.core.pconn.closed:
-		return nil, new(ClosedError)
+		return nil, types.ErrClosed
 	default:
 	}
 	phony.Block(ps, func() {
@@ -66,7 +68,7 @@ func (ps *peers) removePeer(port peerPort) error {
 	var err error
 	phony.Block(ps, func() {
 		if _, isIn := ps.peers[port]; !isIn {
-			err = new(PeerNotFoundError)
+			err = types.ErrPeerNotFound
 		} else {
 			delete(ps.peers, port)
 		}
@@ -266,7 +268,7 @@ func (p *peer) handler() error {
 			return err
 		}
 		if usize > p.peers.core.config.peerMaxMessageSize {
-			return new(OversizedMessageError)
+			return types.ErrOversizedMessage
 		}
 		// TODO max packet size logic (right now there's no max, that's bad)
 		size := int(usize)
@@ -289,7 +291,7 @@ func (p *peer) _handlePacket(bs []byte) error {
 	// Note: this function should be non-blocking.
 	// Individual handlers should send actor messages as needed.
 	if len(bs) == 0 {
-		return new(EmptyMessageError)
+		return types.ErrEmptyMessage
 	}
 	pType := wirePacketType(bs[0])
 	p.monitor.recv(pType)
@@ -313,7 +315,7 @@ func (p *peer) _handlePacket(bs []byte) error {
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
-		return new(UnrecognizedMessageError)
+		return types.ErrUnrecognizedMessage
 	}
 }
 
@@ -338,7 +340,7 @@ func (p *peer) _handleSigRes(bs []byte) error {
 		return err
 	}
 	if !res.check(p.peers.core.crypto.publicKey, p.key) {
-		return new(BadMessageError)
+		return types.ErrBadMessage
 	}
 	p.peers.core.router.handleResponse(p, p, res)
 	return nil
@@ -356,7 +358,7 @@ func (p *peer) _handleAnnounce(bs []byte) error {
 		return err
 	}
 	if !ann.check() {
-		return new(BadMessageError)
+		return types.ErrBadMessage
 	}
 	p.peers.core.router.handleAnnounce(p, p, ann)
 	return nil
@@ -373,7 +375,7 @@ func (p *peer) _handleMerkleReq(bs []byte) error {
 	if err := req.decode(bs); err != nil {
 		return err
 	} else if !req.check() {
-		return new(BadMessageError)
+		return types.ErrBadMessage
 	}
 	p.peers.core.router.handleMerkleReq(p, p, req)
 	return nil
@@ -390,7 +392,7 @@ func (p *peer) _handleMerkleRes(bs []byte) error {
 	if err := res.decode(bs); err != nil {
 		return err
 	} else if !res.check() {
-		return new(BadMessageError)
+		return types.ErrBadMessage
 	}
 	p.peers.core.router.handleMerkleRes(p, p, res)
 	return nil

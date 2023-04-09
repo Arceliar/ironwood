@@ -2,7 +2,6 @@ package signed
 
 import (
 	"crypto/ed25519"
-	"errors"
 	"net"
 
 	"github.com/Arceliar/ironwood/network"
@@ -44,7 +43,7 @@ func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	switch addr.(type) {
 	case types.Addr:
 	default:
-		return 0, errors.New("wrong address type")
+		return 0, types.ErrBadAddress
 	}
 	toKey := ed25519.PublicKey(addr.(types.Addr))
 	msg := pc.sign(nil, toKey, p)

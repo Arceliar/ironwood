@@ -11,6 +11,7 @@ import (
 	"github.com/Arceliar/phony"
 
 	"github.com/Arceliar/ironwood/network/internal/merkletree"
+	"github.com/Arceliar/ironwood/types"
 )
 
 /***********
@@ -707,9 +708,9 @@ func (req *routerSigReq) chop(data *[]byte) error {
 	var tmp routerSigReq
 	orig := *data
 	if !wireChopUvarint(&tmp.seq, &orig) {
-		return DecodeError{}
+		return types.ErrDecode
 	} else if !wireChopUvarint(&tmp.nonce, &orig) {
-		return DecodeError{}
+		return types.ErrDecode
 	}
 	*req = tmp
 	*data = orig
@@ -721,7 +722,7 @@ func (req *routerSigReq) decode(data []byte) error {
 	if err := tmp.chop(&data); err != nil {
 		return err
 	} else if len(data) != 0 {
-		return DecodeError{}
+		return types.ErrDecode
 	}
 	*req = tmp
 	return nil
@@ -768,7 +769,7 @@ func (res *routerSigRes) chop(data *[]byte) error {
 	if err := tmp.routerSigReq.chop(&orig); err != nil {
 		return err
 	} else if !wireChopSlice(tmp.psig[:], &orig) {
-		return DecodeError{}
+		return types.ErrDecode
 	}
 	*res = tmp
 	*data = orig
@@ -780,7 +781,7 @@ func (res *routerSigRes) decode(data []byte) error {
 	if err := tmp.chop(&data); err != nil {
 		return err
 	} else if len(data) != 0 {
-		return DecodeError{}
+		return types.ErrDecode
 	}
 	*res = tmp
 	return nil
@@ -831,15 +832,15 @@ func (ann *routerAnnounce) decode(data []byte) error {
 	// TODO clean this up, give "chop" versions of decode to the embedded structs?
 	var tmp routerAnnounce
 	if !wireChopSlice(tmp.key[:], &data) {
-		return DecodeError{}
+		return types.ErrDecode
 	} else if !wireChopSlice(tmp.parent[:], &data) {
-		return DecodeError{}
+		return types.ErrDecode
 	} else if err := tmp.routerSigRes.chop(&data); err != nil {
 		return err
 	} else if !wireChopSlice(tmp.sig[:], &data) {
-		return DecodeError{}
+		return types.ErrDecode
 	} else if len(data) != 0 {
-		return DecodeError{}
+		return types.ErrDecode
 	}
 	*ann = tmp
 	return nil
@@ -901,9 +902,9 @@ func (req *routerMerkleReq) chop(data *[]byte) error {
 	var tmp routerMerkleReq
 	orig := *data
 	if !wireChopUvarint(&tmp.prefixLen, &orig) {
-		return DecodeError{}
+		return types.ErrDecode
 	} else if !wireChopSlice(tmp.prefix[:], &orig) {
-		return DecodeError{}
+		return types.ErrDecode
 	}
 	*req = tmp
 	*data = orig
@@ -915,7 +916,7 @@ func (req *routerMerkleReq) decode(data []byte) error {
 	if err := tmp.chop(&data); err != nil {
 		return err
 	} else if len(data) != 0 {
-		return DecodeError{}
+		return types.ErrDecode
 	}
 	*req = tmp
 	return nil
@@ -956,7 +957,7 @@ func (res *routerMerkleRes) chop(data *[]byte) error {
 	if err := tmp.routerMerkleReq.chop(&orig); err != nil {
 		return err
 	} else if !wireChopSlice(tmp.digest[:], &orig) {
-		return DecodeError{}
+		return types.ErrDecode
 	}
 	*res = tmp
 	*data = orig
@@ -968,7 +969,7 @@ func (res *routerMerkleRes) decode(data []byte) error {
 	if err := tmp.chop(&data); err != nil {
 		return err
 	} else if len(data) != 0 {
-		return DecodeError{}
+		return types.ErrDecode
 	}
 	*res = tmp
 	return nil

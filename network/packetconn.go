@@ -51,9 +51,9 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	pc.doPop()
 	select {
 	case <-pc.closed:
-		return 0, nil, new(ClosedError)
+		return 0, nil, types.ErrClosed
 	case <-pc.readDeadline.getCancel():
-		return 0, nil, new(DeadlineError)
+		return 0, nil, types.ErrTimeout
 	case tr = <-pc.recv:
 	}
 	copy(p, tr.payload)
@@ -71,18 +71,18 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	select {
 	case <-pc.closed:
-		return 0, new(ClosedError)
+		return 0, types.ErrClosed
 	default:
 	}
 	if _, ok := addr.(types.Addr); !ok {
-		return 0, new(BadAddressError)
+		return 0, types.ErrBadAddress
 	}
 	dest := addr.(types.Addr)
 	if len(dest) != publicKeySize {
-		return 0, new(BadAddressError)
+		return 0, types.ErrBadAddress
 	}
 	if uint64(len(p)) > pc.MTU() {
-		return 0, new(OversizedMessageError)
+		return 0, types.ErrOversizedMessage
 	}
 	tr := allocTraffic()
 	tr.source = pc.core.crypto.publicKey
@@ -99,7 +99,7 @@ func (pc *PacketConn) Close() error {
 	defer pc.closeMutex.Unlock()
 	select {
 	case <-pc.closed:
-		return new(ClosedError)
+		return types.ErrClosed
 	default:
 	}
 	close(pc.closed)
@@ -145,12 +145,12 @@ func (pc *PacketConn) SetWriteDeadline(t time.Time) error {
 func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn, prio uint8) error {
 	defer conn.Close()
 	if len(key) != publicKeySize {
-		return new(BadKeyError)
+		return types.ErrBadKey
 	}
 	var pk publicKey
 	copy(pk[:], key)
 	if pc.core.crypto.publicKey.equal(pk) {
-		return new(BadKeyError)
+		return types.ErrBadKey // TODO? wrap, to provide more context
 	}
 	p, err := pc.core.peers.addPeer(pk, conn, prio)
 	if err != nil {
@@ -183,6 +183,7 @@ func (pc *PacketConn) PrivateKey() ed25519.PrivateKey {
 // MTU returns the maximum transmission unit of the PacketConn, i.e. maximum safe message size to send over the network.
 func (pc *PacketConn) MTU() uint64 {
 	var tr traffic
+	tr.watermark = ^uint64(0)
 	overhead := uint64(tr.size()) + 1 // 1 byte type overhead
 	return pc.core.config.peerMaxMessageSize - overhead
 }
