@@ -86,20 +86,16 @@ func (t *Tree) Remove(key Key) {
 		kBit := kByte & (0x80 >> (idx % 8))
 		var next *Node
 		if kBit == 0 {
-			if here.Left == nil {
-				here.Left = new(Node)
-			}
 			next = here.Left
 		} else {
-			if here.Right == nil {
-				here.Right = new(Node)
-			}
 			next = here.Right
+		}
+		if next == nil {
+			return
 		}
 		here = next
 	}
-	empty := Empty()
-	here.Digest = empty
+	*here = Node{}
 	// TODO detect / delete empty digests...
 	for idx := len(path) - 1; idx >= 0; idx-- {
 		here = path[idx]
@@ -127,17 +123,13 @@ func (t *Tree) NodeFor(start Key, prefixLen int) (*Node, int) {
 }
 
 // Lookup returns the digest assocated with the subtree indexed by start, and matching the leading prefixLen bits. A prefixLen of 0 implies the root of the tree.
-func (t *Tree) Lookup(start Key, prefixLen int) Digest {
+// Returns the digest and true if the node was found, or a zero valued digest and false the lookup failed.
+func (t *Tree) Lookup(start Key, prefixLen int) (Digest, bool) {
 	n, i := t.NodeFor(start, prefixLen)
 	if i == prefixLen {
-		return n.Digest
+		return n.Digest, true
 	}
-	return Empty()
-}
-
-// Empty returns a zero-valued Digest, which is used in any empty part of the tree (instead of hashing empty slices or layers of hashes thereof).
-func Empty() Digest {
-	return Digest{}
+	return Digest{}, false
 }
 
 func (k *Key) SetBit(value bool, offset int) {

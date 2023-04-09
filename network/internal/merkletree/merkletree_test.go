@@ -11,7 +11,7 @@ func TestTree(t *testing.T) {
 	}
 	for idx := 0; idx < 256; idx++ {
 		key[0] = uint8(idx)
-		if tree.Lookup(key, KeyBits) != GetDigest(key[:]) {
+		if digest, ok := tree.Lookup(key, KeyBits); !ok || digest != GetDigest(key[:]) {
 			panic("lookup failed")
 		}
 	}
@@ -22,5 +22,10 @@ func TestTree(t *testing.T) {
 	var blank Tree
 	if tree != blank {
 		panic("unclean")
+	}
+	// Try to delete everything again, make sure nothing crashes
+	for idx := 0; idx < 256; idx++ {
+		key[0] = uint8(idx)
+		tree.Remove(key)
 	}
 }

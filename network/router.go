@@ -437,21 +437,13 @@ func (r *router) handleAnnounce(from phony.Actor, p *peer, ann *routerAnnounce) 
 
 func (r *router) handleMerkleReq(from phony.Actor, p *peer, req *routerMerkleReq) {
 	r.Act(from, func() {
-		// TODO naviage futher if there's only 1 child, to speed things up, requires merkletree updates...
-		// TODO send announcement if we're at the end and there's nothing left to look up...
-		/*
-			if digest := r.merk.Lookup(merkletree.Key(req.prefix), int(req.prefixLen)); digest != merkletree.Empty() {
-				res := routerMerkleRes{*req, digest}
-				p.sendMerkleRes(r, &res)
-			}
-		*/
 		node, plen := r.merk.NodeFor(merkletree.Key(req.prefix), int(req.prefixLen))
 		if uint64(plen) != req.prefixLen {
 			// We don't know anyone from the part of the network we were asked about, so we can't respond in any useful way
 			return
 		}
-		if false {
-			// This is the "foolproof" but extra inefficient version of things
+		/*
+			// This is the "safe" but extra inefficient version of things
 			res := new(routerMerkleRes)
 			res.prefixLen = req.prefixLen
 			res.prefix = req.prefix
@@ -465,9 +457,10 @@ func (r *router) handleMerkleReq(from phony.Actor, p *peer, req *routerMerkleReq
 				}
 			}
 			return
-		}
+		*/
 		// This is the slightly less inefficient but very delicate version of things
-		// FIXME here be dragons
+		// Basically, if we get to a node that only has 1 child, follow it until we have 2 (or reach the end, to send a node announcement instead)
+		// TODO we need to test this thoroughly
 		prefixLen := req.prefixLen
 		prefix := req.prefix
 		for {
@@ -514,7 +507,7 @@ func (r *router) handleMerkleRes(from phony.Actor, p *peer, res *routerMerkleRes
 			// This is a response to a full key, we can't ask for children, and there's nothing useful to do with it right now.
 			return
 		}
-		if digest := r.merk.Lookup(merkletree.Key(res.prefix), int(res.prefixLen)); digest != res.digest {
+		if digest, ok := r.merk.Lookup(merkletree.Key(res.prefix), int(res.prefixLen)); !ok || digest != res.digest {
 			// We disagree, so ask about the left and right children
 			left := routerMerkleReq{
 				prefixLen: res.prefixLen + 1,
