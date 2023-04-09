@@ -35,3 +35,5 @@ The routing logic in `network` is still undocumented. The basic idea is:
 
 There are a ton of technical details about building the spanning tree, bootstrapping the DHT, responding to link failures, etc., all of which is beyond the scope of a readme file. All of those protocol level details are subject to change, so don't expect adequate documentation any earlier than the late alpha or early beta stage.
 
+Note, however, that the "DHT" in the current release is just a full view of the spanning tree. This is done for debugging purposes, so we can focus on getting the underlying routing logic right before we try to build a typical `O(logn)` DHT on top of it. As such, the current version does not scale asymptotically better than other routing schemes (and incurs stretch that shortest path schemes do not experience), so this is not recommended for real-world use.
+
