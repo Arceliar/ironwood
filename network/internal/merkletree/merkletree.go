@@ -20,6 +20,28 @@ type Node struct {
 	Right  *Node
 }
 
+func (n *Node) fix() {
+	var nothing Node
+	if n.Left != nil && *n.Left == nothing {
+		n.Left = nil
+	}
+	if n.Right != nil && *n.Right == nothing {
+		n.Right = nil
+	}
+	if n.Left != nil && n.Right != nil {
+		bs := make([]byte, 0, 2*DigestBytes)
+		bs = append(bs, n.Left.Digest[:]...)
+		bs = append(bs, n.Right.Digest[:]...)
+		n.Digest = GetDigest(bs)
+	} else if n.Left != nil {
+		n.Digest = n.Left.Digest
+	} else if n.Right != nil {
+		n.Digest = n.Right.Digest
+	} else {
+		*n = Node{}
+	}
+}
+
 type Digest [DigestBytes]byte
 
 func GetDigest(data []byte) Digest {
@@ -48,21 +70,9 @@ func (t *Tree) Add(key Key, digest Digest) {
 		here = next
 	}
 	here.Digest = digest
-	empty := Empty()
 	for idx := len(path) - 1; idx >= 0; idx-- {
-		bs := make([]byte, 0, 2*DigestBytes)
 		here = path[idx]
-		if here.Left != nil {
-			bs = append(bs, here.Left.Digest[:]...)
-		} else {
-			bs = append(bs, empty[:]...)
-		}
-		if here.Right != nil {
-			bs = append(bs, here.Right.Digest[:]...)
-		} else {
-			bs = append(bs, empty[:]...)
-		}
-		here.Digest = GetDigest(bs)
+		here.fix()
 	}
 }
 
@@ -92,29 +102,8 @@ func (t *Tree) Remove(key Key) {
 	here.Digest = empty
 	// TODO detect / delete empty digests...
 	for idx := len(path) - 1; idx >= 0; idx-- {
-		bs := make([]byte, 0, 2*DigestBytes)
 		here = path[idx]
-		if here.Left != nil && here.Left.Digest == Empty() {
-			here.Left = nil
-		}
-		if here.Right != nil && here.Right.Digest == Empty() {
-			here.Right = nil
-		}
-		if here.Left == nil && here.Right == nil {
-			here.Digest = Empty()
-			continue
-		}
-		if here.Left != nil {
-			bs = append(bs, here.Left.Digest[:]...)
-		} else {
-			bs = append(bs, empty[:]...)
-		}
-		if here.Right != nil {
-			bs = append(bs, here.Right.Digest[:]...)
-		} else {
-			bs = append(bs, empty[:]...)
-		}
-		here.Digest = GetDigest(bs)
+		here.fix()
 	}
 }
 
