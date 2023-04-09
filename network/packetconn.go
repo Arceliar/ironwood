@@ -271,8 +271,6 @@ func (d *deadline) getCancel() chan struct{} {
 	return ch
 }
 
-/////
-
 func (pc *PacketConn) GetKeyFor(target ed25519.PublicKey) (key ed25519.PublicKey) {
 	phony.Block(&pc.core.router, func() {
 		var k publicKey

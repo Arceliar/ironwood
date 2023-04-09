@@ -18,40 +18,25 @@ import (
  * router *
  ***********/
 
-// TODO if we stay soft state and no DHT, then implement some kind of fisheye update logic? No need to immediately send info that we can prove won't affect other node's next-hop calculations (and isn't needed to avoid timeouts)
-//  We really do need something like the above
-//  Then we send updates relatively frequently, and let the fisheye logic throttle things
-//  Since watermarks prevent routing loops, we can do a few things:
-//    1. Forward updates from our ancestry immediately (but maybe not from our descendants)
-//      Nodes will know their own location in the tree, and that of their peers, with relatively good accuracy
-//      Other info doesn't need to be perfectly accurate for routing to (usually) work
-//    2. Don't send any info upon peer connection, only in response to receiving an update
-//      We'll learn our local neighborhood quickly, due to fisheye logic, and learn remote nodes at some later point
-//      Not ideal, but it means it's useful for local stuff (almost) immediately at least...
-//      This prevents outdated info from being kept alive indefinitely in a highly dynamic network
-//    3. Set timeouts independently per node info, based on how often we expect to hear updates
-//  This begs the question of what the fisheye logic should look like...
-//    Note: only forwarding updates along parent/child relationships gives us causal messaging (in stable networks at least), simplifies some things...
-//    E.g. we could forward along the tree, and only forward every 2nd update for non-ancestor updates...
-//    May run into some bootstrap problems?... Can't join the tree if we don't already have a parent... can't pick a parent without knowing the tree...
+/*
 
-// TODO alternatively, we don't fisheye things:
-//  1. Send a full view when needed, and just live with things potentially hanging around the network indefinitely in highly dynamic networks
-//  2. Don't proactively send a full view, let the remote side ask for a merkel tree root (or proactively send just that much) and navigate the tree to find differences
-//  On the plus side, merkel tree logic is needed if/when we switch to hard state, so it would be useful to have anyway...
+TODO: Testing
+  The merkle tree logic hasn't been very thoroughly tested yet.
+    In particular, when responding to a request, we skip over parts of the tree with only 1 non-empty child node.
+    That logic is a bit delicate... some fuzz testing would probably be nice.
+  Also need to test how expired node infos are handled.
+    We mark an info as expired, and ignore it in lookups etc., after it times out.
+    We don't delete the info until after 2 timeout periods.
+    The intent is that this gives us some time to let all nodes mark the info as timed out, so we stop sending it as part of the merkle tree updates.
+    Otherwise, info could hit a live-lock scenario where nothing ever expired in a dynamic enough network.
+    However, that leads to issues with nodes disconnecting/reconnecting, and retting their sequence number.
+    To combat this, if we decline an update but see that our local info is expired (and not equivalent to the update we saw), then we send back an announce for it.
+    The intent is for this announce to travel back to the corresponding node, so they can quickly update their seq (if needed).
+    Sending back an announce is a delicate matter -- if nodes disagree on what announcement is "better", then they can infinitely spam eachother.
+    This means we need to be very sure the CRDT conflict resolution logic is eventually consistent.
+  The max network size logic could use some futher testing.
 
-// In place of the above, we now request a mirror of the remote node's network, and they could decline to respond if they wanted to
-//  TODO: come up with some logic to determine when we should request
-//  TODO Also, it probably makes sense to export some logic to make requsts denyable on a per peer object (network link) basis, to e.g. only do a full mirror over ethernet and wifi, never over data (don't request or reply to requests on forbidden links)
-
-// TODO allow for some kind of application-configurable limit on the number of nodes we keep track of, for OOM/DoS mitigation
-//  Only keep track of the X closest nodes to you (in the tree), or something like that
-//    Not as easy as it sounds, naively doing this leads to nodes infinitely spamming updates at each other
-//  Probably give exceptional priority to ancestors and the ancestry of your peers, so you can still route locally
-//    Or don't, and make you pick the best root from the split part of the network?...
-//  This is just a temporary stopgap to prevent OOM from node flooding attacks, until a good DHT can be designed and implemented
-//  A very dumb TOFU version of this is currently in place, but it's probably not a good solution for real world usage
-//  EDIT: not anymore, now we keep track of the lowest keys (plus ourself), so it's at least deterministic...
+*/
 
 type routerCacheInfo struct {
 	peer *peer
@@ -105,7 +90,6 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 		if _, isIn := r.peers[p.key]; !isIn {
 			r.peers[p.key] = make(map[*peer]struct{})
 		}
-		// TODO? In some cases, should this be false? Depending on the link type maybe?
 		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
 			if _, isIn := r.requests[p.key]; !isIn {
@@ -190,7 +174,7 @@ func (r *router) _fix() {
 		}
 	}
 	if r.refresh || r.doRoot1 || r.doRoot2 || self.parent != bestParent {
-		res, isIn := r.responses[bestParent] // FIXME only use if bestParent isIn t.responses!
+		res, isIn := r.responses[bestParent]
 		switch {
 		case isIn && bestRoot != r.core.crypto.publicKey: // && t._useResponse(bestParent, &res):
 			// Somebody else should be root
@@ -857,7 +841,6 @@ func (ann *routerAnnounce) encode(out []byte) ([]byte, error) {
 }
 
 func (ann *routerAnnounce) decode(data []byte) error {
-	// TODO clean this up, give "chop" versions of decode to the embedded structs?
 	var tmp routerAnnounce
 	if !wireChopSlice(tmp.key[:], &data) {
 		return types.ErrDecode
