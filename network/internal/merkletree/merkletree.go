@@ -152,8 +152,10 @@ func GetBitmask(length int) Key {
 		panic("TOO LONG")
 	}
 	var key Key
-	// TODO set whole bytes first, only set individual bits for the last byte
-	for idx := 0; idx < length; idx++ {
+	for idx := 0; idx < length/8; idx++ {
+		key[idx] = 0xff
+	}
+	for idx := 8 * (length / 8); idx < length; idx++ {
 		key.SetBit(true, idx)
 	}
 	return key
