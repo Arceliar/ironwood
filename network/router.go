@@ -6,7 +6,7 @@ import (
 	mrand "math/rand"
 	"time"
 
-	//"fmt"
+	"fmt"
 
 	"github.com/Arceliar/phony"
 
@@ -61,7 +61,7 @@ type router struct {
 	phony.Inbox
 	core      *core
 	merk      merkletree.Tree
-	peers     map[publicKey]map[*peer]bool // True if we're allowed to send a mirror to this peer (but have not done so already)
+	peers     map[publicKey]map[*peer]struct{} // True if we're allowed to send a mirror to this peer (but have not done so already)
 	infos     map[publicKey]routerInfo
 	timers    map[publicKey]*time.Timer
 	cache     map[publicKey]routerCacheInfo // Cache of next hop for each destination
@@ -77,7 +77,7 @@ type router struct {
 
 func (r *router) init(c *core) {
 	r.core = c
-	r.peers = make(map[publicKey]map[*peer]bool)
+	r.peers = make(map[publicKey]map[*peer]struct{})
 	r.infos = make(map[publicKey]routerInfo)
 	r.timers = make(map[publicKey]*time.Timer)
 	r.cache = make(map[publicKey]routerCacheInfo)
@@ -101,10 +101,10 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 	r.Act(from, func() {
 		r._resetCache()
 		if _, isIn := r.peers[p.key]; !isIn {
-			r.peers[p.key] = make(map[*peer]bool)
+			r.peers[p.key] = make(map[*peer]struct{})
 		}
 		// TODO? In some cases, should this be false? Depending on the link type maybe?
-		r.peers[p.key][p] = true
+		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
 			if _, isIn := r.requests[p.key]; !isIn {
 				r.requests[p.key] = *r._newReq()
@@ -112,8 +112,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			req := r.requests[p.key]
 			p.sendSigReq(r, &req)
 		}
-		// TODO don't unconditionally ask for peers, at least not immediately?
-		// TODO send a merkle req
+		p.sendMerkleReq(r, new(routerMerkleReq))
 	})
 }
 
@@ -365,11 +364,10 @@ func (r *router) _update(ann *routerAnnounce) bool {
 	}
 	if oldTimer, isIn := r.timers[key]; isIn {
 		oldTimer.Stop()
-	} else {
-		bs, _ := ann.encode(nil)
-		digest := merkletree.GetDigest(bs)
-		r.merk.Add(merkletree.Key(key), digest)
 	}
+	bs, _ := ann.encode(nil)
+	digest := merkletree.GetDigest(bs)
+	r.merk.Add(merkletree.Key(key), digest)
 	r.infos[key] = info
 	r.timers[key] = timer
 	return true
@@ -440,20 +438,78 @@ func (r *router) handleMerkleReq(from phony.Actor, p *peer, req *routerMerkleReq
 	r.Act(from, func() {
 		// TODO naviage futher if there's only 1 child, to speed things up, requires merkletree updates...
 		// TODO send announcement if we're at the end and there's nothing left to look up...
-		if digest := r.merk.Lookup(merkletree.Key(req.prefix), int(req.prefixLen)); digest != merkletree.Empty() {
-			res := routerMerkleRes{*req, digest}
-			p.sendMerkleRes(r, &res)
+		/*
+			if digest := r.merk.Lookup(merkletree.Key(req.prefix), int(req.prefixLen)); digest != merkletree.Empty() {
+				res := routerMerkleRes{*req, digest}
+				p.sendMerkleRes(r, &res)
+			}
+		*/
+		//panic("DEBUG1")
+		node, plen := r.merk.NodeFor(merkletree.Key(req.prefix), int(req.prefixLen))
+		if uint64(plen) != req.prefixLen {
+			// We don't know anyone from the part of the network we were asked about, so we can't respond in any useful way
+			panic("DEBUG1.1")
+			return
 		}
+		//panic("DEBUG2")
+		prefixLen := req.prefixLen
+		prefix := req.prefix
+		for {
+			//panic("DEBUG3")
+			if (node.Left == nil && node.Right == nil) || (node.Left != nil && node.Right != nil) {
+				//panic("DEBUG4")
+				if prefixLen == merkletree.KeyBits {
+					//panic("DEBUG5")
+					if info, isIn := r.infos[prefix]; isIn {
+						//panic("DEBUG6")
+						p.sendAnnounce(r, info.getAnnounce(prefix))
+					} else {
+						for k := range r.infos {
+							fmt.Println("DEBUG:", prefix, k)
+						}
+						panic("this should never happen")
+					}
+				} else {
+					//panic("DEBUG7")
+					res := new(routerMerkleRes)
+					res.prefixLen = prefixLen
+					res.prefix = prefix
+					res.digest = node.Digest
+					p.sendMerkleRes(r, res)
+				}
+				return
+			} else if node.Left != nil {
+				//panic("DEBUG8")
+				offset := int(prefixLen)
+				prefixLen += 1
+				k := merkletree.Key(prefix)
+				k.SetBit(false, offset)
+				prefix = publicKey(k)
+				node = node.Left
+			} else if node.Right != nil {
+				//panic("DEBUG9")
+				offset := int(prefixLen)
+				prefixLen += 1
+				k := merkletree.Key(prefix)
+				k.SetBit(true, offset)
+				prefix = publicKey(k)
+				node = node.Right
+			} else {
+				panic("this should never happen")
+			}
+		}
+		panic("DEBUG10")
 	})
 }
 
 func (r *router) handleMerkleRes(from phony.Actor, p *peer, res *routerMerkleRes) {
 	r.Act(from, func() {
-		panic("TODO")
+		//panic("DEBUG11")
 		if res.prefixLen > merkletree.KeyBits {
 			return
 		}
 		if digest := r.merk.Lookup(merkletree.Key(res.prefix), int(res.prefixLen)); digest != res.digest {
+			//panic("DEBUG12")
 			// We disagree, so ask about the left and right children
 			left := routerMerkleReq{
 				prefixLen: res.prefixLen + 1,
@@ -466,6 +522,7 @@ func (r *router) handleMerkleRes(from phony.Actor, p *peer, res *routerMerkleRes
 			}
 			p.sendMerkleReq(r, &right)
 		}
+		//panic("DEBUG13")
 	})
 }
 
