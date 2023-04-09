@@ -84,8 +84,9 @@ func (r *router) init(c *core) {
 	r.requests = make(map[publicKey]routerSigReq)
 	r.responses = make(map[publicKey]routerSigRes)
 	r.resSeqs = make(map[publicKey]uint64)
-	r.fixTimer = time.AfterFunc(0, func() {})
 	// Kick off actor to do initial work / become root
+	r.fixTimer = time.AfterFunc(0, func() {})
+	r.doRoot2 = true
 	r.Act(nil, r._fix)
 }
 
@@ -449,7 +450,7 @@ func (r *router) handleMerkleReq(from phony.Actor, p *peer, req *routerMerkleReq
 			// We don't know anyone from the part of the network we were asked about, so we can't respond in any useful way
 			return
 		}
-		if true {
+		if false {
 			// This is the "foolproof" but extra inefficient version of things
 			res := new(routerMerkleRes)
 			res.prefixLen = req.prefixLen
