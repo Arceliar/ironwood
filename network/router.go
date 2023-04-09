@@ -6,7 +6,7 @@ import (
 	mrand "math/rand"
 	"time"
 
-	"fmt"
+	//"fmt"
 
 	"github.com/Arceliar/phony"
 
@@ -444,85 +444,94 @@ func (r *router) handleMerkleReq(from phony.Actor, p *peer, req *routerMerkleReq
 				p.sendMerkleRes(r, &res)
 			}
 		*/
-		//panic("DEBUG1")
 		node, plen := r.merk.NodeFor(merkletree.Key(req.prefix), int(req.prefixLen))
 		if uint64(plen) != req.prefixLen {
 			// We don't know anyone from the part of the network we were asked about, so we can't respond in any useful way
-			panic("DEBUG1.1")
 			return
 		}
-		//panic("DEBUG2")
+		if true {
+			// This is the "foolproof" but extra inefficient version of things
+			res := new(routerMerkleRes)
+			res.prefixLen = req.prefixLen
+			res.prefix = req.prefix
+			res.digest = node.Digest
+			p.sendMerkleRes(r, res)
+			if res.prefixLen == merkletree.KeyBits {
+				if info, isIn := r.infos[res.prefix]; isIn {
+					p.sendAnnounce(r, info.getAnnounce(res.prefix))
+				} else {
+					panic("this should never happen")
+				}
+			}
+			return
+		}
+		// This is the slightly less inefficient but very delicate version of things
+		// FIXME here be dragons
 		prefixLen := req.prefixLen
 		prefix := req.prefix
 		for {
-			//panic("DEBUG3")
-			if (node.Left == nil && node.Right == nil) || (node.Left != nil && node.Right != nil) {
-				//panic("DEBUG4")
-				if prefixLen == merkletree.KeyBits {
-					//panic("DEBUG5")
-					if info, isIn := r.infos[prefix]; isIn {
-						//panic("DEBUG6")
-						p.sendAnnounce(r, info.getAnnounce(prefix))
-					} else {
-						for k := range r.infos {
-							fmt.Println("DEBUG:", prefix, k)
-						}
-						panic("this should never happen")
-					}
-				} else {
-					//panic("DEBUG7")
-					res := new(routerMerkleRes)
-					res.prefixLen = prefixLen
-					res.prefix = prefix
-					res.digest = node.Digest
-					p.sendMerkleRes(r, res)
-				}
-				return
+			if node.Left != nil && node.Right != nil {
+				res := new(routerMerkleRes)
+				res.prefixLen = prefixLen
+				res.prefix = prefix
+				res.digest = node.Digest
+				p.sendMerkleRes(r, res)
 			} else if node.Left != nil {
-				//panic("DEBUG8")
 				offset := int(prefixLen)
 				prefixLen += 1
 				k := merkletree.Key(prefix)
 				k.SetBit(false, offset)
 				prefix = publicKey(k)
 				node = node.Left
+				continue
 			} else if node.Right != nil {
-				//panic("DEBUG9")
 				offset := int(prefixLen)
 				prefixLen += 1
 				k := merkletree.Key(prefix)
 				k.SetBit(true, offset)
 				prefix = publicKey(k)
 				node = node.Right
+				continue
 			} else {
-				panic("this should never happen")
+				if prefixLen != merkletree.KeyBits {
+					panic("this should never happen")
+				}
+				if info, isIn := r.infos[prefix]; isIn {
+					p.sendAnnounce(r, info.getAnnounce(prefix))
+				} else {
+					panic("this should never happen")
+				}
 			}
+			break
 		}
-		panic("DEBUG10")
 	})
 }
 
 func (r *router) handleMerkleRes(from phony.Actor, p *peer, res *routerMerkleRes) {
 	r.Act(from, func() {
-		//panic("DEBUG11")
-		if res.prefixLen > merkletree.KeyBits {
+		if res.prefixLen == merkletree.KeyBits {
+			// This is a response to a full key, we can't ask for children, and there's nothing useful to do with it right now.
 			return
 		}
 		if digest := r.merk.Lookup(merkletree.Key(res.prefix), int(res.prefixLen)); digest != res.digest {
-			//panic("DEBUG12")
 			// We disagree, so ask about the left and right children
 			left := routerMerkleReq{
 				prefixLen: res.prefixLen + 1,
 				prefix:    publicKey(merkletree.GetLeft(merkletree.Key(res.prefix), int(res.prefixLen))),
+			}
+			if !left.check() {
+				panic("this should never happen")
 			}
 			p.sendMerkleReq(r, &left)
 			right := routerMerkleReq{
 				prefixLen: res.prefixLen + 1,
 				prefix:    publicKey(merkletree.GetRight(merkletree.Key(res.prefix), int(res.prefixLen))),
 			}
+			if !right.check() {
+				panic("this should never happen")
+			}
 			p.sendMerkleReq(r, &right)
 		}
-		//panic("DEBUG13")
 	})
 }
 

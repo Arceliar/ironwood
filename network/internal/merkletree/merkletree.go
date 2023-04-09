@@ -158,7 +158,7 @@ func (k *Key) SetBit(value bool, offset int) {
 	}
 	byteIdx := offset / 8
 	var bitmask uint8
-	bitmask = 0x80 >> uint8(offset%8)
+	bitmask = 0x80 >> (uint64(offset) % 8)
 	if value {
 		k[byteIdx] = k[byteIdx] | bitmask
 	} else {
@@ -167,7 +167,7 @@ func (k *Key) SetBit(value bool, offset int) {
 }
 
 func GetBitmask(length int) Key {
-	if length >= KeyBits {
+	if length > KeyBits {
 		panic("TOO LONG")
 	}
 	var key Key
@@ -183,7 +183,8 @@ func GetLeft(key Key, prefixLen int) Key {
 	for idx := range key {
 		key[idx] &= mask[idx]
 	}
-	key.SetBit(false, prefixLen+1)
+	// Child of prefixLen, so set bit at prefixLen (easy to make an off-by-1 error here)
+	key.SetBit(false, prefixLen)
 	return key
 }
 
@@ -192,6 +193,6 @@ func GetRight(key Key, prefixLen int) Key {
 	for idx := range key {
 		key[idx] &= mask[idx]
 	}
-	key.SetBit(true, prefixLen+1)
+	key.SetBit(true, prefixLen)
 	return key
 }
