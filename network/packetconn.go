@@ -2,7 +2,6 @@ package network
 
 import (
 	"crypto/ed25519"
-	"errors"
 	"net"
 	"sync"
 	"time"
@@ -29,9 +28,9 @@ type PacketConn struct {
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
-func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
+func NewPacketConn(secret ed25519.PrivateKey, options ...Option) (*PacketConn, error) {
 	c := new(core)
-	if err := c.init(secret); err != nil {
+	if err := c.init(secret, options...); err != nil {
 		return nil, err
 	}
 	return &c.pconn, nil
@@ -52,9 +51,9 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 	pc.doPop()
 	select {
 	case <-pc.closed:
-		return 0, nil, errors.New("closed")
+		return 0, nil, types.ErrClosed
 	case <-pc.readDeadline.getCancel():
-		return 0, nil, errors.New("deadline exceeded")
+		return 0, nil, types.ErrTimeout
 	case tr = <-pc.recv:
 	}
 	copy(p, tr.payload)
@@ -72,25 +71,25 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	select {
 	case <-pc.closed:
-		return 0, errors.New("closed")
+		return 0, types.ErrClosed
 	default:
 	}
 	if _, ok := addr.(types.Addr); !ok {
-		return 0, errors.New("incorrect address type, expected types.Addr")
+		return 0, types.ErrBadAddress
 	}
 	dest := addr.(types.Addr)
 	if len(dest) != publicKeySize {
-		return 0, errors.New("incorrect address length")
+		return 0, types.ErrBadAddress
 	}
 	if uint64(len(p)) > pc.MTU() {
-		return 0, errors.New("oversized message")
+		return 0, types.ErrOversizedMessage
 	}
 	tr := allocTraffic()
 	tr.source = pc.core.crypto.publicKey
 	copy(tr.dest[:], dest)
 	tr.watermark = ^uint64(0)
 	tr.payload = append(tr.payload, p...)
-	pc.core.crdtree.sendTraffic(tr)
+	pc.core.router.sendTraffic(tr)
 	return len(p), nil
 }
 
@@ -100,7 +99,7 @@ func (pc *PacketConn) Close() error {
 	defer pc.closeMutex.Unlock()
 	select {
 	case <-pc.closed:
-		return errors.New("closed")
+		return types.ErrClosed
 	default:
 	}
 	close(pc.closed)
@@ -109,7 +108,7 @@ func (pc *PacketConn) Close() error {
 			p.conn.Close()
 		}
 	})
-	phony.Block(&pc.core.crdtree, pc.core.crdtree._shutdown)
+	phony.Block(&pc.core.router, pc.core.router._shutdown)
 	return nil
 }
 
@@ -146,12 +145,12 @@ func (pc *PacketConn) SetWriteDeadline(t time.Time) error {
 func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn, prio uint8) error {
 	defer conn.Close()
 	if len(key) != publicKeySize {
-		return errors.New("incorrect key length")
+		return types.ErrBadKey
 	}
 	var pk publicKey
 	copy(pk[:], key)
 	if pc.core.crypto.publicKey.equal(pk) {
-		return errors.New("attempted to connect to self")
+		return types.ErrBadKey // TODO? wrap, to provide more context
 	}
 	p, err := pc.core.peers.addPeer(pk, conn, prio)
 	if err != nil {
@@ -183,17 +182,10 @@ func (pc *PacketConn) PrivateKey() ed25519.PrivateKey {
 
 // MTU returns the maximum transmission unit of the PacketConn, i.e. maximum safe message size to send over the network.
 func (pc *PacketConn) MTU() uint64 {
-	const maxPeerMessageSize = 65535
-	const messageTypeSize = 1
-	const rootSeqSize = 8
-	const treeUpdateOverhead = messageTypeSize + publicKeySize + rootSeqSize
-	const maxPortSize = 10 // maximum vuint size in bytes
-	const treeHopSize = publicKeySize + maxPortSize + signatureSize
-	const maxHops = (maxPeerMessageSize - treeUpdateOverhead) / treeHopSize
-	const maxPathBytes = publicKeySize + maxPortSize*maxHops + 1 // root + treespace coords + 0 (terminate coords)
-	const pathTrafficOverhead = messageTypeSize + maxPathBytes + publicKeySize + publicKeySize + messageTypeSize
-	const MTU = maxPeerMessageSize - pathTrafficOverhead
-	return MTU
+	var tr traffic
+	tr.watermark = ^uint64(0)
+	overhead := uint64(tr.size()) + 1 // 1 byte type overhead
+	return pc.core.config.peerMaxMessageSize - overhead
 }
 
 func (pc *PacketConn) handleTraffic(from phony.Actor, tr *traffic) {
@@ -279,13 +271,11 @@ func (d *deadline) getCancel() chan struct{} {
 	return ch
 }
 
-/////
-
 func (pc *PacketConn) GetKeyFor(target ed25519.PublicKey) (key ed25519.PublicKey) {
-	phony.Block(&pc.core.crdtree, func() {
+	phony.Block(&pc.core.router, func() {
 		var k publicKey
 		copy(k[:], target[:])
-		k = pc.core.crdtree._keyLookup(k)
+		k = pc.core.router._keyLookup(k)
 		key = ed25519.PublicKey(k[:])
 	})
 	return

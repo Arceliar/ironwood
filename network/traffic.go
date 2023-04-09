@@ -1,6 +1,10 @@
 package network
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+
+	"github.com/Arceliar/ironwood/types"
+)
 
 /***********
  * traffic *
@@ -38,13 +42,13 @@ func (tr *traffic) encode(out []byte) ([]byte, error) {
 func (tr *traffic) decode(data []byte) error {
 	var tmp traffic
 	if !wireChopSlice(tmp.source[:], &data) {
-		return wireDecodeError
+		return types.ErrDecode
 	} else if !wireChopSlice(tmp.dest[:], &data) {
-		return wireDecodeError
+		return types.ErrDecode
 	} else if !wireChopUvarint(&tmp.watermark, &data) {
-		return wireDecodeError
+		return types.ErrDecode
 	}
+	tmp.payload = append(tr.payload[:0], data...)
 	*tr = tmp
-	tr.payload = append(tr.payload[:0], data...)
 	return nil
 }

@@ -47,8 +47,8 @@ type DebugPathInfo struct {
 
 func (d *Debug) GetSelf() (info DebugSelfInfo) {
 	info.Key = append(info.Key[:0], d.c.crypto.publicKey[:]...)
-	phony.Block(&d.c.crdtree, func() {
-		info.RoutingEntries = uint64(len(d.c.crdtree.infos))
+	phony.Block(&d.c.router, func() {
+		info.RoutingEntries = uint64(len(d.c.router.infos))
 	})
 	return
 }
@@ -68,8 +68,8 @@ func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 }
 
 func (d *Debug) GetDHT() (infos []DebugDHTInfo) {
-	phony.Block(&d.c.crdtree, func() {
-		for key, dinfo := range d.c.crdtree.infos {
+	phony.Block(&d.c.router, func() {
+		for key, dinfo := range d.c.router.infos {
 			var info DebugDHTInfo
 			info.Key = append(info.Key[:0], key[:]...)
 			info.Parent = append(info.Parent[:0], dinfo.parent[:]...)

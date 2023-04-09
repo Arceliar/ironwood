@@ -2,7 +2,6 @@ package encrypted
 
 import (
 	"crypto/ed25519"
-	"errors"
 	"net"
 
 	"github.com/Arceliar/phony"
@@ -22,8 +21,8 @@ type PacketConn struct {
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
-func NewPacketConn(secret ed25519.PrivateKey) (*PacketConn, error) {
-	npc, err := network.NewPacketConn(secret)
+func NewPacketConn(secret ed25519.PrivateKey, options ...network.Option) (*PacketConn, error) {
+	npc, err := network.NewPacketConn(secret, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -54,15 +53,15 @@ func (pc *PacketConn) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 func (pc *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	select {
 	case <-pc.network.closed:
-		return 0, errors.New("closed")
+		return 0, types.ErrClosed
 	default:
 	}
 	destKey, ok := addr.(types.Addr)
 	if !ok || len(destKey) != edPubSize {
-		return 0, errors.New("bad destination address")
+		return 0, types.ErrBadAddress
 	}
 	if uint64(len(p)) > pc.MTU() {
-		return 0, errors.New("oversized message")
+		return 0, types.ErrOversizedMessage
 	}
 	n = len(p)
 	var dest edPub

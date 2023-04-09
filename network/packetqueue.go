@@ -135,27 +135,6 @@ func (q *packetQueue) pop() (info pqPacketInfo, ok bool) {
 	return
 }
 
-/*
-// pop removes the oldest packet (across all streams) from the queue
-func (q *packetQueue) pop() (info pqPacketInfo, ok bool) {
-	if q.size > 0 {
-		stream := q.streams[0]
-		info = stream.infos[0]
-		if len(stream.infos) > 1 {
-			stream.infos = stream.infos[1:]
-			stream.size -= info.size
-			q.streams[0] = stream
-			q.size -= info.size
-			heap.Fix(q, 0)
-		} else {
-			heap.Remove(q, 0)
-		}
-		return info, true
-	}
-	return
-}
-*/
-
 func (q *packetQueue) peek() (info pqPacketInfo, ok bool) {
 	if len(q.dests) > 0 {
 		return q.dests[0].sources[0].infos[0], true
