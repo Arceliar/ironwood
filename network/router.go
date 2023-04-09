@@ -315,6 +315,11 @@ func (r *router) handleResponse(from phony.Actor, p *peer, res *routerSigRes) {
 func (r *router) _update(ann *routerAnnounce) bool {
 	if info, isIn := r.infos[ann.key]; isIn {
 		switch {
+		// Note: This logic *must* be the same on every node
+		// If that's not true, then peers can infinitely spam announcements at each other for expired infos
+		/*********************************
+		 * XXX *** DO NOT CHANGE *** XXX *
+		 *********************************/
 		case info.seq > ann.seq:
 			// This is an old seq, so exit
 			return false
@@ -354,12 +359,21 @@ func (r *router) _update(ann *routerAnnounce) bool {
 		timer = time.AfterFunc(r.core.config.routerTimeout, func() {
 			r.Act(nil, func() {
 				if r.timers[key] == timer {
-					timer.Stop() // Shouldn't matter, but just to be safe...
-					r.merk.Remove(merkletree.Key(key))
-					delete(r.infos, key)
-					delete(r.timers, key)
-					r._resetCache()
-					r._fix()
+					info, isIn := r.infos[key]
+					if !isIn || info.expired {
+						timer.Stop()                       // Shouldn't matter, but just to be safe...
+						r.merk.Remove(merkletree.Key(key)) // Shouldn't be needed, but just to be safe...
+						delete(r.infos, key)
+						delete(r.timers, key)
+						r._resetCache()
+						r._fix()
+					} else {
+						info.expired = true
+						r.infos[key] = info
+						r.merk.Remove(merkletree.Key(key))
+						timer.Reset(time.Duration(2) * r.core.config.routerTimeout)
+						r._fix()
+					}
 				}
 			})
 		})
@@ -409,7 +423,10 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 			doUpdate = true
 		}
 	}
-	if doUpdate && r._update(ann) {
+	if !doUpdate {
+		return
+	}
+	if r._update(ann) {
 		for _, ps := range r.peers {
 			for p := range ps {
 				if p == sender {
@@ -427,6 +444,16 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 			r._resetCache()
 		}
 		r._fix() // This could require us to change parents
+	} else {
+		// We didn't accept the update
+		// If our current info is expired, then tell the sender about it
+		// That *should* find its way back to the original node, so they can update seqs etc more quickly...
+		if info := r.infos[ann.key]; info.expired {
+			newAnn := info.getAnnounce(ann.key)
+			if *newAnn != *ann {
+				sender.sendAnnounce(r, newAnn)
+			}
+		}
 	}
 }
 
@@ -649,6 +676,7 @@ func (r *router) _lookup(tr *traffic) *peer {
 
 func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint64) {
 	// This returns the distances from the destination's root for the destination and each of its ancestors
+	// Note that we skip any expired infos
 	dists := make(map[publicKey]uint64)
 	next := dest
 	var root publicKey
@@ -657,7 +685,7 @@ func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint
 		if _, isIn := dists[next]; isIn {
 			break
 		}
-		if info, isIn := r.infos[next]; isIn {
+		if info, isIn := r.infos[next]; isIn && !info.expired {
 			root = next
 			dists[next] = dist
 			dist++
@@ -855,7 +883,8 @@ func (ann *routerAnnounce) decode(data []byte) error {
 type routerInfo struct {
 	parent publicKey
 	routerSigRes
-	sig signature
+	sig     signature
+	expired bool
 }
 
 func (info *routerInfo) getAnnounce(key publicKey) *routerAnnounce {
