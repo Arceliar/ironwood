@@ -427,6 +427,13 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 			delete(r.timers, worst)
 			r._resetCache()
 		}
+		if ann.key == r.core.crypto.publicKey {
+			// We just updated our own info from a message we received by a peer
+			// That suggests we went offline, so our seq reset when we came back
+			// The info they sent us could have been expired (see below in this function)
+			// So we need to set that an update is required, as if our refresh timer has passed
+			r.refresh = true
+		}
 		r._fix() // This could require us to change parents
 	} else {
 		// We didn't accept the update
