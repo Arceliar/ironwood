@@ -234,14 +234,16 @@ func (r *router) _newReq() *routerSigReq {
 
 func (r *router) _becomeRoot() bool {
 	req := r._newReq()
-	bs := req.bytesForSig(r.core.crypto.publicKey, r.core.crypto.publicKey)
-	sig := r.core.crypto.privateKey.sign(bs)
-	res := routerSigRes{*req, sig}
+	res := routerSigRes{
+		routerSigReq: *req,
+		port:         0, // TODO
+	}
+	res.psig = r.core.crypto.privateKey.sign(res.bytesForSig(r.core.crypto.publicKey, r.core.crypto.publicKey))
 	ann := routerAnnounce{
 		key:          r.core.crypto.publicKey,
 		parent:       r.core.crypto.publicKey,
 		routerSigRes: res,
-		sig:          sig,
+		sig:          res.psig,
 	}
 	if !ann.check() {
 		panic("this should never happen")
@@ -250,9 +252,11 @@ func (r *router) _becomeRoot() bool {
 }
 
 func (r *router) _handleRequest(p *peer, req *routerSigReq) {
-	bs := req.bytesForSig(p.key, r.core.crypto.publicKey)
-	sig := r.core.crypto.privateKey.sign(bs)
-	res := routerSigRes{*req, sig}
+	res := routerSigRes{
+		routerSigReq: *req,
+		port:         0, // TODO
+	}
+	res.psig = r.core.crypto.privateKey.sign(res.bytesForSig(p.key, r.core.crypto.publicKey))
 	p.sendSigRes(r, &res)
 }
 
@@ -753,6 +757,7 @@ func (req *routerSigReq) decode(data []byte) error {
 
 type routerSigRes struct {
 	routerSigReq
+	port peerPort
 	psig signature
 }
 
@@ -761,8 +766,16 @@ func (res *routerSigRes) check(node, parent publicKey) bool {
 	return parent.verify(bs, &res.psig)
 }
 
+func (res *routerSigRes) bytesForSig(node, parent publicKey) []byte {
+	bs := res.routerSigReq.bytesForSig(node, parent)
+	bs = binary.AppendUvarint(bs, uint64(res.port))
+	return bs
+}
+
 func (res *routerSigRes) size() int {
+	var tmp [10]byte
 	size := res.routerSigReq.size()
+	size += binary.PutUvarint(tmp[:], uint64(res.port))
 	size += len(res.psig)
 	return size
 }
@@ -774,6 +787,7 @@ func (res *routerSigRes) encode(out []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	out = binary.AppendUvarint(out, uint64(res.port))
 	out = append(out, res.psig[:]...)
 	end := len(out)
 	if end-start != res.size() {
@@ -787,6 +801,8 @@ func (res *routerSigRes) chop(data *[]byte) error {
 	var tmp routerSigRes
 	if err := tmp.routerSigReq.chop(&orig); err != nil {
 		return err
+	} else if !wireChopUvarint((*uint64)(&tmp.port), &orig) {
+		return types.ErrDecode
 	} else if !wireChopSlice(tmp.psig[:], &orig) {
 		return types.ErrDecode
 	}
