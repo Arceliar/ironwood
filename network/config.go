@@ -1,6 +1,9 @@
 package network
 
-import "time"
+import (
+	"crypto/ed25519"
+	"time"
+)
 
 type config struct {
 	routerRefresh      time.Duration
@@ -11,6 +14,10 @@ type config struct {
 	peerPingIncrement  time.Duration
 	peerPingMaxDelay   time.Duration
 	peerMaxMessageSize uint64
+	pathTransform      func(ed25519.PublicKey) ed25519.PublicKey
+	pathNotify         func(ed25519.PublicKey)
+	pathTimeout        time.Duration
+	pathThrottle       time.Duration
 }
 
 type Option func(*config)
@@ -25,6 +32,10 @@ func configDefaults() Option {
 		c.peerPingIncrement = time.Second
 		c.peerPingMaxDelay = time.Minute
 		c.peerMaxMessageSize = 1048576 // 1 megabyte
+		c.pathTransform = func(key ed25519.PublicKey) ed25519.PublicKey { return key }
+		c.pathNotify = func(key ed25519.PublicKey) {}
+		c.pathTimeout = time.Minute
+		c.pathThrottle = time.Second
 	}
 }
 
@@ -73,5 +84,29 @@ func WithPeerPingMaxDelay(duration time.Duration) Option {
 func WithPeerMaxMessageSize(size uint64) Option {
 	return func(c *config) {
 		c.peerMaxMessageSize = size
+	}
+}
+
+func WithPathTransform(xform func(key ed25519.PublicKey) ed25519.PublicKey) Option {
+	return func(c *config) {
+		c.pathTransform = xform
+	}
+}
+
+func WithPathNotify(notify func(key ed25519.PublicKey)) Option {
+	return func(c *config) {
+		c.pathNotify = notify
+	}
+}
+
+func WithPathTimeout(duration time.Duration) Option {
+	return func(c *config) {
+		c.pathTimeout = duration
+	}
+}
+
+func WithPathThrottle(duration time.Duration) Option {
+	return func(c *config) {
+		c.pathThrottle = duration
 	}
 }
