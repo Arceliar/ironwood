@@ -104,8 +104,10 @@ func (pc *PacketConn) Close() error {
 	}
 	close(pc.closed)
 	phony.Block(&pc.core.peers, func() {
-		for _, p := range pc.core.peers.peers {
-			p.conn.Close()
+		for _, ps := range pc.core.peers.peers {
+			for p := range ps {
+				p.conn.Close()
+			}
 		}
 	})
 	phony.Block(&pc.core.router, pc.core.router._shutdown)
@@ -157,7 +159,7 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn, prio uint
 		return err
 	}
 	err = p.handler()
-	if e := pc.core.peers.removePeer(p.port); e != nil {
+	if e := pc.core.peers.removePeer(p); e != nil {
 		return e
 	}
 	return err

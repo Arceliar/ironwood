@@ -55,13 +55,15 @@ func (d *Debug) GetSelf() (info DebugSelfInfo) {
 
 func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 	phony.Block(&d.c.peers, func() {
-		for port, peer := range d.c.peers.peers {
-			var info DebugPeerInfo
-			info.Port = uint64(port)
-			info.Key = append(info.Key[:0], peer.key[:]...)
-			info.Priority = peer.prio
-			info.Conn = peer.conn
-			infos = append(infos, info)
+		for _, peers := range d.c.peers.peers {
+			for peer := range peers {
+				var info DebugPeerInfo
+				info.Port = uint64(peer.port)
+				info.Key = append(info.Key[:0], peer.key[:]...)
+				info.Priority = peer.prio
+				info.Conn = peer.conn
+				infos = append(infos, info)
+			}
 		}
 	})
 	return
