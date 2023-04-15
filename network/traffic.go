@@ -1,16 +1,13 @@
 package network
 
-import (
-	"encoding/binary"
-
-	"github.com/Arceliar/ironwood/types"
-)
+import "github.com/Arceliar/ironwood/types"
 
 /***********
  * traffic *
  ***********/
 
 type traffic struct {
+	path      []peerPort // *not* zero terminated
 	source    publicKey
 	dest      publicKey
 	watermark uint64 // TODO? uvarint
@@ -18,19 +15,20 @@ type traffic struct {
 }
 
 func (tr *traffic) size() int {
-	size := len(tr.source)
+	size := wireSizePath(tr.path)
+	size += len(tr.source)
 	size += len(tr.dest)
-	var wm [10]byte
-	size += binary.PutUvarint(wm[:], tr.watermark)
+	size += wireSizeUint(tr.watermark)
 	size += len(tr.payload)
 	return size
 }
 
 func (tr *traffic) encode(out []byte) ([]byte, error) {
 	start := len(out)
+	out = wireAppendPath(out, tr.path)
 	out = append(out, tr.source[:]...)
 	out = append(out, tr.dest[:]...)
-	out = binary.AppendUvarint(out, tr.watermark)
+	out = wireAppendUint(out, tr.watermark)
 	out = append(out, tr.payload...)
 	end := len(out)
 	if end-start != tr.size() {
@@ -41,11 +39,15 @@ func (tr *traffic) encode(out []byte) ([]byte, error) {
 
 func (tr *traffic) decode(data []byte) error {
 	var tmp traffic
+	tmp.path = tr.path[:0]
+	if !wireChopPath(&tmp.path, &data) {
+		return types.ErrDecode
+	}
 	if !wireChopSlice(tmp.source[:], &data) {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.dest[:], &data) {
 		return types.ErrDecode
-	} else if !wireChopUvarint(&tmp.watermark, &data) {
+	} else if !wireChopUint(&tmp.watermark, &data) {
 		return types.ErrDecode
 	}
 	tmp.payload = append(tr.payload[:0], data...)

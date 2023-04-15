@@ -48,6 +48,7 @@ type router struct {
 	core      *core
 	merk      merkletree.Tree
 	peers     map[publicKey]map[*peer]struct{} // True if we're allowed to send a mirror to this peer (but have not done so already)
+	ports     map[peerPort]publicKey           // used in tree lookups
 	infos     map[publicKey]routerInfo
 	timers    map[publicKey]*time.Timer
 	cache     map[publicKey]routerCacheInfo // Cache of next hop for each destination
@@ -64,6 +65,7 @@ type router struct {
 func (r *router) init(c *core) {
 	r.core = c
 	r.peers = make(map[publicKey]map[*peer]struct{})
+	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
 	r.timers = make(map[publicKey]*time.Timer)
 	r.cache = make(map[publicKey]routerCacheInfo)
@@ -89,6 +91,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 		r._resetCache()
 		if _, isIn := r.peers[p.key]; !isIn {
 			r.peers[p.key] = make(map[*peer]struct{})
+			r.ports[p.port] = p.key
 		}
 		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
@@ -112,6 +115,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 			delete(r.requests, p.key)
 			delete(r.responses, p.key)
 			delete(r.resSeqs, p.key)
+			delete(r.ports, p.port)
 			r._fix()
 		}
 	})
@@ -236,7 +240,7 @@ func (r *router) _becomeRoot() bool {
 	req := r._newReq()
 	res := routerSigRes{
 		routerSigReq: *req,
-		port:         0, // TODO
+		port:         0, // TODO? something sane?
 	}
 	res.psig = r.core.crypto.privateKey.sign(res.bytesForSig(r.core.crypto.publicKey, r.core.crypto.publicKey))
 	ann := routerAnnounce{
@@ -254,7 +258,7 @@ func (r *router) _becomeRoot() bool {
 func (r *router) _handleRequest(p *peer, req *routerSigReq) {
 	res := routerSigRes{
 		routerSigReq: *req,
-		port:         0, // TODO
+		port:         p.port,
 	}
 	res.psig = r.core.crypto.privateKey.sign(res.bytesForSig(p.key, r.core.crypto.publicKey))
 	p.sendSigRes(r, &res)
@@ -621,7 +625,7 @@ func (r *router) _getDist(dists map[publicKey]uint64, key publicKey) (uint64, bo
 	}
 }
 
-func (r *router) _lookup(tr *traffic) *peer {
+func (r *router) old_lookup(tr *traffic) *peer {
 	if info, isIn := r.cache[tr.dest]; isIn {
 		if info.dist < tr.watermark {
 			tr.watermark = info.dist
@@ -692,6 +696,86 @@ func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint
 	return root, dists
 }
 
+func (r *router) _getRootAndPath(dest publicKey) (publicKey, []peerPort) {
+	var ports []peerPort
+	visited := make(map[publicKey]struct{})
+	var root publicKey
+	next := dest
+	for {
+		if _, isIn := visited[next]; isIn {
+			// We hit a loop
+			return dest, nil
+		}
+		if info, isIn := r.infos[next]; isIn && !info.expired {
+			root = next
+			visited[next] = struct{}{}
+			ports = append(ports, info.port)
+			if next == info.parent {
+				// We reached a root
+				break
+			}
+			next = info.parent
+		} else {
+			// We hit a dead end
+			return dest, nil
+		}
+	}
+	// Reverse order, but leave the last element (root's port to itself, should be zero) alone
+	for left, right := 0, len(ports)-2; left < right; left, right = left+1, right-1 {
+		ports[left], ports[right] = ports[right], ports[left]
+	}
+	ports[len(ports)-1] = 0 // Fix the last element at zero
+	return root, ports
+}
+
+func (r *router) _lookup(tr *traffic) *peer {
+	if info, isIn := r.cache[tr.dest]; isIn {
+		if info.dist < tr.watermark {
+			tr.watermark = info.dist
+			return info.peer
+		} else {
+			return nil
+		}
+	}
+	if _, isIn := r.infos[tr.dest]; !isIn {
+		return nil // If we want to restore DHT-like logic, it's mostly copy/paste from _keyLookup
+	}
+	// Look up the next hop (in treespace) towards the destination
+	_, dists := r._getRootAndDists(tr.dest)
+	var bestPeer *peer
+	bestDist := ^uint64(0)
+	if dist, ok := r._getDist(dists, r.core.crypto.publicKey); ok && dist < tr.watermark {
+		bestDist = dist // Self dist, so other nodes must be strictly better by distance
+		tr.watermark = dist
+	} else {
+		return nil
+	}
+	for k, ps := range r.peers {
+		dist, ok := r._getDist(dists, k)
+		if !ok {
+			continue
+		}
+		if dist < bestDist {
+			for p := range ps {
+				switch {
+				case bestPeer != nil && p.prio > bestPeer.prio:
+					// Skip worse priority links
+					continue
+				case bestPeer != nil && p.time.After(bestPeer.time):
+					// Skip links that have been up for less time
+					continue
+				default:
+					bestPeer = p
+				}
+			}
+			bestDist = dist
+		}
+	}
+
+	r.cache[tr.dest] = routerCacheInfo{bestPeer, tr.watermark}
+	return bestPeer
+}
+
 /*****************
  * routerSigReq *
  *****************/
@@ -710,16 +794,15 @@ func (req *routerSigReq) bytesForSig(node, parent publicKey) []byte {
 }
 
 func (req *routerSigReq) size() int {
-	var tmp [10]byte
-	size := binary.PutUvarint(tmp[:], req.seq)
-	size += binary.PutUvarint(tmp[:], req.nonce)
+	size := wireSizeUint(req.seq)
+	size += wireSizeUint(req.nonce)
 	return size
 }
 
 func (req *routerSigReq) encode(out []byte) ([]byte, error) {
 	start := len(out)
-	out = binary.AppendUvarint(out, req.seq)
-	out = binary.AppendUvarint(out, req.nonce)
+	out = wireAppendUint(out, req.seq)
+	out = wireAppendUint(out, req.nonce)
 	end := len(out)
 	if end-start != req.size() {
 		panic("this should never happen")
@@ -730,9 +813,9 @@ func (req *routerSigReq) encode(out []byte) ([]byte, error) {
 func (req *routerSigReq) chop(data *[]byte) error {
 	var tmp routerSigReq
 	orig := *data
-	if !wireChopUvarint(&tmp.seq, &orig) {
+	if !wireChopUint(&tmp.seq, &orig) {
 		return types.ErrDecode
-	} else if !wireChopUvarint(&tmp.nonce, &orig) {
+	} else if !wireChopUint(&tmp.nonce, &orig) {
 		return types.ErrDecode
 	}
 	*req = tmp
@@ -768,14 +851,13 @@ func (res *routerSigRes) check(node, parent publicKey) bool {
 
 func (res *routerSigRes) bytesForSig(node, parent publicKey) []byte {
 	bs := res.routerSigReq.bytesForSig(node, parent)
-	bs = binary.AppendUvarint(bs, uint64(res.port))
+	bs = wireAppendUint(bs, uint64(res.port))
 	return bs
 }
 
 func (res *routerSigRes) size() int {
-	var tmp [10]byte
 	size := res.routerSigReq.size()
-	size += binary.PutUvarint(tmp[:], uint64(res.port))
+	size += wireSizeUint(uint64(res.port))
 	size += len(res.psig)
 	return size
 }
@@ -787,7 +869,7 @@ func (res *routerSigRes) encode(out []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out = binary.AppendUvarint(out, uint64(res.port))
+	out = wireAppendUint(out, uint64(res.port))
 	out = append(out, res.psig[:]...)
 	end := len(out)
 	if end-start != res.size() {
@@ -801,7 +883,7 @@ func (res *routerSigRes) chop(data *[]byte) error {
 	var tmp routerSigRes
 	if err := tmp.routerSigReq.chop(&orig); err != nil {
 		return err
-	} else if !wireChopUvarint((*uint64)(&tmp.port), &orig) {
+	} else if !wireChopUint((*uint64)(&tmp.port), &orig) {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.psig[:], &orig) {
 		return types.ErrDecode
@@ -916,15 +998,14 @@ func (req *routerMerkleReq) check() bool {
 }
 
 func (req *routerMerkleReq) size() int {
-	var tmp [10]byte
-	size := binary.PutUvarint(tmp[:], req.prefixLen)
+	size := wireSizeUint(req.prefixLen)
 	size += len(req.prefix)
 	return size
 }
 
 func (req *routerMerkleReq) encode(out []byte) ([]byte, error) {
 	start := len(out)
-	out = binary.AppendUvarint(out, req.prefixLen)
+	out = wireAppendUint(out, req.prefixLen)
 	out = append(out, req.prefix[:]...)
 	end := len(out)
 	if end-start != req.size() {
@@ -936,7 +1017,7 @@ func (req *routerMerkleReq) encode(out []byte) ([]byte, error) {
 func (req *routerMerkleReq) chop(data *[]byte) error {
 	var tmp routerMerkleReq
 	orig := *data
-	if !wireChopUvarint(&tmp.prefixLen, &orig) {
+	if !wireChopUint(&tmp.prefixLen, &orig) {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.prefix[:], &orig) {
 		return types.ErrDecode

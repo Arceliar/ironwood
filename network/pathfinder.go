@@ -32,7 +32,7 @@ func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {}
  ************/
 
 type pathInfo struct {
-	path    []peerPort
+	path    []peerPort // *not* zero terminated (and must be free of zeros)
 	seq     uint64
 	reqTime time.Time   // Time a request was last sent (to prevent spamming)
 	timer   *time.Timer // time.AfterFunc(cleanup...), reset whenever this is used
