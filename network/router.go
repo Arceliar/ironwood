@@ -125,6 +125,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 			delete(r.resSeqs, p.key)
 			delete(r.ports, p.port)
 			delete(r.cache, p.key)
+			r.blooms._removeInfo(p.key)
 			r._fix()
 		}
 	})

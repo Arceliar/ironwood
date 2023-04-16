@@ -43,7 +43,8 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 		seq:    pf.seq,
 		// TODO sig
 	}
-
+	pf._handleReq(req.source, &req)
+	return
 	// Now skip to the end and just pretend we got a response from the network
 	target := pf.router.blooms.xKey(dest)
 	for k := range pf.router.infos {
@@ -63,55 +64,90 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 	}
 }
 
-func (pf *pathfinder) handleReq(from phony.Actor, req *pathRequest) {}
+func (pf *pathfinder) handleReq(p *peer, req *pathRequest) {
+	pf.router.Act(p, func() {
+		pf._handleReq(p.key, req)
+	})
+}
 
-func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {
-	pf.router.Act(from, func() {
-		if res.seq > pf.seq {
-			// Too new, we need to just ignore it
-			// TODO? something better? could be important for anycast/multicast to work some day...
+func (pf *pathfinder) _handleReq(fromKey publicKey, req *pathRequest) {
+	// Continue the multicast
+	pf.router.blooms._sendMulticast(wireProtoPathReq, req, fromKey, req.dest)
+	// Check if we should send a response too
+	dx := pf.router.blooms.xKey(req.dest)
+	sx := pf.router.blooms.xKey(pf.router.core.crypto.publicKey)
+	if dx == sx {
+		// We match, send a response
+		root, path := pf.router._getRootAndPath(pf.router.core.crypto.publicKey)
+		res := pathResponse{
+			source: pf.router.core.crypto.publicKey,
+			dest:   req.source,
+			seq:    req.seq,
+			root:   root,
+			path:   path,
+			// TODO sig
+		}
+		pf._handleRes(res.source, &res)
+	}
+}
+
+func (pf *pathfinder) handleRes(p *peer, res *pathResponse) {
+	pf.router.Act(p, func() {
+		pf._handleRes(p.key, res)
+	})
+}
+
+func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
+	// Continue the multicast
+	pf.router.blooms._sendMulticast(wireProtoPathRes, res, fromKey, res.dest)
+	// Check if we should accept this response
+	if res.dest != pf.router.core.crypto.publicKey {
+		return
+	}
+	if res.seq > pf.seq {
+		// Too new, we need to just ignore it
+		// TODO? something better? could be important for anycast/multicast to work some day...
+		return
+	}
+	var info pathInfo
+	var isIn bool
+	if info, isIn = pf.paths[res.source]; isIn {
+		if res.seq <= info.seq {
+			// This isn't newer than the last seq we received, so drop it
 			return
 		}
-		var info pathInfo
-		var isIn bool
-		if info, isIn = pf.paths[res.source]; isIn {
-			if res.seq <= info.seq {
-				// This isn't newer than the last seq we received, so drop it
-				return
-			}
-			info.timer.Reset(pf.router.core.config.pathTimeout)
-			info.path = res.path
-			info.seq = res.seq
-		} else {
-			xform := pf.router.blooms.xKey(res.source)
-			if _, isIn := pf.rumors[xform]; !isIn {
-				return
-			}
-			key := res.source
-			var timer *time.Timer
-			timer = time.AfterFunc(pf.router.core.config.pathTimeout, func() {
-				pf.router.Act(nil, func() {
-					if pf.paths[key].timer == timer {
-						timer.Stop()
-						delete(pf.paths, key)
-					}
-				})
-			})
-			info = pathInfo{
-				reqTime: time.Now(),
-				timer:   timer,
-			}
-			if rumor := pf.rumors[xform]; rumor.traffic != nil && rumor.traffic.dest == res.source {
-				tr := rumor.traffic
-				rumor.traffic = nil
-				defer pf._handleTraffic(tr)
-			}
-		}
+		info.timer.Reset(pf.router.core.config.pathTimeout)
 		info.path = res.path
 		info.seq = res.seq
-		pf.paths[res.source] = info
-		pf.router.core.config.pathNotify(res.source.toEd())
-	})
+	} else {
+		xform := pf.router.blooms.xKey(res.source)
+		if _, isIn := pf.rumors[xform]; !isIn {
+			return
+		}
+		key := res.source
+		var timer *time.Timer
+		timer = time.AfterFunc(pf.router.core.config.pathTimeout, func() {
+			pf.router.Act(nil, func() {
+				if pf.paths[key].timer == timer {
+					timer.Stop()
+					delete(pf.paths, key)
+				}
+			})
+		})
+		info = pathInfo{
+			reqTime: time.Now(),
+			timer:   timer,
+		}
+		if rumor := pf.rumors[xform]; rumor.traffic != nil && rumor.traffic.dest == res.source {
+			tr := rumor.traffic
+			rumor.traffic = nil
+			defer pf._handleTraffic(tr)
+		}
+	}
+	info.path = res.path
+	info.seq = res.seq
+	pf.paths[res.source] = info
+	pf.router.core.config.pathNotify(res.source.toEd())
 }
 
 func (pf *pathfinder) _sendLookup(dest publicKey) {
@@ -300,7 +336,7 @@ func (res *pathResponse) decode(data []byte) error {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.sig[:], &orig) {
 		return types.ErrDecode
-	} else if len(orig) == 0 {
+	} else if len(orig) != 0 {
 		return types.ErrDecode
 	}
 	*res = tmp

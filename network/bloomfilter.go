@@ -116,6 +116,12 @@ func (bs *blooms) _addInfo(key publicKey) {
 	}
 }
 
+func (bs *blooms) _removeInfo(key publicKey) {
+	delete(bs.blooms, key)
+	// At some later point (after we've finished cleaning things up), send blooms to everyone
+	bs.router.Act(nil, bs._sendAllBlooms)
+}
+
 func (bs *blooms) handleBloom(fromPeer *peer, b *bloom) {
 	bs.router.Act(fromPeer, func() {
 		bs._handleBloom(fromPeer, b)
