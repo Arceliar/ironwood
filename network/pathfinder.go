@@ -43,23 +43,29 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 		seq:    pf.seq,
 		// TODO sig
 	}
-	pf._handleReq(req.source, &req)
-	return
-	// Now skip to the end and just pretend we got a response from the network
-	target := pf.router.blooms.xKey(dest)
-	for k := range pf.router.infos {
-		xform := pf.router.blooms.xKey(k)
-		if xform == target {
-			root, path := pf.router._getRootAndPath(k)
-			res := pathResponse{
-				source: k,
-				dest:   req.source,
-				seq:    req.seq,
-				root:   root,
-				path:   path,
-				// TODO sig
+	if false {
+		// This is what we should actually do
+		pf._handleReq(req.source, &req)
+	} else {
+		// Now skip to the end and just pretend we got a response from the network
+		target := pf.router.blooms.xKey(dest)
+		for k := range pf.router.infos {
+			xform := pf.router.blooms.xKey(k)
+			if xform == target {
+				root, path := pf.router._getRootAndPath(k)
+				res := pathResponse{
+					source: k,
+					dest:   req.source,
+					seq:    req.seq,
+					root:   root,
+					path:   path,
+					// TODO sig
+				}
+				// Queue this up for later, so we can e.g. cache rumor packets first
+				pf.router.Act(nil, func() {
+					pf._handleRes(req.dest, &res)
+				})
 			}
-			pf.handleRes(nil, &res)
 		}
 	}
 }

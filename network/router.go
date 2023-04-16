@@ -156,6 +156,7 @@ func (r *router) _sendReqs() {
 }
 
 func (r *router) _fix() {
+	defer r.blooms._sendAllBlooms() // FIXME this is bad, hack for not tracking when tree relationships change
 	bestRoot := r.core.crypto.publicKey
 	bestParent := r.core.crypto.publicKey
 	self := r.infos[r.core.crypto.publicKey]
