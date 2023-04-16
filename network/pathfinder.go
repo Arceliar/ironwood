@@ -10,14 +10,19 @@ import (
 type pathfinder struct {
 	router *router
 	paths  map[publicKey]pathInfo
-	rumors map[publicKey]struct{} // TODO something, have it time out / delete it eventually
+	rumors map[publicKey]pathRumor
 	seq    uint64
+}
+
+type pathRumor struct {
+	traffic *traffic
+	timer   *time.Timer
 }
 
 func (pf *pathfinder) init(r *router) {
 	pf.router = r
 	pf.paths = make(map[publicKey]pathInfo)
-	pf.rumors = make(map[publicKey]struct{})
+	pf.rumors = make(map[publicKey]pathRumor)
 }
 
 // TODO everything, these are just placeholders
@@ -58,11 +63,9 @@ func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {
 			// TODO? something better? could be important for anycast/multicast to work some day...
 			return
 		}
-		xform := pf.xKey(res.source)
-		if _, isIn := pf.rumors[xform]; !isIn {
-			return
-		}
-		if info, isIn := pf.paths[res.source]; isIn {
+		var info pathInfo
+		var isIn bool
+		if info, isIn = pf.paths[res.source]; isIn {
 			if res.seq <= info.seq {
 				// This isn't newer than the last seq we received, so drop it
 				return
@@ -70,8 +73,11 @@ func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {
 			info.timer.Reset(pf.router.core.config.pathTimeout)
 			info.path = res.path
 			info.seq = res.seq
-			pf.paths[res.source] = info
 		} else {
+			xform := pf.xKey(res.source)
+			if _, isIn := pf.rumors[xform]; !isIn {
+				return
+			}
 			key := res.source
 			var timer *time.Timer
 			timer = time.AfterFunc(pf.router.core.config.pathTimeout, func() {
@@ -82,14 +88,19 @@ func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {
 					}
 				})
 			})
-			info := pathInfo{
-				path:    res.path,
-				seq:     res.seq,
+			info = pathInfo{
 				reqTime: time.Now(),
 				timer:   timer,
 			}
-			pf.paths[key] = info
+			if rumor := pf.rumors[xform]; rumor.traffic != nil && rumor.traffic.dest == res.source {
+				tr := rumor.traffic
+				rumor.traffic = nil
+				defer pf._handleTraffic(tr)
+			}
 		}
+		info.path = res.path
+		info.seq = res.seq
+		pf.paths[res.source] = info
 		pf.router.core.config.pathNotify(res.source.toEd())
 	})
 }
@@ -97,15 +108,46 @@ func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {
 func (pf *pathfinder) _sendLookup(dest publicKey) {
 	// TODO the real thing
 	xform := pf.xKey(dest)
-	pf.rumors[xform] = struct{}{}
+	if rumor, isIn := pf.rumors[xform]; isIn {
+		rumor.timer.Reset(pf.router.core.config.pathTimeout)
+	} else {
+		var timer *time.Timer
+		x := xform
+		timer = time.AfterFunc(pf.router.core.config.pathTimeout, func() {
+			pf.router.Act(nil, func() {
+				if rumor := pf.rumors[x]; rumor.timer == timer {
+					delete(pf.rumors, x)
+					timer.Stop()
+					if rumor.traffic != nil {
+						freeTraffic(rumor.traffic)
+					}
+				}
+			})
+		})
+		pf.rumors[x] = pathRumor{
+			timer: timer,
+		}
+	}
 	pf._sendRequest(xform)
 }
 
 func (pf *pathfinder) _handleTraffic(tr *traffic) {
-	// TODO the real thing
-	// For now, this is just a hack, grab the info from the router
-	_, tr.path = pf.router._getRootAndPath(tr.dest)
-	pf.router.handleTraffic(nil, tr)
+	if info, isIn := pf.paths[tr.dest]; isIn {
+		tr.path = append(tr.path[:0], info.path...)
+		pf.router.handleTraffic(nil, tr)
+	} else {
+		pf._sendLookup(tr.dest)
+		xform := pf.xKey(tr.dest)
+		if rumor, isIn := pf.rumors[xform]; isIn {
+			if rumor.traffic != nil {
+				freeTraffic(rumor.traffic)
+			}
+			rumor.traffic = tr
+			pf.rumors[xform] = rumor
+		} else {
+			panic("this should never happen")
+		}
+	}
 }
 
 func (pf *pathfinder) xKey(key publicKey) publicKey {
