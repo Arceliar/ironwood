@@ -9,36 +9,96 @@ import (
 // WARNING The pathfinder should only be used from within the router's actor, it's not threadsafe
 type pathfinder struct {
 	router *router
-	paths  map[publicKey]*pathInfo
+	paths  map[publicKey]pathInfo
+	rumors map[publicKey]struct{} // TODO something, have it time out / delete it eventually
+	seq    uint64
 }
 
 func (pf *pathfinder) init(r *router) {
 	pf.router = r
-	pf.paths = make(map[publicKey]*pathInfo)
+	pf.paths = make(map[publicKey]pathInfo)
+	pf.rumors = make(map[publicKey]struct{})
 }
 
 // TODO everything, these are just placeholders
 
-func (pf *pathfinder) _lookup(dest publicKey) *pathInfo { return nil }
+func (pf *pathfinder) _sendRequest(target publicKey) {
+	pf.seq++
+	req := pathRequest{
+		source: pf.router.core.crypto.publicKey,
+		target: target,
+		seq:    pf.seq,
+		// TODO sig
+	}
 
-func (pf *pathfinder) _sendRequest(dest publicKey) {}
+	// Now skip to the end and just pretend we got a response from the network
+	for k := range pf.router.infos {
+		xform := pf.xKey(k)
+		if xform == req.target {
+			root, path := pf.router._getRootAndPath(k)
+			res := pathResponse{
+				source: k,
+				dest:   req.source,
+				seq:    req.seq,
+				root:   root,
+				path:   path,
+				// TODO sig
+			}
+			pf.handleRes(nil, &res)
+		}
+	}
+}
 
 func (pf *pathfinder) handleReq(from phony.Actor, req *pathRequest) {}
 
-func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {}
-
-func (pf *pathfinder) _sendLookup(target publicKey) {
-	// TODO the real thing
-	// For now, this is just a hack to send a notify to... whoever
-	// Note that the target is already transformed
-	for k := range pf.router.infos {
-		xformEd := pf.router.core.config.pathTransform(k.toEd())
-		var xform publicKey
-		copy(xform[:], xformEd)
-		if xform == target {
-			pf.router.core.config.pathNotify(k.toEd())
+func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {
+	pf.router.Act(from, func() {
+		if res.seq > pf.seq {
+			// Too new, we need to just ignore it
+			// TODO? something better? could be important for anycast/multicast to work some day...
+			return
 		}
-	}
+		xform := pf.xKey(res.source)
+		if _, isIn := pf.rumors[xform]; !isIn {
+			return
+		}
+		if info, isIn := pf.paths[res.source]; isIn {
+			if res.seq <= info.seq {
+				// This isn't newer than the last seq we received, so drop it
+				return
+			}
+			info.timer.Reset(pf.router.core.config.pathTimeout)
+			info.path = res.path
+			info.seq = res.seq
+			pf.paths[res.source] = info
+		} else {
+			key := res.source
+			var timer *time.Timer
+			timer = time.AfterFunc(pf.router.core.config.pathTimeout, func() {
+				pf.router.Act(nil, func() {
+					if pf.paths[key].timer == timer {
+						timer.Stop()
+						delete(pf.paths, key)
+					}
+				})
+			})
+			info := pathInfo{
+				path:    res.path,
+				seq:     res.seq,
+				reqTime: time.Now(),
+				timer:   timer,
+			}
+			pf.paths[key] = info
+		}
+		pf.router.core.config.pathNotify(res.source.toEd())
+	})
+}
+
+func (pf *pathfinder) _sendLookup(dest publicKey) {
+	// TODO the real thing
+	xform := pf.xKey(dest)
+	pf.rumors[xform] = struct{}{}
+	pf._sendRequest(xform)
 }
 
 func (pf *pathfinder) _handleTraffic(tr *traffic) {
@@ -46,6 +106,14 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 	// For now, this is just a hack, grab the info from the router
 	_, tr.path = pf.router._getRootAndPath(tr.dest)
 	pf.router.handleTraffic(nil, tr)
+}
+
+func (pf *pathfinder) xKey(key publicKey) publicKey {
+	k := key
+	xfed := pf.router.core.config.pathTransform(k.toEd())
+	var xform publicKey
+	copy(xform[:], xfed)
+	return xform
 }
 
 /************

@@ -62,5 +62,6 @@ func (c *crypto) init(secret ed25519.PrivateKey) {
 }
 
 func (key publicKey) toEd() ed25519.PublicKey {
-	return key[:]
+	k := key
+	return k[:]
 }
