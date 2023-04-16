@@ -349,6 +349,12 @@ func (p *peer) _handlePacket(bs []byte) error {
 	}
 }
 
+func (p *peer) sendDirect(from phony.Actor, pType wirePacketType, data wireEncodeable) {
+	p.Act(from, func() {
+		p.writer.sendPacket(pType, data)
+	})
+}
+
 func (p *peer) _handleSigReq(bs []byte) error {
 	req := new(routerSigReq)
 	if err := req.decode(bs); err != nil {
@@ -359,9 +365,7 @@ func (p *peer) _handleSigReq(bs []byte) error {
 }
 
 func (p *peer) sendSigReq(from phony.Actor, req *routerSigReq) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoSigReq, req)
-	})
+	p.sendDirect(from, wireProtoSigReq, req)
 }
 
 func (p *peer) _handleSigRes(bs []byte) error {
@@ -377,9 +381,7 @@ func (p *peer) _handleSigRes(bs []byte) error {
 }
 
 func (p *peer) sendSigRes(from phony.Actor, res *routerSigRes) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoSigRes, res)
-	})
+	p.sendDirect(from, wireProtoSigRes, res)
 }
 
 func (p *peer) _handleAnnounce(bs []byte) error {
@@ -395,9 +397,7 @@ func (p *peer) _handleAnnounce(bs []byte) error {
 }
 
 func (p *peer) sendAnnounce(from phony.Actor, ann *routerAnnounce) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoAnnounce, ann)
-	})
+	p.sendDirect(from, wireProtoAnnounce, ann)
 }
 
 func (p *peer) _handleMerkleReq(bs []byte) error {
@@ -412,9 +412,7 @@ func (p *peer) _handleMerkleReq(bs []byte) error {
 }
 
 func (p *peer) sendMerkleReq(from phony.Actor, req *routerMerkleReq) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoMerkleReq, req)
-	})
+	p.sendDirect(from, wireProtoMerkleReq, req)
 }
 
 func (p *peer) _handleMerkleRes(bs []byte) error {
@@ -429,9 +427,7 @@ func (p *peer) _handleMerkleRes(bs []byte) error {
 }
 
 func (p *peer) sendMerkleRes(from phony.Actor, res *routerMerkleRes) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoMerkleRes, res)
-	})
+	p.sendDirect(from, wireProtoMerkleRes, res)
 }
 
 func (p *peer) _handleBloom(bs []byte) error {
@@ -444,9 +440,7 @@ func (p *peer) _handleBloom(bs []byte) error {
 }
 
 func (p *peer) sendBloom(from phony.Actor, b *bloom) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoBloomFilter, b)
-	})
+	p.sendDirect(from, wireProtoBloomFilter, b)
 }
 
 func (p *peer) _handleTraffic(bs []byte) error {
@@ -466,9 +460,7 @@ func (p *peer) sendTraffic(from phony.Actor, tr *traffic) {
 
 func (p *peer) _push(tr *traffic) {
 	if p.ready {
-		var pType wirePacketType
-		pType = wireTraffic
-		p.writer.sendPacket(pType, tr)
+		p.writer.sendPacket(wireTraffic, tr)
 		p.ready = false
 		return
 	}
@@ -543,7 +535,10 @@ func (ps *peers) _handleBloom(fromPeer *peer, b *bloom) {
 func (ps *peers) _getBloomFor(key publicKey) *bloom {
 	// getBloomFor increments the sequence number, even if we only send it to 1 peer
 	// this means we may sometimes unnecessarily send a bloom when we get a new peer link to an existing peer node
-	pbi := ps.blooms[key]
+	pbi, isIn := ps.blooms[key]
+	if !isIn {
+		panic("this should never happen")
+	}
 	pbi.sent++
 	ps.blooms[key] = pbi
 	b := newBloom(pbi.sent)
@@ -560,21 +555,18 @@ func (ps *peers) _getBloomFor(key publicKey) *bloom {
 
 func (ps *peers) sendBloom(p *peer) {
 	ps.Act(p, func() {
-		ps._sendBloom(p)
+		if _, isIn := ps.blooms[p.key]; !isIn {
+			// We may have deleted the peer between when this message was sent and now
+			return
+		}
+		b := ps._getBloomFor(p.key)
+		p.sendBloom(ps, b)
 	})
-}
-
-func (ps *peers) _sendBloom(p *peer) {
-	// Sends an existing bloom, does not update seq
-	b := ps._getBloomFor(p.key)
-	p.sendBloom(ps, b)
 }
 
 func (ps *peers) _sendAllBlooms() {
 	// Called after e.g. a peer is removed, must update seq
-	for k, pbi := range ps.blooms {
-		pbi.sent++
-		ps.blooms[k] = pbi
+	for k := range ps.blooms {
 		b := ps._getBloomFor(k)
 		for p := range ps.peers[k] {
 			p.sendBloom(ps, b)
