@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"github.com/Arceliar/phony"
+
+	"github.com/Arceliar/ironwood/types"
 )
 
 // WARNING The pathfinder should only be used from within the router's actor, it's not threadsafe
@@ -15,7 +17,7 @@ type pathfinder struct {
 }
 
 type pathRumor struct {
-	traffic *traffic
+	traffic *traffic // TODO use this better, and/or add a similar buffer to pathInfo... quickly resend 1 dropped packet after we get a pathRes
 	timer   *time.Timer
 }
 
@@ -27,19 +29,26 @@ func (pf *pathfinder) init(r *router) {
 
 // TODO everything, these are just placeholders
 
-func (pf *pathfinder) _sendRequest(target publicKey) {
+func (pf *pathfinder) _sendRequest(dest publicKey) {
+	if info, isIn := pf.paths[dest]; isIn {
+		if time.Since(info.reqTime) < pf.router.core.config.pathThrottle {
+			// Don't flood with request, wait a bit
+			return
+		}
+	}
 	pf.seq++
 	req := pathRequest{
 		source: pf.router.core.crypto.publicKey,
-		target: target,
+		dest:   dest,
 		seq:    pf.seq,
 		// TODO sig
 	}
 
 	// Now skip to the end and just pretend we got a response from the network
+	target := pf.router.blooms.xKey(dest)
 	for k := range pf.router.infos {
-		xform := pf.xKey(k)
-		if xform == req.target {
+		xform := pf.router.blooms.xKey(k)
+		if xform == target {
 			root, path := pf.router._getRootAndPath(k)
 			res := pathResponse{
 				source: k,
@@ -74,7 +83,7 @@ func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {
 			info.path = res.path
 			info.seq = res.seq
 		} else {
-			xform := pf.xKey(res.source)
+			xform := pf.router.blooms.xKey(res.source)
 			if _, isIn := pf.rumors[xform]; !isIn {
 				return
 			}
@@ -107,7 +116,7 @@ func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {
 
 func (pf *pathfinder) _sendLookup(dest publicKey) {
 	// TODO the real thing
-	xform := pf.xKey(dest)
+	xform := pf.router.blooms.xKey(dest)
 	if rumor, isIn := pf.rumors[xform]; isIn {
 		rumor.timer.Reset(pf.router.core.config.pathTimeout)
 	} else {
@@ -128,7 +137,7 @@ func (pf *pathfinder) _sendLookup(dest publicKey) {
 			timer: timer,
 		}
 	}
-	pf._sendRequest(xform)
+	pf._sendRequest(dest)
 }
 
 func (pf *pathfinder) _handleTraffic(tr *traffic) {
@@ -137,7 +146,7 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 		pf.router.handleTraffic(nil, tr)
 	} else {
 		pf._sendLookup(tr.dest)
-		xform := pf.xKey(tr.dest)
+		xform := pf.router.blooms.xKey(tr.dest)
 		if rumor, isIn := pf.rumors[xform]; isIn {
 			if rumor.traffic != nil {
 				freeTraffic(rumor.traffic)
@@ -150,12 +159,23 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 	}
 }
 
-func (pf *pathfinder) xKey(key publicKey) publicKey {
-	k := key
-	xfed := pf.router.core.config.pathTransform(k.toEd())
-	var xform publicKey
-	copy(xform[:], xfed)
-	return xform
+func (pf *pathfinder) handlePathBroken(from phony.Actor, pb *pathBroken) {
+	pf.router.Act(from, func() {
+		if _, isIn := pf.paths[pb.broken]; !isIn {
+			return
+		}
+		// The throttle logic happens inside sendRequest
+		pf._sendRequest(pb.broken)
+	})
+}
+
+func (pf *pathfinder) _sendPathBroken(tr *traffic) {
+	pb := pathBroken{
+		dest:   tr.source,
+		broken: tr.dest,
+	}
+	// We don't really care where the "fromKey" is for this one, self should be fine...
+	pf.router.blooms._sendMulticast(wireProtoPathBroken, &pb, pf.router.core.crypto.publicKey, pb.dest)
 }
 
 /************
@@ -175,8 +195,8 @@ type pathInfo struct {
 
 type pathRequest struct {
 	source publicKey
-	target publicKey // may be different from destiantion address
-	seq    uint64    // set by requester, used to recognize which response is which
+	dest   publicKey
+	seq    uint64 // set by requester, used to recognize which response is which
 	sig    signature
 }
 
@@ -191,4 +211,44 @@ type pathResponse struct {
 	root   publicKey  // Who is the source's root. TODO? omit this?
 	path   []peerPort // Path from root to source, aka coords, zero-terminated
 	sig    signature  // signed by source
+}
+
+/**************
+ * pathBroken *
+ **************/
+
+// Sent when a traffic packet hits a dead-end that is not the intended destination
+
+type pathBroken struct {
+	dest   publicKey // the sender of the dropped packet
+	broken publicKey // the dest of the dropped packet
+}
+
+func (pb *pathBroken) size() int {
+	return len(pb.dest) + len(pb.broken)
+}
+
+func (pb *pathBroken) encode(out []byte) ([]byte, error) {
+	start := len(out)
+	out = append(out, pb.dest[:]...)
+	out = append(out, pb.broken[:]...)
+	end := len(out)
+	if end-start != pb.size() {
+		panic("this should never happen")
+	}
+	return out, nil
+}
+
+func (pb *pathBroken) decode(data []byte) error {
+	var tmp pathBroken
+	orig := data
+	if !wireChopSlice(tmp.dest[:], &orig) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.broken[:], &orig) {
+		return types.ErrDecode
+	} else if len(orig) != 0 {
+		return types.ErrDecode
+	}
+	*pb = tmp
+	return nil
 }

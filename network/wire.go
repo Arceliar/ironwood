@@ -16,7 +16,7 @@ const (
 	wireProtoBloomFilter
 	//wireProtoPathReq
 	//wireProtoPathRes
-	//wireProtoPathBroken
+	wireProtoPathBroken
 	wireTraffic
 )
 

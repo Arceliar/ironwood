@@ -576,11 +576,14 @@ func (r *router) sendTraffic(tr *traffic) {
 
 func (r *router) handleTraffic(from phony.Actor, tr *traffic) {
 	r.Act(from, func() {
-		if p := r._lookup(tr); p != nil {
+		if tr.dest == r.core.crypto.publicKey {
+			r.core.pconn.handleTraffic(r, tr)
+		} else if p := r._lookup(tr); p != nil {
 			p.sendTraffic(r, tr)
 		} else {
-			// TODO if the dest key doesn't match us, we need to send an error message back to the sender instead, so they can do a new lookup
-			r.core.pconn.handleTraffic(r, tr)
+			// Not addressed to us, and we don't know a next hop.
+			// Send back a pathBroken
+			r.pathfinder._sendPathBroken(tr)
 		}
 	})
 }

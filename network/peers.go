@@ -87,8 +87,6 @@ func (ps *peers) removePeer(p *peer) error {
 			if len(kps) == 0 {
 				delete(ps.peers, p.key)
 				delete(ps.ports, p.port)
-				//delete(ps.blooms, p.key)
-				//ps._sendAllBlooms()
 			}
 		}
 	})
@@ -333,6 +331,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleMerkleRes(bs[1:])
 	case wireProtoBloomFilter:
 		return p._handleBloom(bs[1:])
+	case wireProtoPathBroken:
+		return p._handlePathBroken(bs[1:])
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
@@ -432,6 +432,15 @@ func (p *peer) _handleBloom(bs []byte) error {
 
 func (p *peer) sendBloom(from phony.Actor, b *bloom) {
 	p.sendDirect(from, wireProtoBloomFilter, b)
+}
+
+func (p *peer) _handlePathBroken(bs []byte) error {
+	pb := new(pathBroken)
+	if err := pb.decode(bs); err != nil {
+		return err
+	}
+	p.peers.core.router.pathfinder.handlePathBroken(p, pb)
+	return nil
 }
 
 func (p *peer) _handleTraffic(bs []byte) error {

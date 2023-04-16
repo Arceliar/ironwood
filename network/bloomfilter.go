@@ -102,6 +102,14 @@ func (bs *blooms) init(r *router) {
 	bs.blooms = make(map[publicKey]bloomInfo)
 }
 
+func (bs *blooms) xKey(key publicKey) publicKey {
+	k := key
+	xfed := bs.router.core.config.bloomTransform(k.toEd())
+	var xform publicKey
+	copy(xform[:], xfed)
+	return xform
+}
+
 func (bs *blooms) _addInfo(key publicKey) {
 	bs.blooms[key] = bloomInfo{
 		recv: *newBloom(0),
@@ -151,7 +159,7 @@ func (bs *blooms) _getBloomFor(key publicKey) *bloom {
 	pbi.sent++
 	bs.blooms[key] = pbi
 	b := newBloom(pbi.sent)
-	xform := bs.router.pathfinder.xKey(bs.router.core.crypto.publicKey)
+	xform := bs.xKey(bs.router.core.crypto.publicKey)
 	b.addKey(xform)
 	for k, pbi := range bs.blooms {
 		if k == key {
@@ -183,37 +191,41 @@ func (bs *blooms) sendMulticast(from phony.Actor, pType wirePacketType, data wir
 	// I.e. we need to sequence number all multicast packets... This can maybe be part of the framing, along side the packet length, or something
 	// For now, we just send to 1 peer (possibly at random)
 	bs.router.Act(from, func() {
-		xform := bs.router.pathfinder.xKey(target)
-		selfInfo := bs.router.infos[bs.router.core.crypto.publicKey]
-		for k, pbi := range bs.blooms {
-			if k == fromKey {
-				// From this key, so don't send it back
-				continue
-			}
-			if !pbi.recv.filter.Test(xform[:]) {
-				// The bloom filter tells us this peer definitely doesn't carea bout this xformed target
-				continue
-			}
-			if selfInfo.parent != k {
-				// This is not our parent
-				if info := bs.router.infos[k]; info.parent != bs.router.core.crypto.publicKey {
-					// This is not our child
-					// So this is not a link used in the tree, we must not broadcast on it
-					// TODO at the very least, we should set a flag or something, on the pbi, so we don't keep needing to check this
-					continue
-				}
-			}
-			// Send this broadcast packet to the peer
-			var bestPeer *peer
-			for p := range bs.router.peers[k] {
-				if bestPeer == nil || p.prio < bestPeer.prio {
-					bestPeer = p
-				}
-			}
-			if bestPeer == nil {
-				panic("this should never happen")
-			}
-			bestPeer.sendDirect(bs.router, pType, data)
-		}
+		bs._sendMulticast(pType, data, fromKey, target)
 	})
+}
+
+func (bs *blooms) _sendMulticast(pType wirePacketType, data wireEncodeable, fromKey publicKey, target publicKey) {
+	xform := bs.xKey(target)
+	selfInfo := bs.router.infos[bs.router.core.crypto.publicKey]
+	for k, pbi := range bs.blooms {
+		if k == fromKey {
+			// From this key, so don't send it back
+			continue
+		}
+		if !pbi.recv.filter.Test(xform[:]) {
+			// The bloom filter tells us this peer definitely doesn't carea bout this xformed target
+			continue
+		}
+		if selfInfo.parent != k {
+			// This is not our parent
+			if info := bs.router.infos[k]; info.parent != bs.router.core.crypto.publicKey {
+				// This is not our child
+				// So this is not a link used in the tree, we must not broadcast on it
+				// TODO at the very least, we should set a flag or something, on the pbi, so we don't keep needing to check this
+				continue
+			}
+		}
+		// Send this broadcast packet to the peer
+		var bestPeer *peer
+		for p := range bs.router.peers[k] {
+			if bestPeer == nil || p.prio < bestPeer.prio {
+				bestPeer = p
+			}
+		}
+		if bestPeer == nil {
+			panic("this should never happen")
+		}
+		bestPeer.sendDirect(bs.router, pType, data)
+	}
 }

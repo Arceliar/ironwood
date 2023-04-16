@@ -14,7 +14,7 @@ type config struct {
 	peerPingIncrement  time.Duration
 	peerPingMaxDelay   time.Duration
 	peerMaxMessageSize uint64
-	pathTransform      func(ed25519.PublicKey) ed25519.PublicKey
+	bloomTransform     func(ed25519.PublicKey) ed25519.PublicKey
 	pathNotify         func(ed25519.PublicKey)
 	pathTimeout        time.Duration
 	pathThrottle       time.Duration
@@ -32,7 +32,7 @@ func configDefaults() Option {
 		c.peerPingIncrement = time.Second
 		c.peerPingMaxDelay = time.Minute
 		c.peerMaxMessageSize = 1048576 // 1 megabyte
-		c.pathTransform = func(key ed25519.PublicKey) ed25519.PublicKey { return key }
+		c.bloomTransform = func(key ed25519.PublicKey) ed25519.PublicKey { return key }
 		c.pathNotify = func(key ed25519.PublicKey) {}
 		c.pathTimeout = time.Minute
 		c.pathThrottle = time.Second
@@ -87,9 +87,9 @@ func WithPeerMaxMessageSize(size uint64) Option {
 	}
 }
 
-func WithPathTransform(xform func(key ed25519.PublicKey) ed25519.PublicKey) Option {
+func WithBloomTransform(xform func(key ed25519.PublicKey) ed25519.PublicKey) Option {
 	return func(c *config) {
-		c.pathTransform = xform
+		c.bloomTransform = xform
 	}
 }
 
