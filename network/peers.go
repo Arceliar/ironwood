@@ -331,6 +331,10 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleMerkleRes(bs[1:])
 	case wireProtoBloomFilter:
 		return p._handleBloom(bs[1:])
+	case wireProtoPathReq:
+		return p._handlePathReq(bs[1:])
+	case wireProtoPathRes:
+		return p._handlePathRes(bs[1:])
 	case wireProtoPathBroken:
 		return p._handlePathBroken(bs[1:])
 	case wireTraffic:
@@ -434,12 +438,36 @@ func (p *peer) sendBloom(from phony.Actor, b *bloom) {
 	p.sendDirect(from, wireProtoBloomFilter, b)
 }
 
+func (p *peer) _handlePathReq(bs []byte) error {
+	req := new(pathRequest)
+	if err := req.decode(bs); err != nil {
+		return err
+	}
+	if !req.check() {
+		return types.ErrBadMessage
+	}
+	p.peers.core.router.pathfinder.handleReq(p, req)
+	return nil
+}
+
+func (p *peer) _handlePathRes(bs []byte) error {
+	res := new(pathResponse)
+	if err := res.decode(bs); err != nil {
+		return err
+	}
+	if !res.check() {
+		return types.ErrBadMessage
+	}
+	p.peers.core.router.pathfinder.handleRes(p, res)
+	return nil
+}
+
 func (p *peer) _handlePathBroken(bs []byte) error {
 	pb := new(pathBroken)
 	if err := pb.decode(bs); err != nil {
 		return err
 	}
-	p.peers.core.router.pathfinder.handlePathBroken(p, pb)
+	p.peers.core.router.pathfinder.handleBroken(p, pb)
 	return nil
 }
 

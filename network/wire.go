@@ -14,8 +14,8 @@ const (
 	wireProtoMerkleReq
 	wireProtoMerkleRes
 	wireProtoBloomFilter
-	//wireProtoPathReq
-	//wireProtoPathRes
+	wireProtoPathReq
+	wireProtoPathRes
 	wireProtoPathBroken
 	wireTraffic
 )

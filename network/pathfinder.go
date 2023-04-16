@@ -159,7 +159,7 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 	}
 }
 
-func (pf *pathfinder) handlePathBroken(from phony.Actor, pb *pathBroken) {
+func (pf *pathfinder) handleBroken(from phony.Actor, pb *pathBroken) {
 	pf.router.Act(from, func() {
 		if _, isIn := pf.paths[pb.broken]; !isIn {
 			return
@@ -200,6 +200,49 @@ type pathRequest struct {
 	sig    signature
 }
 
+func (req *pathRequest) check() bool {
+	return true // TODO
+}
+
+func (req *pathRequest) size() int {
+	size := len(req.source)
+	size += len(req.dest)
+	size += wireSizeUint(req.seq)
+	size += len(req.sig)
+	return size
+}
+
+func (req *pathRequest) encode(out []byte) ([]byte, error) {
+	start := len(out)
+	out = append(out, req.source[:]...)
+	out = append(out, req.dest[:]...)
+	out = wireAppendUint(out, req.seq)
+	out = append(out, req.sig[:]...)
+	end := len(out)
+	if end-start != req.size() {
+		panic("this should never happen")
+	}
+	return out, nil
+}
+
+func (req *pathRequest) decode(data []byte) error {
+	var tmp pathRequest
+	orig := data
+	if !wireChopSlice(tmp.source[:], &orig) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.dest[:], &orig) {
+		return types.ErrDecode
+	} else if !wireChopUint(&tmp.seq, &orig) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.sig[:], &orig) {
+		return types.ErrDecode
+	} else if len(orig) != 0 {
+		return types.ErrDecode
+	}
+	*req = tmp
+	return nil
+}
+
 /****************
  * pathResponse *
  ****************/
@@ -211,6 +254,57 @@ type pathResponse struct {
 	root   publicKey  // Who is the source's root. TODO? omit this?
 	path   []peerPort // Path from root to source, aka coords, zero-terminated
 	sig    signature  // signed by source
+}
+
+func (res *pathResponse) check() bool {
+	return true // TODO, sig and also verify there aren't zeros in the path, though I guess that would make decoding fail anyway
+}
+
+func (res *pathResponse) size() int {
+	size := len(res.source)
+	size += len(res.dest)
+	size += wireSizeUint(res.seq)
+	size += len(res.root)
+	size += wireSizePath(res.path)
+	size += len(res.sig)
+	return size
+}
+
+func (res *pathResponse) encode(out []byte) ([]byte, error) {
+	start := len(out)
+	out = append(out, res.source[:]...)
+	out = append(out, res.dest[:]...)
+	out = wireAppendUint(out, res.seq)
+	out = append(out, res.root[:]...)
+	out = wireAppendPath(out, res.path)
+	out = append(out, res.sig[:]...)
+	end := len(out)
+	if end-start != res.size() {
+		panic("this should never happen")
+	}
+	return out, nil
+}
+
+func (res *pathResponse) decode(data []byte) error {
+	var tmp pathResponse
+	orig := data
+	if !wireChopSlice(tmp.source[:], &orig) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.dest[:], &orig) {
+		return types.ErrDecode
+	} else if !wireChopUint(&tmp.seq, &orig) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.root[:], &orig) {
+		return types.ErrDecode
+	} else if !wireChopPath(&tmp.path, &orig) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.sig[:], &orig) {
+		return types.ErrDecode
+	} else if len(orig) == 0 {
+		return types.ErrDecode
+	}
+	*res = tmp
+	return nil
 }
 
 /**************
