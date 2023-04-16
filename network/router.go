@@ -38,10 +38,12 @@ TODO: Testing
 
 */
 
+/*
 type routerCacheInfo struct {
 	peer *peer
 	dist uint64
 }
+*/
 
 type router struct {
 	phony.Inbox
@@ -51,7 +53,7 @@ type router struct {
 	ports     map[peerPort]publicKey           // used in tree lookups
 	infos     map[publicKey]routerInfo
 	timers    map[publicKey]*time.Timer
-	cache     map[publicKey]routerCacheInfo // Cache of next hop for each destination
+	cache     map[publicKey][]peerPort // Cache path slice for each peer
 	requests  map[publicKey]routerSigReq
 	responses map[publicKey]routerSigRes
 	resSeqs   map[publicKey]uint64
@@ -68,7 +70,7 @@ func (r *router) init(c *core) {
 	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
 	r.timers = make(map[publicKey]*time.Timer)
-	r.cache = make(map[publicKey]routerCacheInfo)
+	r.cache = make(map[publicKey][]peerPort)
 	r.requests = make(map[publicKey]routerSigReq)
 	r.responses = make(map[publicKey]routerSigRes)
 	r.resSeqs = make(map[publicKey]uint64)
@@ -88,7 +90,7 @@ func (r *router) _resetCache() {
 
 func (r *router) addPeer(from phony.Actor, p *peer) {
 	r.Act(from, func() {
-		r._resetCache()
+		//r._resetCache()
 		if _, isIn := r.peers[p.key]; !isIn {
 			r.peers[p.key] = make(map[*peer]struct{})
 			r.ports[p.port] = p.key
@@ -107,7 +109,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 
 func (r *router) removePeer(from phony.Actor, p *peer) {
 	r.Act(from, func() {
-		r._resetCache()
+		//r._resetCache()
 		ps := r.peers[p.key]
 		delete(ps, p)
 		if len(ps) == 0 {
@@ -116,6 +118,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 			delete(r.responses, p.key)
 			delete(r.resSeqs, p.key)
 			delete(r.ports, p.port)
+			delete(r.cache, p.key)
 			r._fix()
 		}
 	})
@@ -610,6 +613,7 @@ func (r *router) _keyLookup(dest publicKey) publicKey {
 	return dest
 }
 
+/*
 func (r *router) old_getDist(dists map[publicKey]uint64, key publicKey) (uint64, bool) {
 	var dist uint64
 	visited := make(map[publicKey]struct{})
@@ -675,6 +679,7 @@ func (r *router) old_lookup(tr *traffic) *peer {
 	r.cache[tr.dest] = routerCacheInfo{bestPeer, tr.watermark}
 	return bestPeer
 }
+*/
 
 func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint64) {
 	// This returns the distances from the destination's root for the destination and each of its ancestors
@@ -731,7 +736,14 @@ func (r *router) _getRootAndPath(dest publicKey) (publicKey, []peerPort) {
 }
 
 func (r *router) _getDist(destPath []peerPort, key publicKey) uint64 {
-	_, keyPath := r._getRootAndPath(key)
+	// We cache the keyPath to avoid allocating slices for every lookup
+	var keyPath []peerPort
+	if cached, isIn := r.cache[key]; isIn {
+		keyPath = cached
+	} else {
+		_, keyPath = r._getRootAndPath(key)
+		r.cache[key] = keyPath
+	}
 	end := len(destPath)
 	if len(keyPath) < end {
 		end = len(keyPath)
@@ -748,17 +760,6 @@ func (r *router) _getDist(destPath []peerPort, key publicKey) uint64 {
 }
 
 func (r *router) _lookup(tr *traffic) *peer {
-	if info, isIn := r.cache[tr.dest]; isIn {
-		if info.dist < tr.watermark {
-			tr.watermark = info.dist
-			return info.peer
-		} else {
-			return nil
-		}
-	}
-	if _, isIn := r.infos[tr.dest]; !isIn {
-		return nil // If we want to restore DHT-like logic, it's mostly copy/paste from _keyLookup
-	}
 	// Look up the next hop (in treespace) towards the destination
 	var bestPeer *peer
 	bestDist := ^uint64(0)
@@ -786,7 +787,6 @@ func (r *router) _lookup(tr *traffic) *peer {
 		}
 	}
 
-	r.cache[tr.dest] = routerCacheInfo{bestPeer, tr.watermark}
 	return bestPeer
 }
 
