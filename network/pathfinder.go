@@ -78,6 +78,7 @@ func (pf *pathfinder) _handleReq(fromKey publicKey, req *pathRequest) {
 	sx := pf.router.blooms.xKey(pf.router.core.crypto.publicKey)
 	if dx == sx {
 		// We match, send a response
+		// TODO throttle this
 		root, path := pf.router._getRootAndPath(pf.router.core.crypto.publicKey)
 		res := pathResponse{
 			source: pf.router.core.crypto.publicKey,
