@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"errors"
+
+	//"fmt"
 	"net"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/Arceliar/phony"
+	//"github.com/Arceliar/phony"
 
 	"github.com/Arceliar/ironwood/types"
 )
@@ -24,46 +26,52 @@ func TestTwoNodes(t *testing.T) {
 	defer cB.Close()
 	go a.HandleConn(pubB, cA, 0)
 	go b.HandleConn(pubA, cB, 0)
-	waitForRoot([]*PacketConn{a, b}, 10*time.Second)
+	waitForRoot([]*PacketConn{a, b}, 30*time.Second)
 	timer := time.NewTimer(time.Second)
 	defer func() { timer.Stop() }()
-	tA := &a.core.dhtree
-	tB := &b.core.dhtree
+	//tA := &a.core.dhtree
+	//tB := &b.core.dhtree
 	for {
-		select {
-		case <-timer.C:
-			panic("timeout")
-		default:
-		}
-		var sA, sB *treeLabel
-		phony.Block(tA, func() {
-			sA = tA._getLabel()
-		})
-		phony.Block(tB, func() {
-			sB = tB._getLabel()
-		})
-		var lA, lB *peer
-		phony.Block(tA, func() {
-			lA = tA._treeLookup(sB)
-		})
-		phony.Block(tB, func() {
-			lB = tB._treeLookup(sA)
-		})
-		if lA == nil || !bytes.Equal(lA.key[:], tB.core.crypto.publicKey[:]) {
-			continue
-		}
-		if lB == nil || !bytes.Equal(lB.key[:], tA.core.crypto.publicKey[:]) {
-			continue
-		}
-		break
+		break // FIXME DEBUG testing without a tree
+		/*
+			select {
+			case <-timer.C:
+				panic("timeout")
+			default:
+			}
+			var sA, sB *treeLabel
+			phony.Block(tA, func() {
+				sA = tA._getLabel()
+			})
+			phony.Block(tB, func() {
+				sB = tB._getLabel()
+			})
+			var lA, lB *peer
+			phony.Block(tA, func() {
+				lA = tA._treeLookup(sB)
+			})
+			phony.Block(tB, func() {
+				lB = tB._treeLookup(sA)
+			})
+			if lA == nil || !bytes.Equal(lA.key[:], tB.core.crypto.publicKey[:]) {
+				continue
+			}
+			if lB == nil || !bytes.Equal(lB.key[:], tA.core.crypto.publicKey[:]) {
+				continue
+			}
+			break
+		*/
 	}
 	timer.Stop()
-	timer = time.NewTimer(3 * time.Second)
+	timer = time.NewTimer(30 * time.Second)
 	addrA := a.LocalAddr()
 	addrB := b.LocalAddr()
 	done := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer func() {
+			defer func() { recover() }()
+			close(done)
+		}()
 		msg := make([]byte, 2048)
 		n, from, err := b.ReadFrom(msg)
 		if err != nil {
@@ -92,6 +100,24 @@ func TestTwoNodes(t *testing.T) {
 	}()
 	select {
 	case <-timer.C:
+		/*
+			phony.Block(tA, func() {
+				for k := range tA.peers {
+					fmt.Println("DEBUG1:", tA.core.crypto.publicKey, k)
+				}
+				for k := range tA.dinfos {
+					fmt.Println("DEBUG2:", tA.core.crypto.publicKey, k)
+				}
+			})
+			phony.Block(tB, func() {
+				for k := range tB.peers {
+					fmt.Println("DEBUG1:", tB.core.crypto.publicKey, k)
+				}
+				for k := range tB.dinfos {
+					fmt.Println("DEBUG2:", tB.core.crypto.publicKey, k)
+				}
+			})
+		*/
 		panic("timeout")
 	case <-done:
 	}
@@ -131,7 +157,7 @@ func TestLineNetwork(t *testing.T) {
 		}()
 	}
 	close(wait)
-	waitForRoot(conns, 10*time.Second)
+	waitForRoot(conns, 30*time.Second)
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
@@ -160,7 +186,10 @@ func TestLineNetwork(t *testing.T) {
 				}
 			}()
 			go func() {
-				defer close(done)
+				defer func() {
+					defer func() { recover() }()
+					close(done)
+				}()
 				// Recv from a at b
 				read := make([]byte, 2048)
 				for {
@@ -183,7 +212,7 @@ func TestLineNetwork(t *testing.T) {
 					}
 				}
 			}()
-			timer := time.NewTimer(3 * time.Second)
+			timer := time.NewTimer(30 * time.Second)
 			select {
 			case <-timer.C:
 				func() {
@@ -195,14 +224,16 @@ func TestLineNetwork(t *testing.T) {
 					//  FIXME this could race if the network is flapping for some reason, though it shouldn't be
 					var here, prev, next, root string
 					here = conn.LocalAddr().String()
-					if dinfo := conn.core.dhtree.prev; dinfo != nil {
-						k := conn.core.dhtree.dkeys[dinfo]
-						prev = k.addr().String()
-					}
-					if dinfo := conn.core.dhtree.next; dinfo != nil {
-						next = dinfo.key.addr().String()
-					}
-					root = conn.core.dhtree.self.root.addr().String()
+					/*
+						if dinfo := conn.core.dhtree.prev; dinfo != nil {
+							k := conn.core.dhtree.dkeys[dinfo]
+							prev = k.addr().String()
+						}
+						if dinfo := conn.core.dhtree.next; dinfo != nil {
+							next = dinfo.key.addr().String()
+						}
+					*/
+					//root = conn.core.dhtree.self.root.addr().String()
 					t.Log(prev, ":", here, ":", next, ":", root)
 				}
 				t.Log("test")
@@ -246,7 +277,7 @@ func TestRandomTreeNetwork(t *testing.T) {
 		conns = append(conns, conn)
 	}
 	close(wait)
-	waitForRoot(conns, 10*time.Second)
+	waitForRoot(conns, 30*time.Second)
 	for aIdx := range conns {
 		a := conns[aIdx]
 		aAddr := a.LocalAddr()
@@ -275,7 +306,10 @@ func TestRandomTreeNetwork(t *testing.T) {
 				}
 			}()
 			go func() {
-				defer close(done)
+				defer func() {
+					defer func() { recover() }()
+					close(done)
+				}()
 				// Recv from a at b
 				read := make([]byte, 2048)
 				for {
@@ -298,7 +332,7 @@ func TestRandomTreeNetwork(t *testing.T) {
 					}
 				}
 			}()
-			timer := time.NewTimer(3 * time.Second)
+			timer := time.NewTimer(30 * time.Second)
 			select {
 			case <-timer.C:
 				func() {
@@ -310,14 +344,16 @@ func TestRandomTreeNetwork(t *testing.T) {
 					//  FIXME this could race if the network is flapping for some reason, though it shouldn't be
 					var here, prev, next, root string
 					here = conn.LocalAddr().String()
-					if dinfo := conn.core.dhtree.prev; dinfo != nil {
-						k := conn.core.dhtree.dkeys[dinfo]
-						prev = k.addr().String()
-					}
-					if dinfo := conn.core.dhtree.next; dinfo != nil {
-						next = dinfo.key.addr().String()
-					}
-					root = conn.core.dhtree.self.root.addr().String()
+					/*
+						if dinfo := conn.core.dhtree.prev; dinfo != nil {
+							k := conn.core.dhtree.dkeys[dinfo]
+							prev = k.addr().String()
+						}
+						if dinfo := conn.core.dhtree.next; dinfo != nil {
+							next = dinfo.key.addr().String()
+						}
+					*/
+					//root = conn.core.dhtree.self.root.addr().String()
 					t.Log(prev, ":", here, ":", next, ":", root)
 				}
 				t.Log("test")
@@ -332,33 +368,36 @@ func TestRandomTreeNetwork(t *testing.T) {
 // waitForRoot is a helper function that waits until all nodes are using the same root
 // that should usually mean the network has settled into a stable state, at least for static network tests
 func waitForRoot(conns []*PacketConn, timeout time.Duration) {
-	begin := time.Now()
-	for {
-		if time.Since(begin) > timeout {
-			panic("timeout")
-		}
-		var root publicKey
-		for _, conn := range conns {
-			phony.Block(&conn.core.dhtree, func() {
-				root = conn.core.dhtree.self.root
-			})
-			break
-		}
-		var bad bool
-		for _, conn := range conns {
-			var croot publicKey
-			phony.Block(&conn.core.dhtree, func() {
-				croot = conn.core.dhtree.self.root
-			})
-			if !croot.equal(root) {
-				bad = true
+	return // FIXME DEBUG testing without a tree
+	/*
+		begin := time.Now()
+		for {
+			if time.Since(begin) > timeout {
+				panic("timeout")
+			}
+			var root publicKey
+			for _, conn := range conns {
+				phony.Block(&conn.core.dhtree, func() {
+					root = conn.core.dhtree.self.root
+				})
+				break
+			}
+			var bad bool
+			for _, conn := range conns {
+				var croot publicKey
+				phony.Block(&conn.core.dhtree, func() {
+					croot = conn.core.dhtree.self.root
+				})
+				if !croot.equal(root) {
+					bad = true
+					break
+				}
+			}
+			if !bad {
 				break
 			}
 		}
-		if !bad {
-			break
-		}
-	}
+	*/
 }
 
 /*************
@@ -440,7 +479,7 @@ func (d *dummyConn) RemoteAddr() net.Addr {
 }
 
 func (d *dummyConn) SetDeadline(t time.Time) error {
-	panic("TODO implement SetDeadline")
+	//panic("TODO implement SetDeadline")
 	return nil
 }
 

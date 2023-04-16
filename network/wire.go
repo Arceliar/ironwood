@@ -1,34 +1,20 @@
 package network
 
-import (
-	"encoding/binary"
-	"errors"
-)
+import "encoding/binary"
+
+type wirePacketType byte
 
 const (
-	wireDummy = iota // unused
-	wireProtoTree
-	wireProtoDHTBootstrap
-	wireProtoDHTBootstrapAck
-	wireProtoDHTSetup
-	wireProtoDHTTeardown
-	wireProtoPathNotify
-	wireProtoPathLookup
-	wireProtoPathResponse
-	wireDHTTraffic
-	wirePathTraffic
+	wireDummy wirePacketType = iota // unused
+	wireKeepAlive
+	wirePing
+	wireProtoSigReq
+	wireProtoSigRes
+	wireProtoAnnounce
+	wireProtoMerkleReq
+	wireProtoMerkleRes
+	wireTraffic
 )
-
-// TODO? proper packet types for out-of-band, instead of embedding into ordinary traffic
-
-const (
-	wireTrafficDummy = iota
-	wireTrafficStandard
-	wireTrafficOutOfBand
-)
-
-var wireEncodeError = errors.New("wire encode error")
-var wireDecodeError = errors.New("wire decode error")
 
 func wireChopSlice(out []byte, data *[]byte) bool {
 	if len(*data) < len(out) {
@@ -48,7 +34,18 @@ func wireChopBytes(out *[]byte, data *[]byte, size int) bool {
 	return true
 }
 
+func wireChopUvarint(out *uint64, data *[]byte) bool {
+	var u uint64
+	var l int
+	if u, l = binary.Uvarint(*data); l <= 0 {
+		return false
+	}
+	*out, *data = u, (*data)[l:]
+	return true
+}
+
 type wireEncodeable interface {
+	size() int
 	encode(out []byte) ([]byte, error)
 }
 
