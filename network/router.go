@@ -48,7 +48,8 @@ type routerCacheInfo struct {
 type router struct {
 	phony.Inbox
 	core       *core
-	pathfinder pathfinder
+	pathfinder pathfinder // see pathfinder.go
+	blooms     blooms     // see bloomfilter.go
 	merk       merkletree.Tree
 	peers      map[publicKey]map[*peer]struct{} // True if we're allowed to send a mirror to this peer (but have not done so already)
 	ports      map[peerPort]publicKey           // used in tree lookups
@@ -68,6 +69,7 @@ type router struct {
 func (r *router) init(c *core) {
 	r.core = c
 	r.pathfinder.init(r)
+	r.blooms.init(r)
 	r.peers = make(map[publicKey]map[*peer]struct{})
 	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
@@ -96,6 +98,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 		if _, isIn := r.peers[p.key]; !isIn {
 			r.peers[p.key] = make(map[*peer]struct{})
 			r.ports[p.port] = p.key
+			r.blooms._addInfo(p.key)
 		}
 		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
@@ -106,6 +109,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			p.sendSigReq(r, &req)
 		}
 		p.sendMerkleReq(r, new(routerMerkleReq))
+		r.blooms._sendBloom(p)
 	})
 }
 
