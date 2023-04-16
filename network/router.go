@@ -560,7 +560,10 @@ func (r *router) sendTraffic(tr *traffic) {
 	// This must be non-blocking, to prevent deadlocks between read/write paths in the encrypted package
 	// Basically, WriteTo and ReadFrom can't be allowed to block each other, but they could if we allowed backpressure here
 	// There may be a better way to handle this, but it practice it probably won't be an issue (we'll throw the packet in a queue somewhere, or drop it)
-	r.handleTraffic(nil, tr)
+	r.Act(nil, func() {
+		_, tr.path = r._getRootAndPath(tr.dest)
+		r.handleTraffic(nil, tr)
+	})
 }
 
 func (r *router) handleTraffic(from phony.Actor, tr *traffic) {
@@ -607,7 +610,7 @@ func (r *router) _keyLookup(dest publicKey) publicKey {
 	return dest
 }
 
-func (r *router) _getDist(dists map[publicKey]uint64, key publicKey) (uint64, bool) {
+func (r *router) old_getDist(dists map[publicKey]uint64, key publicKey) (uint64, bool) {
 	var dist uint64
 	visited := make(map[publicKey]struct{})
 	visited[publicKey{}] = struct{}{}
@@ -641,14 +644,14 @@ func (r *router) old_lookup(tr *traffic) *peer {
 	_, dists := r._getRootAndDists(tr.dest)
 	var bestPeer *peer
 	bestDist := ^uint64(0)
-	if dist, ok := r._getDist(dists, r.core.crypto.publicKey); ok && dist < tr.watermark {
+	if dist, ok := r.old_getDist(dists, r.core.crypto.publicKey); ok && dist < tr.watermark {
 		bestDist = dist // Self dist, so other nodes must be strictly better by distance
 		tr.watermark = dist
 	} else {
 		return nil
 	}
 	for k, ps := range r.peers {
-		dist, ok := r._getDist(dists, k)
+		dist, ok := r.old_getDist(dists, k)
 		if !ok {
 			continue
 		}
@@ -709,23 +712,39 @@ func (r *router) _getRootAndPath(dest publicKey) (publicKey, []peerPort) {
 		if info, isIn := r.infos[next]; isIn && !info.expired {
 			root = next
 			visited[next] = struct{}{}
-			ports = append(ports, info.port)
 			if next == info.parent {
-				// We reached a root
+				// We reached a root, don't append the self port (it should be zero anyway)
 				break
 			}
+			ports = append(ports, info.port)
 			next = info.parent
 		} else {
 			// We hit a dead end
 			return dest, nil
 		}
 	}
-	// Reverse order, but leave the last element (root's port to itself, should be zero) alone
-	for left, right := 0, len(ports)-2; left < right; left, right = left+1, right-1 {
+	// Reverse order, since we built this from the node to the root
+	for left, right := 0, len(ports)-1; left < right; left, right = left+1, right-1 {
 		ports[left], ports[right] = ports[right], ports[left]
 	}
-	ports[len(ports)-1] = 0 // Fix the last element at zero
 	return root, ports
+}
+
+func (r *router) _getDist(destPath []peerPort, key publicKey) uint64 {
+	_, keyPath := r._getRootAndPath(key)
+	end := len(destPath)
+	if len(keyPath) < end {
+		end = len(keyPath)
+	}
+	dist := uint64(len(keyPath) + len(destPath))
+	for idx := 0; idx < end; idx++ {
+		if keyPath[idx] == destPath[idx] {
+			dist -= 2
+		} else {
+			break
+		}
+	}
+	return dist
 }
 
 func (r *router) _lookup(tr *traffic) *peer {
@@ -741,21 +760,16 @@ func (r *router) _lookup(tr *traffic) *peer {
 		return nil // If we want to restore DHT-like logic, it's mostly copy/paste from _keyLookup
 	}
 	// Look up the next hop (in treespace) towards the destination
-	_, dists := r._getRootAndDists(tr.dest)
 	var bestPeer *peer
 	bestDist := ^uint64(0)
-	if dist, ok := r._getDist(dists, r.core.crypto.publicKey); ok && dist < tr.watermark {
+	if dist := r._getDist(tr.path, r.core.crypto.publicKey); dist < tr.watermark {
 		bestDist = dist // Self dist, so other nodes must be strictly better by distance
 		tr.watermark = dist
 	} else {
 		return nil
 	}
 	for k, ps := range r.peers {
-		dist, ok := r._getDist(dists, k)
-		if !ok {
-			continue
-		}
-		if dist < bestDist {
+		if dist := r._getDist(tr.path, k); dist < bestDist {
 			for p := range ps {
 				switch {
 				case bestPeer != nil && p.prio > bestPeer.prio:
@@ -916,6 +930,9 @@ type routerAnnounce struct {
 }
 
 func (ann *routerAnnounce) check() bool {
+	if ann.port == 0 && ann.key != ann.parent {
+		return false
+	}
 	bs := ann.bytesForSig(ann.key, ann.parent)
 	return ann.key.verify(bs, &ann.sig) && ann.parent.verify(bs, &ann.psig)
 }
