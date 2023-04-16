@@ -23,12 +23,14 @@ type peers struct {
 	core        *core
 	ports       map[peerPort]struct{}
 	peers       map[publicKey]map[*peer]struct{}
+	blooms      map[publicKey]peerBloomInfo
 }
 
 func (ps *peers) init(c *core) {
 	ps.core = c
 	ps.ports = make(map[peerPort]struct{})
 	ps.peers = make(map[publicKey]map[*peer]struct{})
+	ps.blooms = make(map[publicKey]peerBloomInfo)
 }
 
 func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error) {
@@ -59,6 +61,9 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 			}
 			ps.ports[port] = struct{}{}
 			ps.peers[key] = make(map[*peer]struct{})
+			ps.blooms[key] = peerBloomInfo{
+				recv: *newBloom(0),
+			}
 		}
 		p = new(peer)
 		p.peers = ps
@@ -87,6 +92,8 @@ func (ps *peers) removePeer(p *peer) error {
 			if len(kps) == 0 {
 				delete(ps.peers, p.key)
 				delete(ps.ports, p.port)
+				delete(ps.blooms, p.key)
+				ps._sendAllBlooms()
 			}
 		}
 	})
@@ -274,6 +281,10 @@ func (p *peer) handler() error {
 	// Calling doPing here ensures that it's the first traffic we ever send
 	// That helps to e.g. initialize the pingTimer
 	p.monitor.doPing()
+	// Send a bloom filter before we add the peer to the router
+	p.Act(nil, func() {
+		p.peers.sendBloom(p)
+	})
 	// Add peer to the router, to kick off protocol exchanges
 	p.peers.core.router.addPeer(p, p)
 	// Now allocate buffers and start reading / handling packets...
@@ -329,6 +340,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleMerkleReq(bs[1:])
 	case wireProtoMerkleRes:
 		return p._handleMerkleRes(bs[1:])
+	case wireProtoBloomFilter:
+		return p._handleBloom(bs[1:])
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
@@ -421,6 +434,21 @@ func (p *peer) sendMerkleRes(from phony.Actor, res *routerMerkleRes) {
 	})
 }
 
+func (p *peer) _handleBloom(bs []byte) error {
+	b := newBloom(0)
+	if err := b.decode(bs); err != nil {
+		return err
+	}
+	p.peers.handleBloom(p, b)
+	return nil
+}
+
+func (p *peer) sendBloom(from phony.Actor, b *bloom) {
+	p.Act(from, func() {
+		p.writer.sendPacket(wireProtoBloomFilter, b)
+	})
+}
+
 func (p *peer) _handleTraffic(bs []byte) error {
 	tr := allocTraffic()
 	if err := tr.decode(bs); err != nil {
@@ -467,4 +495,89 @@ func (p *peer) pop() {
 			})
 		}
 	})
+}
+
+/**********************
+ * bloom filter stuff *
+ **********************/
+
+type peerBloomInfo struct {
+	sent uint64 // TODO make sure this gets recet if a peer restarts and it races with old connections being cleaned up
+	recv bloom
+	// TODO add some kind of timeout and keepalive timer to force an update/send
+}
+
+func (ps *peers) handleBloom(fromPeer *peer, b *bloom) {
+	ps.Act(fromPeer, func() {
+		ps._handleBloom(fromPeer, b)
+	})
+}
+
+func (ps *peers) _handleBloom(fromPeer *peer, b *bloom) {
+	pbi, isIn := ps.blooms[fromPeer.key]
+	if !isIn {
+		return
+	}
+	if b.seq <= pbi.recv.seq {
+		// This is old, we probably received it via a different link to the same peer
+		return
+	}
+	doSend := !b.filter.Equal(pbi.recv.filter)
+	pbi.recv = *b
+	ps.blooms[fromPeer.key] = pbi
+	if !doSend {
+		return
+	}
+	// Our filter changed, so we need to send an update to all other peers
+	for destKey, destPeers := range ps.peers {
+		if destKey == fromPeer.key {
+			continue
+		}
+		send := ps._getBloomFor(destKey)
+		for p := range destPeers {
+			p.sendBloom(ps, send)
+		}
+	}
+}
+
+func (ps *peers) _getBloomFor(key publicKey) *bloom {
+	// getBloomFor increments the sequence number, even if we only send it to 1 peer
+	// this means we may sometimes unnecessarily send a bloom when we get a new peer link to an existing peer node
+	pbi := ps.blooms[key]
+	pbi.sent++
+	ps.blooms[key] = pbi
+	b := newBloom(pbi.sent)
+	xform := ps.core.router.pathfinder.xKey(ps.core.crypto.publicKey)
+	b.addKey(xform)
+	for k, pbi := range ps.blooms {
+		if k == key {
+			continue
+		}
+		b.addFilter(pbi.recv.filter)
+	}
+	return b
+}
+
+func (ps *peers) sendBloom(p *peer) {
+	ps.Act(p, func() {
+		ps._sendBloom(p)
+	})
+}
+
+func (ps *peers) _sendBloom(p *peer) {
+	// Sends an existing bloom, does not update seq
+	b := ps._getBloomFor(p.key)
+	p.sendBloom(ps, b)
+}
+
+func (ps *peers) _sendAllBlooms() {
+	// Called after e.g. a peer is removed, must update seq
+	for k, pbi := range ps.blooms {
+		pbi.sent++
+		ps.blooms[k] = pbi
+		b := ps._getBloomFor(k)
+		for p := range ps.peers[k] {
+			p.sendBloom(ps, b)
+		}
+	}
 }

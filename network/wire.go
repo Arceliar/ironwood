@@ -13,6 +13,7 @@ const (
 	wireProtoAnnounce
 	wireProtoMerkleReq
 	wireProtoMerkleRes
+	wireProtoBloomFilter
 	wireTraffic
 )
 
