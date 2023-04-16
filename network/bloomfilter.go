@@ -5,7 +5,7 @@ import (
 
 	bfilter "github.com/bits-and-blooms/bloom/v3"
 
-	//"github.com/Arceliar/phony"
+	"github.com/Arceliar/phony"
 
 	"github.com/Arceliar/ironwood/types"
 )
@@ -83,6 +83,8 @@ func (b *bloom) decode(data []byte) error {
 /*****************************
  * router bloom filter stuff *
  *****************************/
+
+// TODO only send blooms to peers that are on the tree, we can (and should) skip anything off-tree
 
 type blooms struct {
 	router *router
@@ -174,4 +176,44 @@ func (bs *blooms) _sendAllBlooms() {
 			p.sendBloom(bs.router, b)
 		}
 	}
+}
+
+func (bs *blooms) sendMulticast(from phony.Actor, pType wirePacketType, data wireEncodeable, fromKey publicKey, target publicKey) {
+	// TODO we need a way to detect duplicate packets from multiple links to the same peer, so we can drop them
+	// I.e. we need to sequence number all multicast packets... This can maybe be part of the framing, along side the packet length, or something
+	// For now, we just send to 1 peer (possibly at random)
+	bs.router.Act(from, func() {
+		xform := bs.router.pathfinder.xKey(target)
+		selfInfo := bs.router.infos[bs.router.core.crypto.publicKey]
+		for k, pbi := range bs.blooms {
+			if k == fromKey {
+				// From this key, so don't send it back
+				continue
+			}
+			if !pbi.recv.filter.Test(xform[:]) {
+				// The bloom filter tells us this peer definitely doesn't carea bout this xformed target
+				continue
+			}
+			if selfInfo.parent != k {
+				// This is not our parent
+				if info := bs.router.infos[k]; info.parent != bs.router.core.crypto.publicKey {
+					// This is not our child
+					// So this is not a link used in the tree, we must not broadcast on it
+					// TODO at the very least, we should set a flag or something, on the pbi, so we don't keep needing to check this
+					continue
+				}
+			}
+			// Send this broadcast packet to the peer
+			var bestPeer *peer
+			for p := range bs.router.peers[k] {
+				if bestPeer == nil || p.prio < bestPeer.prio {
+					bestPeer = p
+				}
+			}
+			if bestPeer == nil {
+				panic("this should never happen")
+			}
+			bestPeer.sendDirect(bs.router, pType, data)
+		}
+	})
 }
