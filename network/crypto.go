@@ -60,3 +60,7 @@ func (c *crypto) init(secret ed25519.PrivateKey) {
 	copy(c.privateKey[:], secret)
 	copy(c.publicKey[:], secret.Public().(ed25519.PublicKey))
 }
+
+func (key publicKey) toEd() ed25519.PublicKey {
+	return key[:]
+}

@@ -282,3 +282,14 @@ func (pc *PacketConn) GetKeyFor(target ed25519.PublicKey) (key ed25519.PublicKey
 	})
 	return
 }
+
+func (pc *PacketConn) SendLookup(target ed25519.PublicKey) {
+	var t ed25519.PublicKey
+	t = append(t, target...)
+	xform := pc.core.config.pathTransform(t)
+	var key publicKey
+	copy(key[:], xform)
+	pc.core.router.Act(nil, func() {
+		pc.core.router.pathfinder._sendLookup(key)
+	})
+}

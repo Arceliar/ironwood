@@ -27,6 +27,27 @@ func (pf *pathfinder) handleReq(from phony.Actor, req *pathRequest) {}
 
 func (pf *pathfinder) handleRes(from phony.Actor, res *pathResponse) {}
 
+func (pf *pathfinder) _sendLookup(target publicKey) {
+	// TODO the real thing
+	// For now, this is just a hack to send a notify to... whoever
+	// Note that the target is already transformed
+	for k := range pf.router.infos {
+		xformEd := pf.router.core.config.pathTransform(k.toEd())
+		var xform publicKey
+		copy(xform[:], xformEd)
+		if xform == target {
+			pf.router.core.config.pathNotify(k.toEd())
+		}
+	}
+}
+
+func (pf *pathfinder) _handleTraffic(tr *traffic) {
+	// TODO the real thing
+	// For now, this is just a hack, grab the info from the router
+	_, tr.path = pf.router._getRootAndPath(tr.dest)
+	pf.router.handleTraffic(nil, tr)
+}
+
 /************
  * pathInfo *
  ************/

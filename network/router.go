@@ -47,25 +47,27 @@ type routerCacheInfo struct {
 
 type router struct {
 	phony.Inbox
-	core      *core
-	merk      merkletree.Tree
-	peers     map[publicKey]map[*peer]struct{} // True if we're allowed to send a mirror to this peer (but have not done so already)
-	ports     map[peerPort]publicKey           // used in tree lookups
-	infos     map[publicKey]routerInfo
-	timers    map[publicKey]*time.Timer
-	cache     map[publicKey][]peerPort // Cache path slice for each peer
-	requests  map[publicKey]routerSigReq
-	responses map[publicKey]routerSigRes
-	resSeqs   map[publicKey]uint64
-	resSeqCtr uint64
-	refresh   bool
-	doRoot1   bool
-	doRoot2   bool
-	fixTimer  *time.Timer
+	core       *core
+	pathfinder pathfinder
+	merk       merkletree.Tree
+	peers      map[publicKey]map[*peer]struct{} // True if we're allowed to send a mirror to this peer (but have not done so already)
+	ports      map[peerPort]publicKey           // used in tree lookups
+	infos      map[publicKey]routerInfo
+	timers     map[publicKey]*time.Timer
+	cache      map[publicKey][]peerPort // Cache path slice for each peer
+	requests   map[publicKey]routerSigReq
+	responses  map[publicKey]routerSigRes
+	resSeqs    map[publicKey]uint64
+	resSeqCtr  uint64
+	refresh    bool
+	doRoot1    bool
+	doRoot2    bool
+	fixTimer   *time.Timer
 }
 
 func (r *router) init(c *core) {
 	r.core = c
+	r.pathfinder.init(r)
 	r.peers = make(map[publicKey]map[*peer]struct{})
 	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
@@ -564,8 +566,7 @@ func (r *router) sendTraffic(tr *traffic) {
 	// Basically, WriteTo and ReadFrom can't be allowed to block each other, but they could if we allowed backpressure here
 	// There may be a better way to handle this, but it practice it probably won't be an issue (we'll throw the packet in a queue somewhere, or drop it)
 	r.Act(nil, func() {
-		_, tr.path = r._getRootAndPath(tr.dest)
-		r.handleTraffic(nil, tr)
+		r.pathfinder._handleTraffic(tr)
 	})
 }
 
