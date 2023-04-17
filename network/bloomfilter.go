@@ -22,14 +22,13 @@ const (
 )
 
 // bloom is bloomFilterM bits long bloom filter uses bloomFilterK hash functions.
+// TODO? just make this a bfilter.BloomFilter directly, no struct?
 type bloom struct {
-	seq    uint64
 	filter *bfilter.BloomFilter
 }
 
-func newBloom(seq uint64) *bloom {
+func newBloom() *bloom {
 	return &bloom{
-		seq:    seq,
 		filter: bfilter.New(bloomFilterM, bloomFilterK),
 	}
 }
@@ -43,8 +42,7 @@ func (b *bloom) addFilter(f *bfilter.BloomFilter) {
 }
 
 func (b *bloom) size() int {
-	size := wireSizeUint(b.seq)
-	size += bloomFilterF // Flags for chunks that are all 0 bits
+	size := bloomFilterF // Flags for chunks that are all 0 bits
 	size += bloomFilterF // Flags for chunks that are all 1 bits
 	us := b.filter.BitSet().Bytes()
 	for _, u := range us {
@@ -57,7 +55,6 @@ func (b *bloom) size() int {
 
 func (b *bloom) encode(out []byte) ([]byte, error) {
 	start := len(out)
-	out = wireAppendUint(out, b.seq)
 	var flags0, flags1 [bloomFilterF]byte
 	keep := make([]uint64, 0, bloomFilterU)
 	us := b.filter.BitSet().Bytes()
@@ -91,9 +88,7 @@ func (b *bloom) decode(data []byte) error {
 	var usArray [bloomFilterU]uint64
 	us := usArray[:0]
 	var flags0, flags1 [bloomFilterF]byte
-	if !wireChopUint(&tmp.seq, &data) {
-		return types.ErrDecode
-	} else if !wireChopSlice(flags0[:], &data) {
+	if !wireChopSlice(flags0[:], &data) {
 		return types.ErrDecode
 	} else if !wireChopSlice(flags1[:], &data) {
 		return types.ErrDecode
@@ -172,7 +167,7 @@ func (bs *blooms) _fixOnTree() {
 			if wasOn && !pbi.onTree {
 				// We dropped them from the tree, so we need to send a blank (but sequence numbered) update
 				// That way, if the link returns to the tree, we don't start with false positives
-				b := newBloom(pbi.send.seq + 1)
+				b := newBloom()
 				pbi.send = *b
 				for p := range bs.router.peers[pk] {
 					p.sendBloom(bs.router, b)
@@ -195,8 +190,8 @@ func (bs *blooms) xKey(key publicKey) publicKey {
 
 func (bs *blooms) _addInfo(key publicKey) {
 	bs.blooms[key] = bloomInfo{
-		send: *newBloom(0),
-		recv: *newBloom(0),
+		send: *newBloom(),
+		recv: *newBloom(),
 	}
 }
 
@@ -217,10 +212,6 @@ func (bs *blooms) handleBloom(fromPeer *peer, b *bloom) {
 func (bs blooms) _handleBloom(fromPeer *peer, b *bloom) {
 	pbi, isIn := bs.blooms[fromPeer.key]
 	if !isIn {
-		return
-	}
-	if b.seq <= pbi.recv.seq {
-		// This is old, we probably received it via a different link to the same peer
 		return
 	}
 	doSend := !b.filter.Equal(pbi.recv.filter)
@@ -260,7 +251,7 @@ func (bs *blooms) _getBloomFor(key publicKey, keepOnes bool) (*bloom, bool) {
 	if !isIn {
 		panic("this should never happen")
 	}
-	b := newBloom(pbi.send.seq + 1)
+	b := newBloom()
 	xform := bs.xKey(bs.router.core.crypto.publicKey)
 	b.addKey(xform)
 	for k, pbi := range bs.blooms {

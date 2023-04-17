@@ -426,7 +426,7 @@ func (p *peer) sendMerkleRes(from phony.Actor, res *routerMerkleRes) {
 }
 
 func (p *peer) _handleBloom(bs []byte) error {
-	b := newBloom(0)
+	b := newBloom()
 	if err := b.decode(bs); err != nil {
 		return err
 	}
