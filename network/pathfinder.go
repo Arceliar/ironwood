@@ -3,8 +3,6 @@ package network
 import (
 	"time"
 
-	"github.com/Arceliar/phony"
-
 	"github.com/Arceliar/ironwood/types"
 )
 
@@ -67,6 +65,9 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 
 func (pf *pathfinder) handleReq(p *peer, req *pathRequest) {
 	pf.router.Act(p, func() {
+		if !pf.router.blooms._isOnTree(p.key) {
+			return
+		}
 		pf._handleReq(p.key, req)
 	})
 }
@@ -95,6 +96,9 @@ func (pf *pathfinder) _handleReq(fromKey publicKey, req *pathRequest) {
 
 func (pf *pathfinder) handleRes(p *peer, res *pathResponse) {
 	pf.router.Act(p, func() {
+		if !pf.router.blooms._isOnTree(p.key) {
+			return
+		}
 		pf._handleRes(p.key, res)
 	})
 }
@@ -220,14 +224,27 @@ func (pf *pathfinder) _handleTraffic(tr *traffic, cache bool) {
 	}
 }
 
-func (pf *pathfinder) handleBroken(from phony.Actor, pb *pathBroken) {
-	pf.router.Act(from, func() {
-		if _, isIn := pf.paths[pb.broken]; !isIn {
+func (pf *pathfinder) handleBroken(p *peer, pb *pathBroken) {
+	pf.router.Act(p, func() {
+		if !pf.router.blooms._isOnTree(p.key) {
 			return
 		}
-		// The throttle logic happens inside sendRequest
-		pf._sendRequest(pb.broken)
+		pf._handleBroken(p.key, pb)
 	})
+}
+
+func (pf *pathfinder) _handleBroken(fromKey publicKey, pb *pathBroken) {
+	// Continue the multicast
+	pf.router.blooms._sendMulticast(wireProtoPathBroken, pb, fromKey, pb.dest)
+	// Check if this is for us
+	if pb.dest != pf.router.core.crypto.publicKey {
+		return
+	}
+	if _, isIn := pf.paths[pb.broken]; !isIn {
+		return
+	}
+	// The throttle logic happens inside sendRequest
+	pf._sendRequest(pb.broken)
 }
 
 func (pf *pathfinder) _sendPathBroken(tr *traffic) {
@@ -235,8 +252,7 @@ func (pf *pathfinder) _sendPathBroken(tr *traffic) {
 		dest:   tr.source,
 		broken: tr.dest,
 	}
-	// We don't really care where the "fromKey" is for this one, self should be fine...
-	pf.router.blooms._sendMulticast(wireProtoPathBroken, &pb, pf.router.core.crypto.publicKey, pb.dest)
+	pf._handleBroken(pf.router.core.crypto.publicKey, &pb)
 }
 
 /************

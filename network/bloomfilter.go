@@ -137,6 +137,10 @@ func (bs *blooms) init(r *router) {
 	bs.zTimer = time.AfterFunc(0, bs.zTimerWork)
 }
 
+func (bs *blooms) _isOnTree(key publicKey) bool {
+	return bs.blooms[key].onTree //|| key == bs.router.core.crypto.publicKey
+}
+
 func (bs *blooms) _fixOnTree() {
 	selfKey := bs.router.core.crypto.publicKey
 	if selfInfo, isIn := bs.router.infos[selfKey]; isIn {
