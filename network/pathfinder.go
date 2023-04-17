@@ -12,13 +12,14 @@ import (
 // WARNING The pathfinder should only be used from within the router's actor, it's not threadsafe
 type pathfinder struct {
 	router *router
+	info   pathResponseInfo
 	paths  map[publicKey]pathInfo
 	rumors map[publicKey]pathRumor
-	seq    uint64
 }
 
 func (pf *pathfinder) init(r *router) {
 	pf.router = r
+	pf.info.sign(pf.router.core.crypto.privateKey)
 	pf.paths = make(map[publicKey]pathInfo)
 	pf.rumors = make(map[publicKey]pathRumor)
 }
@@ -32,7 +33,6 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 			return
 		}
 	}
-	pf.seq++
 	req := pathRequest{
 		source: pf.router.core.crypto.publicKey,
 		dest:   dest,
@@ -46,15 +46,15 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 		for k := range pf.router.infos {
 			xform := pf.router.blooms.xKey(k)
 			if xform == target {
-				root, path := pf.router._getRootAndPath(k)
-				pf.seq++
+				_, path := pf.router._getRootAndPath(k)
+				pf.info.seq++
 				res := pathResponse{
 					source: k,
 					dest:   req.source,
-					seq:    pf.seq,
-					root:   root,
-					path:   path,
-					// TODO sig
+					info: pathResponseInfo{
+						seq:  pf.info.seq,
+						path: path,
+					},
 				}
 				// Queue this up for later, so we can e.g. cache rumor packets first
 				pf.router.Act(nil, func() {
@@ -82,16 +82,22 @@ func (pf *pathfinder) _handleReq(fromKey publicKey, req *pathRequest) {
 	sx := pf.router.blooms.xKey(pf.router.core.crypto.publicKey)
 	if dx == sx {
 		// We match, send a response
-		// TODO throttle this
-		root, path := pf.router._getRootAndPath(pf.router.core.crypto.publicKey)
-		pf.seq++
+		// TODO? throttle this per dest that we're sending a response to?
+		_, path := pf.router._getRootAndPath(pf.router.core.crypto.publicKey)
 		res := pathResponse{
 			source: pf.router.core.crypto.publicKey,
 			dest:   req.source,
-			seq:    pf.seq,
-			root:   root,
-			path:   path,
-			// TODO sig
+			info: pathResponseInfo{
+				seq:  pf.info.seq,
+				path: path,
+			},
+		}
+		if !pf.info.equal(res.info) {
+			res.info.seq++
+			res.info.sign(pf.router.core.crypto.privateKey)
+			pf.info = res.info
+		} else {
+			res.info = pf.info
 		}
 		pf._handleRes(res.source, &res)
 	}
@@ -115,17 +121,30 @@ func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
 	}
 	var info pathInfo
 	var isIn bool
+	// Note that we need to res.check() in every case (as soon as success is otherwise inevitable)
 	if info, isIn = pf.paths[res.source]; isIn {
-		if res.seq <= info.seq {
+		if res.info.seq <= info.seq {
 			// This isn't newer than the last seq we received, so drop it
 			return
 		}
+		nfo := res.info
+		nfo.path = info.path
+		if nfo.equal(res.info) {
+			// This doesn't actually add anything new, so skip it
+			return
+		}
+		if !res.check() {
+			return
+		}
 		info.timer.Reset(pf.router.core.config.pathTimeout)
-		info.path = res.path
-		info.seq = res.seq
+		info.path = res.info.path
+		info.seq = res.info.seq
 	} else {
 		xform := pf.router.blooms.xKey(res.source)
 		if _, isIn := pf.rumors[xform]; !isIn {
+			return
+		}
+		if !res.check() {
 			return
 		}
 		key := res.source
@@ -151,8 +170,8 @@ func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
 			pf.rumors[xform] = rumor
 		}
 	}
-	info.path = res.path
-	info.seq = res.seq
+	info.path = res.info.path
+	info.seq = res.info.seq
 	if info.traffic != nil {
 		tr := info.traffic
 		info.traffic = nil
@@ -293,30 +312,98 @@ func (req *pathRequest) decode(data []byte) error {
 	return nil
 }
 
+/********************
+ * pathResponseInfo *
+ ********************/
+
+type pathResponseInfo struct {
+	seq  uint64     // sequence number for this update, TODO only keep this, instead of the seq in the pathfinder itself?
+	path []peerPort // Path from root to source, aka coords, zero-terminated
+	sig  signature  // signature from the source key
+}
+
+// equal returns true if the pathResponseInfos are equal, inspecting the contents of the path and ignoring the sig
+func (info *pathResponseInfo) equal(cmp pathResponseInfo) bool {
+	if info.seq != cmp.seq {
+		return false
+	} else if len(info.path) != len(cmp.path) {
+		return false
+	}
+	for idx := range info.path {
+		if info.path[idx] != cmp.path[idx] {
+			return false
+		}
+	}
+	return true
+}
+
+func (info *pathResponseInfo) bytesForSig() []byte {
+	var out []byte
+	out = wireAppendUint(out, info.seq)
+	out = wireAppendPath(out, info.path)
+	return out
+}
+
+func (info *pathResponseInfo) sign(key privateKey) {
+	info.sig = key.sign(info.bytesForSig())
+}
+
+func (info *pathResponseInfo) size() int {
+	size := wireSizeUint(info.seq)
+	size += wireSizePath(info.path)
+	size += len(info.sig)
+	return size
+}
+
+func (info *pathResponseInfo) encode(out []byte) ([]byte, error) {
+	start := len(out)
+	out = wireAppendUint(out, info.seq)
+	out = wireAppendPath(out, info.path)
+	out = append(out, info.sig[:]...)
+	end := len(out)
+	if end-start != info.size() {
+		panic("this should never happen")
+	}
+	return out, nil
+}
+
+func (info *pathResponseInfo) decode(data []byte) error {
+	var tmp pathResponseInfo
+	orig := data
+	if !wireChopUint(&tmp.seq, &orig) {
+		return types.ErrDecode
+	} else if !wireChopPath(&tmp.path, &orig) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.sig[:], &orig) {
+		return types.ErrDecode
+	} else if len(orig) != 0 {
+		return types.ErrDecode
+	}
+	*info = tmp
+	return nil
+}
+
 /****************
  * pathResponse *
  ****************/
 
 type pathResponse struct {
-	source publicKey  // who sent the response, not who resquested it
-	dest   publicKey  // exact key we are sending response to
-	seq    uint64     // sequence number from the original request
-	root   publicKey  // Who is the source's root. TODO? omit this?
-	path   []peerPort // Path from root to source, aka coords, zero-terminated
-	sig    signature  // signed by source, should *not* include the dest, so we can reuse the same (signed) response for multiple nodes / skip incrementing seq unnecessarily
+	source publicKey // who sent the response, not who resquested it
+	dest   publicKey // exact key we are sending response to
+	info   pathResponseInfo
 }
 
 func (res *pathResponse) check() bool {
-	return true // TODO, sig and also verify there aren't zeros in the path, though I guess that would make decoding fail anyway
+	if !bloomMulticastEnabled {
+		return true
+	}
+	return res.source.verify(res.info.bytesForSig(), &res.info.sig)
 }
 
 func (res *pathResponse) size() int {
 	size := len(res.source)
 	size += len(res.dest)
-	size += wireSizeUint(res.seq)
-	size += len(res.root)
-	size += wireSizePath(res.path)
-	size += len(res.sig)
+	size += res.info.size()
 	return size
 }
 
@@ -324,10 +411,10 @@ func (res *pathResponse) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	out = append(out, res.source[:]...)
 	out = append(out, res.dest[:]...)
-	out = wireAppendUint(out, res.seq)
-	out = append(out, res.root[:]...)
-	out = wireAppendPath(out, res.path)
-	out = append(out, res.sig[:]...)
+	var err error
+	if out, err = res.info.encode(out); err != nil {
+		return nil, err
+	}
 	end := len(out)
 	if end-start != res.size() {
 		panic("this should never happen")
@@ -342,16 +429,8 @@ func (res *pathResponse) decode(data []byte) error {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.dest[:], &orig) {
 		return types.ErrDecode
-	} else if !wireChopUint(&tmp.seq, &orig) {
-		return types.ErrDecode
-	} else if !wireChopSlice(tmp.root[:], &orig) {
-		return types.ErrDecode
-	} else if !wireChopPath(&tmp.path, &orig) {
-		return types.ErrDecode
-	} else if !wireChopSlice(tmp.sig[:], &orig) {
-		return types.ErrDecode
-	} else if len(orig) != 0 {
-		return types.ErrDecode
+	} else if err := tmp.info.decode(orig); err != nil {
+		return err
 	}
 	*res = tmp
 	return nil

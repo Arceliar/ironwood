@@ -450,9 +450,6 @@ func (p *peer) _handlePathRes(bs []byte) error {
 	if err := res.decode(bs); err != nil {
 		return err
 	}
-	if !res.check() {
-		return types.ErrBadMessage
-	}
 	p.peers.core.router.pathfinder.handleRes(p, res)
 	return nil
 }
