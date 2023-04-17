@@ -2,6 +2,7 @@ package network
 
 import (
 	"encoding/binary"
+	"time"
 
 	bfilter "github.com/bits-and-blooms/bloom/v3"
 
@@ -11,14 +12,15 @@ import (
 )
 
 const (
-	bloomFilterU          = 128              // number of uint64s in the backing array
+	bloomFilterU          = 1                //128              // number of uint64s in the backing array
 	bloomFilterB          = bloomFilterU * 8 // number of bytes in the backing array
 	bloomFilterM          = bloomFilterB * 8 // number of bits in teh backing array
-	bloomFilterK          = 22
-	bloomMulticastEnabled = false // Make it easy to disable, for debugging purposes
+	bloomFilterK          = 1                //22
+	bloomMulticastEnabled = true             // Make it easy to disable, for debugging purposes
+	bloomZeroDelay        = time.Second
 )
 
-// bloom is an 8192 bit long bloom filter using 22 hash functions.
+// bloom is bloomFilterM bits long bloom filter uses bloomFilterK hash functions.
 type bloom struct {
 	seq    uint64
 	filter *bfilter.BloomFilter
@@ -40,6 +42,7 @@ func (b *bloom) addFilter(f *bfilter.BloomFilter) {
 }
 
 func (b *bloom) size() int {
+	// TODO compress the wire format, so we don't use as many bytes for e.g. the common case of advertising a leaf node
 	size := wireSizeUint(b.seq)
 	size += bloomFilterB
 	return size
@@ -91,18 +94,21 @@ func (b *bloom) decode(data []byte) error {
 type blooms struct {
 	router *router
 	blooms map[publicKey]bloomInfo
+	zTimer *time.Timer // Used to delay / throttle sending updates that set bits to 0
+	zDirty bool        // Used to track when we're preparing to send updates with bits changed to zero
+	// TODO add some kind of timeout and keepalive timer to force an update/send
 }
 
 type bloomInfo struct {
 	send   bloom
 	recv   bloom
 	onTree bool
-	// TODO add some kind of timeout and keepalive timer to force an update/send
 }
 
 func (bs *blooms) init(r *router) {
 	bs.router = r
 	bs.blooms = make(map[publicKey]bloomInfo)
+	bs.zTimer = time.AfterFunc(0, bs.zTimerWork)
 }
 
 func (bs *blooms) _fixOnTree() {
@@ -145,7 +151,9 @@ func (bs *blooms) _addInfo(key publicKey) {
 func (bs *blooms) _removeInfo(key publicKey) {
 	delete(bs.blooms, key)
 	// At some later point (after we've finished cleaning things up), send blooms to everyone
-	bs.router.Act(nil, bs._sendAllBlooms)
+	bs.router.Act(nil, func() {
+		bs._sendAllBlooms(true)
+	})
 }
 
 func (bs *blooms) handleBloom(fromPeer *peer, b *bloom) {
@@ -170,19 +178,30 @@ func (bs blooms) _handleBloom(fromPeer *peer, b *bloom) {
 		return
 	}
 	// Our filter changed, so we need to send an update to all other peers
-	for destKey, destPeers := range bs.router.peers {
-		if destKey == fromPeer.key {
-			continue
-		}
-		if send, isNew := bs._getBloomFor(destKey); isNew {
-			for p := range destPeers {
-				p.sendBloom(bs.router, send)
+	/*
+		for destKey, destPeers := range bs.router.peers {
+			if destKey == fromPeer.key {
+				continue
+			}
+			if send, isNew := bs._getBloomFor(destKey, true); isNew {
+				for p := range destPeers {
+					p.sendBloom(bs.router, send)
+				}
 			}
 		}
-	}
+	*/
+	bs._sendAllBlooms(true)
 }
 
-func (bs *blooms) _getBloomFor(key publicKey) (*bloom, bool) {
+func (bs *blooms) zTimerWork() {
+	bs.router.Act(nil, func() {
+		// TODO? clean up non-tree blooms as well? When/how?
+		bs._sendAllBlooms(false)
+		bs.zDirty = false
+	})
+}
+
+func (bs *blooms) _getBloomFor(key publicKey, keepOnes bool) (*bloom, bool) {
 	// getBloomFor increments the sequence number, even if we only send it to 1 peer
 	// this means we may sometimes unnecessarily send a bloom when we get a new peer link to an existing peer node
 	pbi, isIn := bs.blooms[key]
@@ -201,6 +220,21 @@ func (bs *blooms) _getBloomFor(key publicKey) (*bloom, bool) {
 		}
 		b.addFilter(bs.blooms[k].recv.filter)
 	}
+	if keepOnes {
+		// Don't reset existing 1 bits, the zTimer will take care of that (if needed)
+		// TODO only start the timer if we have unnecessairy 1 bits, need to check
+		if !bs.zDirty {
+			c := b.filter.Copy()
+			b.addFilter(pbi.send.filter)
+			if !b.filter.Equal(c) {
+				// We're keeping unnecessairy 1 bits, so start the timer
+				bs.zDirty = true
+				bs.zTimer.Reset(bloomZeroDelay)
+			}
+		} else {
+			b.addFilter(pbi.send.filter)
+		}
+	}
 	isNew := true
 	if b.filter.Equal(pbi.send.filter) {
 		*b = pbi.send
@@ -215,17 +249,17 @@ func (bs *blooms) _getBloomFor(key publicKey) (*bloom, bool) {
 func (bs *blooms) _sendBloom(p *peer) {
 	// FIXME we should really just make it part of what router.addPeer does
 	if bs.blooms[p.key].onTree {
-		b, _ := bs._getBloomFor(p.key)
+		b, _ := bs._getBloomFor(p.key, true)
 		p.sendBloom(bs.router, b)
 	}
 }
 
-func (bs *blooms) _sendAllBlooms() {
+func (bs *blooms) _sendAllBlooms(keepOnes bool) {
 	for k, pbi := range bs.blooms {
 		if !pbi.onTree {
 			continue
 		}
-		if b, isNew := bs._getBloomFor(k); isNew {
+		if b, isNew := bs._getBloomFor(k, keepOnes); isNew {
 			if ps, isIn := bs.router.peers[k]; isIn {
 				for p := range ps {
 					p.sendBloom(bs.router, b)
