@@ -34,7 +34,7 @@ func configDefaults() Option {
 		c.peerMaxMessageSize = 1048576 // 1 megabyte
 		c.bloomTransform = func(key ed25519.PublicKey) ed25519.PublicKey { return key }
 		c.pathNotify = func(key ed25519.PublicKey) {}
-		c.pathTimeout = time.Hour // FIXME just for debug purposes, it should be time.Minute
+		c.pathTimeout = time.Minute
 		c.pathThrottle = time.Second
 	}
 }

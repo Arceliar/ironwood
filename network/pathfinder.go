@@ -125,9 +125,6 @@ func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
 		info.timer.Reset(pf.router.core.config.pathTimeout)
 		info.path = res.path
 		info.seq = res.seq
-		if info.traffic != nil {
-			panic("DEBUG1")
-		}
 	} else {
 		xform := pf.router.blooms.xKey(res.source)
 		if _, isIn := pf.rumors[xform]; !isIn {
@@ -161,8 +158,8 @@ func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
 	if info.traffic != nil {
 		tr := info.traffic
 		info.traffic = nil
+		// We defer so it happens after we've store the updated info in the map
 		defer pf._handleTraffic(tr, false)
-		panic("DEBUG2, why isn't this happening in meshnet-lab tests?")
 	}
 	pf.paths[res.source] = info
 	pf.router.core.config.pathNotify(res.source.toEd())
@@ -205,11 +202,11 @@ func (pf *pathfinder) _handleTraffic(tr *traffic, cache bool) {
 		tr.path = append(tr.path[:0], info.path...)
 		if cache {
 			if info.traffic != nil {
-				panic("DEBUG3")
 				freeTraffic(info.traffic)
 			}
 			info.traffic = allocTraffic()
 			info.traffic.copyFrom(tr)
+			pf.paths[tr.dest] = info
 		}
 		pf.router.handleTraffic(nil, tr)
 	} else {
