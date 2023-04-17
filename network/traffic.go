@@ -14,6 +14,13 @@ type traffic struct {
 	payload   []byte
 }
 
+func (tr *traffic) copyFrom(original *traffic) {
+	tmp := *tr
+	*tr = *original
+	tr.path = append(tmp.path[:0], tr.path...)
+	tr.payload = append(tmp.payload[:0], tr.payload...)
+}
+
 func (tr *traffic) size() int {
 	size := wireSizePath(tr.path)
 	size += len(tr.source)

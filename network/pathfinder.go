@@ -16,11 +16,6 @@ type pathfinder struct {
 	seq    uint64
 }
 
-type pathRumor struct {
-	traffic *traffic // TODO use this better, and/or add a similar buffer to pathInfo... quickly resend 1 dropped packet after we get a pathRes
-	timer   *time.Timer
-}
-
 func (pf *pathfinder) init(r *router) {
 	pf.router = r
 	pf.paths = make(map[publicKey]pathInfo)
@@ -135,9 +130,12 @@ func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
 		var timer *time.Timer
 		timer = time.AfterFunc(pf.router.core.config.pathTimeout, func() {
 			pf.router.Act(nil, func() {
-				if pf.paths[key].timer == timer {
+				if info := pf.paths[key]; info.timer == timer {
 					timer.Stop()
 					delete(pf.paths, key)
+					if info.traffic != nil {
+						freeTraffic(info.traffic)
+					}
 				}
 			})
 		})
@@ -146,13 +144,18 @@ func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
 			timer:   timer,
 		}
 		if rumor := pf.rumors[xform]; rumor.traffic != nil && rumor.traffic.dest == res.source {
-			tr := rumor.traffic
+			info.traffic = rumor.traffic
 			rumor.traffic = nil
-			defer pf._handleTraffic(tr)
+			pf.rumors[xform] = rumor
 		}
 	}
 	info.path = res.path
 	info.seq = res.seq
+	if info.traffic != nil {
+		tr := info.traffic
+		info.traffic = nil
+		defer pf._handleTraffic(tr, false)
+	}
 	pf.paths[res.source] = info
 	pf.router.core.config.pathNotify(res.source.toEd())
 }
@@ -183,7 +186,7 @@ func (pf *pathfinder) _sendLookup(dest publicKey) {
 	pf._sendRequest(dest)
 }
 
-func (pf *pathfinder) _handleTraffic(tr *traffic) {
+func (pf *pathfinder) _handleTraffic(tr *traffic, cache bool) {
 	if !bloomMulticastEnabled {
 		_, path := pf.router._getRootAndPath(tr.dest)
 		tr.path = append(tr.path[:0], path...)
@@ -192,18 +195,27 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 	}
 	if info, isIn := pf.paths[tr.dest]; isIn {
 		tr.path = append(tr.path[:0], info.path...)
+		if cache {
+			if info.traffic != nil {
+				freeTraffic(info.traffic)
+			}
+			info.traffic = allocTraffic()
+			info.traffic.copyFrom(tr)
+		}
 		pf.router.handleTraffic(nil, tr)
 	} else {
 		pf._sendLookup(tr.dest)
-		xform := pf.router.blooms.xKey(tr.dest)
-		if rumor, isIn := pf.rumors[xform]; isIn {
-			if rumor.traffic != nil {
-				freeTraffic(rumor.traffic)
+		if cache {
+			xform := pf.router.blooms.xKey(tr.dest)
+			if rumor, isIn := pf.rumors[xform]; isIn {
+				if rumor.traffic != nil {
+					freeTraffic(rumor.traffic)
+				}
+				rumor.traffic = tr
+				pf.rumors[xform] = rumor
+			} else {
+				panic("this should never happen")
 			}
-			rumor.traffic = tr
-			pf.rumors[xform] = rumor
-		} else {
-			panic("this should never happen")
 		}
 	}
 }
@@ -236,6 +248,16 @@ type pathInfo struct {
 	seq     uint64
 	reqTime time.Time   // Time a request was last sent (to prevent spamming)
 	timer   *time.Timer // time.AfterFunc(cleanup...), reset whenever this is used
+	traffic *traffic
+}
+
+/*************
+ * pathRumor *
+ *************/
+
+type pathRumor struct {
+	traffic *traffic // TODO use this better, and/or add a similar buffer to pathInfo... quickly resend 1 dropped packet after we get a pathRes
+	timer   *time.Timer
 }
 
 /***************

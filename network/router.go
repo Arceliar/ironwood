@@ -566,7 +566,7 @@ func (r *router) sendTraffic(tr *traffic) {
 	// Basically, WriteTo and ReadFrom can't be allowed to block each other, but they could if we allowed backpressure here
 	// There may be a better way to handle this, but it practice it probably won't be an issue (we'll throw the packet in a queue somewhere, or drop it)
 	r.Act(nil, func() {
-		r.pathfinder._handleTraffic(tr)
+		r.pathfinder._handleTraffic(tr, true)
 	})
 }
 

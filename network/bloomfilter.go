@@ -128,6 +128,8 @@ func (bs *blooms) _fixOnTree() {
 			}
 			bs.blooms[pk] = pbi
 		}
+		// TODO if the node was on tree, and now it's not, we should send a zero bloom filter
+		// That way, if/when they become on-tree again, they aren't working with old state full of false 1 bits -- default closed until we tell them about something useful.
 	} else {
 		panic("this should never happen")
 	}
