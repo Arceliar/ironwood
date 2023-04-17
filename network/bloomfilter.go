@@ -43,10 +43,9 @@ func (b *bloom) addFilter(f *bfilter.BloomFilter) {
 }
 
 func (b *bloom) size() int {
-	// TODO? also compress all 1-bit fields with a separate set of bit flags, so advertisements from a "default route" are also short
-	// Worst case overhead goes from 1/64 to 1/32 (just over 3%, seems tolerable if it makes things cheaper for e.g. phones on the edge)
 	size := wireSizeUint(b.seq)
-	size += bloomFilterF
+	size += bloomFilterF // Flags for chunks that are all 0 bits
+	size += bloomFilterF // Flags for chunks that are all 1 bits
 	us := b.filter.BitSet().Bytes()
 	for _, u := range us {
 		if u != 0 {
@@ -59,17 +58,22 @@ func (b *bloom) size() int {
 func (b *bloom) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	out = wireAppendUint(out, b.seq)
-	var flags [bloomFilterF]byte
+	var flags0, flags1 [bloomFilterF]byte
 	keep := make([]uint64, 0, bloomFilterU)
 	us := b.filter.BitSet().Bytes()
 	for idx, u := range us {
 		if u == 0 {
+			flags0[idx/8] |= 0x80 >> (uint64(idx) % 8)
 			continue
 		}
-		flags[idx/8] |= 0x80 >> (uint64(idx) % 8)
+		if u == ^uint64(0) {
+			flags1[idx/8] |= 0x80 >> (uint64(idx) % 8)
+			continue
+		}
 		keep = append(keep, u)
 	}
-	out = append(out, flags[:]...)
+	out = append(out, flags0[:]...)
+	out = append(out, flags1[:]...)
 	var buf [8]byte
 	for _, u := range keep {
 		binary.BigEndian.PutUint64(buf[:], u)
@@ -86,17 +90,23 @@ func (b *bloom) decode(data []byte) error {
 	var tmp bloom
 	var usArray [bloomFilterU]uint64
 	us := usArray[:0]
+	var flags0, flags1 [bloomFilterF]byte
 	if !wireChopUint(&tmp.seq, &data) {
 		return types.ErrDecode
-	}
-	var flags [bloomFilterF]byte
-	if !wireChopSlice(flags[:], &data) {
+	} else if !wireChopSlice(flags0[:], &data) {
+		return types.ErrDecode
+	} else if !wireChopSlice(flags1[:], &data) {
 		return types.ErrDecode
 	}
 	for idx := 0; idx < bloomFilterU; idx++ {
-		flag := flags[idx/8] & (0x80 >> (uint64(idx) % 8))
-		if flag == 0 {
+		flag0 := flags0[idx/8] & (0x80 >> (uint64(idx) % 8))
+		flag1 := flags1[idx/8] & (0x80 >> (uint64(idx) % 8))
+		if flag0 != 0 && flag1 != 0 {
+			return types.ErrDecode
+		} else if flag0 != 0 {
 			us = append(us, 0)
+		} else if flag1 != 0 {
+			us = append(us, ^uint64(0))
 		} else if len(data) >= 8 {
 			u := binary.BigEndian.Uint64(data[:8])
 			us = append(us, u)
