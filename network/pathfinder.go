@@ -43,7 +43,7 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 		seq:    pf.seq,
 		// TODO sig
 	}
-	if false {
+	if bloomMulticastEnabled {
 		// This is what we should actually do
 		pf._handleReq(req.source, &req)
 	} else {
@@ -184,6 +184,12 @@ func (pf *pathfinder) _sendLookup(dest publicKey) {
 }
 
 func (pf *pathfinder) _handleTraffic(tr *traffic) {
+	if !bloomMulticastEnabled {
+		_, path := pf.router._getRootAndPath(tr.dest)
+		tr.path = append(tr.path[:0], path...)
+		pf.router.handleTraffic(nil, tr)
+		return
+	}
 	if info, isIn := pf.paths[tr.dest]; isIn {
 		tr.path = append(tr.path[:0], info.path...)
 		pf.router.handleTraffic(nil, tr)

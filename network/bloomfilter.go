@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	bloomFilterM = 8192
-	bloomFilterK = 22
-	bloomFilterB = bloomFilterM / 8  // number of bytes in the backing array
-	bloomFilterU = bloomFilterM / 64 // number of uint64s in the backing array
+	bloomFilterM          = 8192
+	bloomFilterK          = 22
+	bloomFilterB          = bloomFilterM / 8  // number of bytes in the backing array
+	bloomFilterU          = bloomFilterM / 64 // number of uint64s in the backing array
+	bloomMulticastEnabled = false             // Make it easy to disable, for debugging purposes
 )
 
 // bloom is an 8192 bit long bloom filter using 22 hash functions.
@@ -90,6 +91,7 @@ func (b *bloom) decode(data []byte) error {
 type blooms struct {
 	router *router
 	blooms map[publicKey]bloomInfo
+	onTree []publicKey // TODO? only store blooms for on-tree links?
 }
 
 type bloomInfo struct {
@@ -101,6 +103,29 @@ type bloomInfo struct {
 func (bs *blooms) init(r *router) {
 	bs.router = r
 	bs.blooms = make(map[publicKey]bloomInfo)
+}
+
+func (bs *blooms) _fixOnTree() {
+	bs.onTree = bs.onTree[:0]
+	selfKey := bs.router.core.crypto.publicKey
+	if selfInfo, isIn := bs.router.infos[selfKey]; isIn {
+		for pk := range bs.blooms { // TODO? only store blooms for on-tree links?
+			if selfInfo.parent == pk {
+				bs.onTree = append(bs.onTree, pk)
+				continue
+			}
+			if info, isIn := bs.router.infos[pk]; isIn {
+				if info.parent == selfKey {
+					bs.onTree = append(bs.onTree, pk)
+				}
+			} else {
+				// They must not have sent us their info yet
+				// TODO? delay creating a bloomInfo until we at least have an info from them?
+			}
+		}
+	} else {
+		panic("this should never happen")
+	}
 }
 
 func (bs *blooms) xKey(key publicKey) publicKey {
@@ -166,25 +191,13 @@ func (bs *blooms) _getBloomFor(key publicKey) (*bloom, bool) {
 		panic("this should never happen")
 	}
 	b := newBloom(pbi.send.seq + 1)
-	sKey := bs.router.core.crypto.publicKey
-	sXform := bs.xKey(sKey)
-	sInfo := bs.router.infos[sKey]
-	b.addKey(sXform)
-	for k, pbi := range bs.blooms {
+	xform := bs.xKey(bs.router.core.crypto.publicKey)
+	b.addKey(xform)
+	for _, k := range bs.onTree {
 		if k == key {
 			continue
 		}
-		// Skip non-tree peers!
-		if sInfo.parent != k {
-			// This is not our parent
-			if info := bs.router.infos[k]; info.parent != sKey {
-				// This is not our child
-				// So this is not a link used in the tree, we must not broadcast on it
-				// TODO at the very least, we should set a flag or something, on the pbi, so we don't keep needing to check this
-				continue
-			}
-		}
-		b.addFilter(pbi.recv.filter)
+		b.addFilter(bs.blooms[k].recv.filter)
 	}
 	isNew := true
 	if b.filter.Equal(pbi.send.filter) {
@@ -204,11 +217,24 @@ func (bs *blooms) _sendBloom(p *peer) {
 }
 
 func (bs *blooms) _sendAllBlooms() {
-	// Called after e.g. a peer is removed, must update seq
-	for k, ps := range bs.router.peers {
+	/*
+		// Called after e.g. a peer is removed, must update seq
+		for k, ps := range bs.router.peers {
+			if b, isNew := bs._getBloomFor(k); isNew {
+				for p := range ps {
+					p.sendBloom(bs.router, b)
+				}
+			}
+		}
+	*/
+	for _, k := range bs.onTree {
 		if b, isNew := bs._getBloomFor(k); isNew {
-			for p := range ps {
-				p.sendBloom(bs.router, b)
+			if ps, isIn := bs.router.peers[k]; isIn {
+				for p := range ps {
+					p.sendBloom(bs.router, b)
+				}
+			} else {
+				panic("this should never happen")
 			}
 		}
 	}
@@ -224,6 +250,9 @@ func (bs *blooms) sendMulticast(from phony.Actor, pType wirePacketType, data wir
 }
 
 func (bs *blooms) _sendMulticast(pType wirePacketType, data wireEncodeable, fromKey publicKey, toKey publicKey) {
+	if !bloomMulticastEnabled {
+		return
+	}
 	xform := bs.xKey(toKey)
 	selfInfo := bs.router.infos[bs.router.core.crypto.publicKey]
 	for k, pbi := range bs.blooms {
