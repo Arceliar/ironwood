@@ -11,11 +11,11 @@ import (
 )
 
 const (
-	bloomFilterM          = 8192
+	bloomFilterU          = 128              // number of uint64s in the backing array
+	bloomFilterB          = bloomFilterU * 8 // number of bytes in the backing array
+	bloomFilterM          = bloomFilterB * 8 // number of bits in teh backing array
 	bloomFilterK          = 22
-	bloomFilterB          = bloomFilterM / 8  // number of bytes in the backing array
-	bloomFilterU          = bloomFilterM / 64 // number of uint64s in the backing array
-	bloomMulticastEnabled = false             // Make it easy to disable, for debugging purposes
+	bloomMulticastEnabled = false // Make it easy to disable, for debugging purposes
 )
 
 // bloom is an 8192 bit long bloom filter using 22 hash functions.
@@ -221,16 +221,6 @@ func (bs *blooms) _sendBloom(p *peer) {
 }
 
 func (bs *blooms) _sendAllBlooms() {
-	/*
-		// Called after e.g. a peer is removed, must update seq
-		for k, ps := range bs.router.peers {
-			if b, isNew := bs._getBloomFor(k); isNew {
-				for p := range ps {
-					p.sendBloom(bs.router, b)
-				}
-			}
-		}
-	*/
 	for k, pbi := range bs.blooms {
 		if !pbi.onTree {
 			continue

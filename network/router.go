@@ -38,13 +38,6 @@ TODO: Testing
 
 */
 
-/*
-type routerCacheInfo struct {
-	peer *peer
-	dist uint64
-}
-*/
-
 type router struct {
 	phony.Inbox
 	core       *core
@@ -624,74 +617,6 @@ func (r *router) _keyLookup(dest publicKey) publicKey {
 	}
 	return dest
 }
-
-/*
-func (r *router) old_getDist(dists map[publicKey]uint64, key publicKey) (uint64, bool) {
-	var dist uint64
-	visited := make(map[publicKey]struct{})
-	visited[publicKey{}] = struct{}{}
-	here := key
-	for {
-		if _, isIn := visited[here]; isIn {
-			return 0, false
-		}
-		if d, isIn := dists[here]; isIn {
-			return dist + d, true
-		}
-		dist++
-		visited[here] = struct{}{}
-		here = r.infos[here].parent
-	}
-}
-
-func (r *router) old_lookup(tr *traffic) *peer {
-	if info, isIn := r.cache[tr.dest]; isIn {
-		if info.dist < tr.watermark {
-			tr.watermark = info.dist
-			return info.peer
-		} else {
-			return nil
-		}
-	}
-	if _, isIn := r.infos[tr.dest]; !isIn {
-		return nil // If we want to restore DHT-like logic, it's mostly copy/paste from _keyLookup
-	}
-	// Look up the next hop (in treespace) towards the destination
-	_, dists := r._getRootAndDists(tr.dest)
-	var bestPeer *peer
-	bestDist := ^uint64(0)
-	if dist, ok := r.old_getDist(dists, r.core.crypto.publicKey); ok && dist < tr.watermark {
-		bestDist = dist // Self dist, so other nodes must be strictly better by distance
-		tr.watermark = dist
-	} else {
-		return nil
-	}
-	for k, ps := range r.peers {
-		dist, ok := r.old_getDist(dists, k)
-		if !ok {
-			continue
-		}
-		if dist < bestDist {
-			for p := range ps {
-				switch {
-				case bestPeer != nil && p.prio > bestPeer.prio:
-					// Skip worse priority links
-					continue
-				case bestPeer != nil && p.time.After(bestPeer.time):
-					// Skip links that have been up for less time
-					continue
-				default:
-					bestPeer = p
-				}
-			}
-			bestDist = dist
-		}
-	}
-
-	r.cache[tr.dest] = routerCacheInfo{bestPeer, tr.watermark}
-	return bestPeer
-}
-*/
 
 func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint64) {
 	// This returns the distances from the destination's root for the destination and each of its ancestors
