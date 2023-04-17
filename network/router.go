@@ -572,10 +572,10 @@ func (r *router) sendTraffic(tr *traffic) {
 
 func (r *router) handleTraffic(from phony.Actor, tr *traffic) {
 	r.Act(from, func() {
-		if tr.dest == r.core.crypto.publicKey {
-			r.core.pconn.handleTraffic(r, tr)
-		} else if p := r._lookup(tr); p != nil {
+		if p := r._lookup(tr); p != nil {
 			p.sendTraffic(r, tr)
+		} else if tr.dest == r.core.crypto.publicKey {
+			r.core.pconn.handleTraffic(r, tr)
 		} else {
 			// Not addressed to us, and we don't know a next hop.
 			// Send back a pathBroken

@@ -12,13 +12,13 @@ import (
 )
 
 const (
-	bloomFilterU          = 128              // number of uint64s in the backing array
 	bloomFilterF          = 16               // number of bytes used for flags in the wire format, should be bloomFilterU / 8, rounded up
+	bloomFilterU          = bloomFilterF * 8 // number of uint64s in the backing array
 	bloomFilterB          = bloomFilterU * 8 // number of bytes in the backing array
 	bloomFilterM          = bloomFilterB * 8 // number of bits in teh backing array
 	bloomFilterK          = 22
-	bloomMulticastEnabled = true // Make it easy to disable, for debugging purposes
 	bloomZeroDelay        = time.Second
+	bloomMulticastEnabled = true // Make it easy to disable, for debugging purposes
 )
 
 // bloom is bloomFilterM bits long bloom filter uses bloomFilterK hash functions.
@@ -43,6 +43,8 @@ func (b *bloom) addFilter(f *bfilter.BloomFilter) {
 }
 
 func (b *bloom) size() int {
+	// TODO? also compress all 1-bit fields with a separate set of bit flags, so advertisements from a "default route" are also short
+	// Worst case overhead goes from 1/64 to 1/32 (just over 3%, seems tolerable if it makes things cheaper for e.g. phones on the edge)
 	size := wireSizeUint(b.seq)
 	size += bloomFilterF
 	us := b.filter.BitSet().Bytes()
