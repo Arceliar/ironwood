@@ -91,12 +91,12 @@ func (b *bloom) decode(data []byte) error {
 type blooms struct {
 	router *router
 	blooms map[publicKey]bloomInfo
-	onTree []publicKey // TODO? only store blooms for on-tree links?
 }
 
 type bloomInfo struct {
-	send bloom
-	recv bloom
+	send   bloom
+	recv   bloom
+	onTree bool
 	// TODO add some kind of timeout and keepalive timer to force an update/send
 }
 
@@ -106,22 +106,21 @@ func (bs *blooms) init(r *router) {
 }
 
 func (bs *blooms) _fixOnTree() {
-	bs.onTree = bs.onTree[:0]
 	selfKey := bs.router.core.crypto.publicKey
 	if selfInfo, isIn := bs.router.infos[selfKey]; isIn {
-		for pk := range bs.blooms { // TODO? only store blooms for on-tree links?
+		for pk, pbi := range bs.blooms { // TODO? only store blooms for on-tree links?
+			pbi.onTree = false
 			if selfInfo.parent == pk {
-				bs.onTree = append(bs.onTree, pk)
-				continue
-			}
-			if info, isIn := bs.router.infos[pk]; isIn {
+				pbi.onTree = true
+			} else if info, isIn := bs.router.infos[pk]; isIn {
 				if info.parent == selfKey {
-					bs.onTree = append(bs.onTree, pk)
+					pbi.onTree = true
 				}
 			} else {
 				// They must not have sent us their info yet
 				// TODO? delay creating a bloomInfo until we at least have an info from them?
 			}
+			bs.blooms[pk] = pbi
 		}
 	} else {
 		panic("this should never happen")
@@ -193,7 +192,10 @@ func (bs *blooms) _getBloomFor(key publicKey) (*bloom, bool) {
 	b := newBloom(pbi.send.seq + 1)
 	xform := bs.xKey(bs.router.core.crypto.publicKey)
 	b.addKey(xform)
-	for _, k := range bs.onTree {
+	for k, pbi := range bs.blooms {
+		if !pbi.onTree {
+			continue
+		}
 		if k == key {
 			continue
 		}
@@ -212,8 +214,10 @@ func (bs *blooms) _getBloomFor(key publicKey) (*bloom, bool) {
 
 func (bs *blooms) _sendBloom(p *peer) {
 	// FIXME we should really just make it part of what router.addPeer does
-	b, _ := bs._getBloomFor(p.key)
-	p.sendBloom(bs.router, b)
+	if bs.blooms[p.key].onTree {
+		b, _ := bs._getBloomFor(p.key)
+		p.sendBloom(bs.router, b)
+	}
 }
 
 func (bs *blooms) _sendAllBlooms() {
@@ -227,7 +231,10 @@ func (bs *blooms) _sendAllBlooms() {
 			}
 		}
 	*/
-	for _, k := range bs.onTree {
+	for k, pbi := range bs.blooms {
+		if !pbi.onTree {
+			continue
+		}
 		if b, isNew := bs._getBloomFor(k); isNew {
 			if ps, isIn := bs.router.peers[k]; isIn {
 				for p := range ps {
