@@ -89,7 +89,7 @@ func (b *bloom) decode(data []byte) error {
  * router bloom filter stuff *
  *****************************/
 
-// TODO only send blooms to peers that are on the tree, we can (and should) skip anything off-tree
+// TODO? replace the global zTimer with one per peer?
 
 type blooms struct {
 	router *router
@@ -115,6 +115,7 @@ func (bs *blooms) _fixOnTree() {
 	selfKey := bs.router.core.crypto.publicKey
 	if selfInfo, isIn := bs.router.infos[selfKey]; isIn {
 		for pk, pbi := range bs.blooms { // TODO? only store blooms for on-tree links?
+			wasOn := pbi.onTree
 			pbi.onTree = false
 			if selfInfo.parent == pk {
 				pbi.onTree = true
@@ -126,10 +127,17 @@ func (bs *blooms) _fixOnTree() {
 				// They must not have sent us their info yet
 				// TODO? delay creating a bloomInfo until we at least have an info from them?
 			}
+			if wasOn && !pbi.onTree {
+				// We dropped them from the tree, so we need to send a blank (but sequence numbered) update
+				// That way, if the link returns to the tree, we don't start with false positives
+				b := newBloom(pbi.send.seq + 1)
+				pbi.send = *b
+				for p := range bs.router.peers[pk] {
+					p.sendBloom(bs.router, b)
+				}
+			}
 			bs.blooms[pk] = pbi
 		}
-		// TODO if the node was on tree, and now it's not, we should send a zero bloom filter
-		// That way, if/when they become on-tree again, they aren't working with old state full of false 1 bits -- default closed until we tell them about something useful.
 	} else {
 		panic("this should never happen")
 	}
