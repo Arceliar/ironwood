@@ -6,6 +6,9 @@ import (
 	"github.com/Arceliar/ironwood/types"
 )
 
+// TODO we should make infos delay timeout as long as they keep *receiving* traffic, not sending
+//  We want a node that restarts (and resets seq) to be reachable again after the timeout
+
 // WARNING The pathfinder should only be used from within the router's actor, it's not threadsafe
 type pathfinder struct {
 	router *router
@@ -33,8 +36,6 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 	req := pathRequest{
 		source: pf.router.core.crypto.publicKey,
 		dest:   dest,
-		seq:    pf.seq,
-		// TODO sig
 	}
 	if bloomMulticastEnabled {
 		// This is what we should actually do
@@ -46,10 +47,11 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 			xform := pf.router.blooms.xKey(k)
 			if xform == target {
 				root, path := pf.router._getRootAndPath(k)
+				pf.seq++
 				res := pathResponse{
 					source: k,
 					dest:   req.source,
-					seq:    req.seq,
+					seq:    pf.seq,
 					root:   root,
 					path:   path,
 					// TODO sig
@@ -82,10 +84,11 @@ func (pf *pathfinder) _handleReq(fromKey publicKey, req *pathRequest) {
 		// We match, send a response
 		// TODO throttle this
 		root, path := pf.router._getRootAndPath(pf.router.core.crypto.publicKey)
+		pf.seq++
 		res := pathResponse{
 			source: pf.router.core.crypto.publicKey,
 			dest:   req.source,
-			seq:    req.seq,
+			seq:    pf.seq,
 			root:   root,
 			path:   path,
 			// TODO sig
@@ -108,11 +111,6 @@ func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
 	pf.router.blooms._sendMulticast(wireProtoPathRes, res, fromKey, res.dest)
 	// Check if we should accept this response
 	if res.dest != pf.router.core.crypto.publicKey {
-		return
-	}
-	if res.seq > pf.seq {
-		// Too new, we need to just ignore it
-		// TODO? something better? could be important for anycast/multicast to work some day...
 		return
 	}
 	var info pathInfo
@@ -226,35 +224,12 @@ func (pf *pathfinder) _handleTraffic(tr *traffic, cache bool) {
 	}
 }
 
-func (pf *pathfinder) handleBroken(p *peer, pb *pathBroken) {
-	pf.router.Act(p, func() {
-		if !pf.router.blooms._isOnTree(p.key) {
-			return
-		}
-		pf._handleBroken(p.key, pb)
-	})
-}
-
-func (pf *pathfinder) _handleBroken(fromKey publicKey, pb *pathBroken) {
-	// Continue the multicast
-	pf.router.blooms._sendMulticast(wireProtoPathBroken, pb, fromKey, pb.dest)
-	// Check if this is for us
-	if pb.dest != pf.router.core.crypto.publicKey {
-		return
+func (pf *pathfinder) _doBroken(tr *traffic) {
+	req := pathRequest{
+		source: tr.source,
+		dest:   tr.dest,
 	}
-	if _, isIn := pf.paths[pb.broken]; !isIn {
-		return
-	}
-	// The throttle logic happens inside sendRequest
-	pf._sendRequest(pb.broken)
-}
-
-func (pf *pathfinder) _sendPathBroken(tr *traffic) {
-	pb := pathBroken{
-		dest:   tr.source,
-		broken: tr.dest,
-	}
-	pf._handleBroken(pf.router.core.crypto.publicKey, &pb)
+	pf.router.blooms._sendMulticast(wireProtoPathReq, &req, pf.router.core.crypto.publicKey, req.dest)
 }
 
 /************
@@ -285,19 +260,11 @@ type pathRumor struct {
 type pathRequest struct {
 	source publicKey
 	dest   publicKey
-	seq    uint64 // set by requester, used to recognize which response is which
-	sig    signature
-}
-
-func (req *pathRequest) check() bool {
-	return true // TODO
 }
 
 func (req *pathRequest) size() int {
 	size := len(req.source)
 	size += len(req.dest)
-	size += wireSizeUint(req.seq)
-	size += len(req.sig)
 	return size
 }
 
@@ -305,8 +272,6 @@ func (req *pathRequest) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	out = append(out, req.source[:]...)
 	out = append(out, req.dest[:]...)
-	out = wireAppendUint(out, req.seq)
-	out = append(out, req.sig[:]...)
 	end := len(out)
 	if end-start != req.size() {
 		panic("this should never happen")
@@ -320,10 +285,6 @@ func (req *pathRequest) decode(data []byte) error {
 	if !wireChopSlice(tmp.source[:], &orig) {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.dest[:], &orig) {
-		return types.ErrDecode
-	} else if !wireChopUint(&tmp.seq, &orig) {
-		return types.ErrDecode
-	} else if !wireChopSlice(tmp.sig[:], &orig) {
 		return types.ErrDecode
 	} else if len(orig) != 0 {
 		return types.ErrDecode
@@ -342,7 +303,7 @@ type pathResponse struct {
 	seq    uint64     // sequence number from the original request
 	root   publicKey  // Who is the source's root. TODO? omit this?
 	path   []peerPort // Path from root to source, aka coords, zero-terminated
-	sig    signature  // signed by source
+	sig    signature  // signed by source, should *not* include the dest, so we can reuse the same (signed) response for multiple nodes / skip incrementing seq unnecessarily
 }
 
 func (res *pathResponse) check() bool {
@@ -393,45 +354,5 @@ func (res *pathResponse) decode(data []byte) error {
 		return types.ErrDecode
 	}
 	*res = tmp
-	return nil
-}
-
-/**************
- * pathBroken *
- **************/
-
-// Sent when a traffic packet hits a dead-end that is not the intended destination
-
-type pathBroken struct {
-	dest   publicKey // the sender of the dropped packet
-	broken publicKey // the dest of the dropped packet
-}
-
-func (pb *pathBroken) size() int {
-	return len(pb.dest) + len(pb.broken)
-}
-
-func (pb *pathBroken) encode(out []byte) ([]byte, error) {
-	start := len(out)
-	out = append(out, pb.dest[:]...)
-	out = append(out, pb.broken[:]...)
-	end := len(out)
-	if end-start != pb.size() {
-		panic("this should never happen")
-	}
-	return out, nil
-}
-
-func (pb *pathBroken) decode(data []byte) error {
-	var tmp pathBroken
-	orig := data
-	if !wireChopSlice(tmp.dest[:], &orig) {
-		return types.ErrDecode
-	} else if !wireChopSlice(tmp.broken[:], &orig) {
-		return types.ErrDecode
-	} else if len(orig) != 0 {
-		return types.ErrDecode
-	}
-	*pb = tmp
 	return nil
 }

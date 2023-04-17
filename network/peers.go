@@ -335,8 +335,6 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handlePathReq(bs[1:])
 	case wireProtoPathRes:
 		return p._handlePathRes(bs[1:])
-	case wireProtoPathBroken:
-		return p._handlePathBroken(bs[1:])
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
@@ -443,9 +441,6 @@ func (p *peer) _handlePathReq(bs []byte) error {
 	if err := req.decode(bs); err != nil {
 		return err
 	}
-	if !req.check() {
-		return types.ErrBadMessage
-	}
 	p.peers.core.router.pathfinder.handleReq(p, req)
 	return nil
 }
@@ -459,15 +454,6 @@ func (p *peer) _handlePathRes(bs []byte) error {
 		return types.ErrBadMessage
 	}
 	p.peers.core.router.pathfinder.handleRes(p, res)
-	return nil
-}
-
-func (p *peer) _handlePathBroken(bs []byte) error {
-	pb := new(pathBroken)
-	if err := pb.decode(bs); err != nil {
-		return err
-	}
-	p.peers.core.router.pathfinder.handleBroken(p, pb)
 	return nil
 }
 

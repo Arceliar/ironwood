@@ -578,8 +578,8 @@ func (r *router) handleTraffic(from phony.Actor, tr *traffic) {
 			r.core.pconn.handleTraffic(r, tr)
 		} else {
 			// Not addressed to us, and we don't know a next hop.
-			// Send back a pathBroken
-			r.pathfinder._sendPathBroken(tr)
+			// The path is broken, so do something about that.
+			r.pathfinder._doBroken(tr)
 		}
 	})
 }
