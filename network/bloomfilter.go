@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	bloomFilterU          = 1                //128              // number of uint64s in the backing array
+	bloomFilterU          = 128              // number of uint64s in the backing array
+	bloomFilterF          = 16               // number of bytes used for flags in the wire format, should be bloomFilterU / 8, rounded up
 	bloomFilterB          = bloomFilterU * 8 // number of bytes in the backing array
 	bloomFilterM          = bloomFilterB * 8 // number of bits in teh backing array
-	bloomFilterK          = 1                //22
-	bloomMulticastEnabled = true             // Make it easy to disable, for debugging purposes
+	bloomFilterK          = 22
+	bloomMulticastEnabled = true // Make it easy to disable, for debugging purposes
 	bloomZeroDelay        = time.Second
 )
 
@@ -42,18 +43,33 @@ func (b *bloom) addFilter(f *bfilter.BloomFilter) {
 }
 
 func (b *bloom) size() int {
-	// TODO compress the wire format, so we don't use as many bytes for e.g. the common case of advertising a leaf node
 	size := wireSizeUint(b.seq)
-	size += bloomFilterB
+	size += bloomFilterF
+	us := b.filter.BitSet().Bytes()
+	for _, u := range us {
+		if u != 0 {
+			size += 8
+		}
+	}
 	return size
 }
 
 func (b *bloom) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	out = wireAppendUint(out, b.seq)
+	var flags [bloomFilterF]byte
+	keep := make([]uint64, 0, bloomFilterU)
 	us := b.filter.BitSet().Bytes()
+	for idx, u := range us {
+		if u == 0 {
+			continue
+		}
+		flags[idx/8] |= 0x80 >> (uint64(idx) % 8)
+		keep = append(keep, u)
+	}
+	out = append(out, flags[:]...)
 	var buf [8]byte
-	for _, u := range us {
+	for _, u := range keep {
 		binary.BigEndian.PutUint64(buf[:], u)
 		out = append(out, buf[:]...)
 	}
@@ -71,15 +87,25 @@ func (b *bloom) decode(data []byte) error {
 	if !wireChopUint(&tmp.seq, &data) {
 		return types.ErrDecode
 	}
-	if len(data) != bloomFilterB {
+	var flags [bloomFilterF]byte
+	if !wireChopSlice(flags[:], &data) {
 		return types.ErrDecode
 	}
-	for len(data) != 0 {
-		u := binary.BigEndian.Uint64(data[:8])
-		us = append(us, u)
-		data = data[8:]
+	for idx := 0; idx < bloomFilterU; idx++ {
+		flag := flags[idx/8] & (0x80 >> (uint64(idx) % 8))
+		if flag == 0 {
+			us = append(us, 0)
+		} else if len(data) >= 8 {
+			u := binary.BigEndian.Uint64(data[:8])
+			us = append(us, u)
+			data = data[8:]
+		} else {
+			return types.ErrDecode
+		}
 	}
-
+	if len(data) != 0 {
+		return types.ErrDecode
+	}
 	tmp.filter = bfilter.From(us, bloomFilterK)
 	*b = tmp
 	return nil
