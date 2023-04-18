@@ -36,8 +36,6 @@ func (pf *pathfinder) init(r *router) {
 	pf.rumors = make(map[publicKey]pathRumor)
 }
 
-// TODO everything, these are just placeholders
-
 func (pf *pathfinder) _sendRequest(dest publicKey) {
 	if info, isIn := pf.paths[dest]; isIn {
 		if time.Since(info.reqTime) < pf.router.core.config.pathThrottle {
@@ -49,32 +47,7 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 		source: pf.router.core.crypto.publicKey,
 		dest:   dest,
 	}
-	if bloomMulticastEnabled {
-		// This is what we should actually do
-		pf._handleReq(req.source, &req)
-	} else {
-		// Now skip to the end and just pretend we got a response from the network
-		target := pf.router.blooms.xKey(dest)
-		for k := range pf.router.infos {
-			xform := pf.router.blooms.xKey(k)
-			if xform == target {
-				_, path := pf.router._getRootAndPath(k)
-				pf.info.seq++
-				res := pathResponse{
-					source: k,
-					dest:   req.source,
-					info: pathResponseInfo{
-						seq:  pf.info.seq,
-						path: path,
-					},
-				}
-				// Queue this up for later, so we can e.g. cache rumor packets first
-				pf.router.Act(nil, func() {
-					pf._handleRes(req.dest, &res)
-				})
-			}
-		}
-	}
+	pf._handleReq(req.source, &req)
 }
 
 func (pf *pathfinder) handleReq(p *peer, req *pathRequest) {
@@ -222,12 +195,6 @@ func (pf *pathfinder) _sendLookup(dest publicKey) {
 
 func (pf *pathfinder) _handleTraffic(tr *traffic) {
 	const cache = pathfinderTrafficCache // TODO make this unconditional, this is just to easily toggle the cache on/off for now
-	if !bloomMulticastEnabled {
-		_, path := pf.router._getRootAndPath(tr.dest)
-		tr.path = append(tr.path[:0], path...)
-		pf.router.handleTraffic(nil, tr)
-		return
-	}
 	if info, isIn := pf.paths[tr.dest]; isIn {
 		tr.path = append(tr.path[:0], info.path...)
 		if cache {
@@ -407,9 +374,6 @@ type pathResponse struct {
 }
 
 func (res *pathResponse) check() bool {
-	if !bloomMulticastEnabled {
-		return true
-	}
 	return res.source.verify(res.info.bytesForSig(), &res.info.sig)
 }
 

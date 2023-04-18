@@ -12,13 +12,12 @@ import (
 )
 
 const (
-	bloomFilterF          = 16               // number of bytes used for flags in the wire format, should be bloomFilterU / 8, rounded up
-	bloomFilterU          = bloomFilterF * 8 // number of uint64s in the backing array
-	bloomFilterB          = bloomFilterU * 8 // number of bytes in the backing array
-	bloomFilterM          = bloomFilterB * 8 // number of bits in teh backing array
-	bloomFilterK          = 22
-	bloomZeroDelay        = time.Second
-	bloomMulticastEnabled = true // Make it easy to disable, for debugging purposes
+	bloomFilterF   = 16               // number of bytes used for flags in the wire format, should be bloomFilterU / 8, rounded up
+	bloomFilterU   = bloomFilterF * 8 // number of uint64s in the backing array
+	bloomFilterB   = bloomFilterU * 8 // number of bytes in the backing array
+	bloomFilterM   = bloomFilterB * 8 // number of bits in teh backing array
+	bloomFilterK   = 22               // TODO optimize this, it affects false positive rate, 22 is ~optimal for 256 entries per filter
+	bloomZeroDelay = time.Second
 )
 
 // bloom is bloomFilterM bits long bloom filter uses bloomFilterK hash functions.
@@ -327,9 +326,6 @@ func (bs *blooms) sendMulticast(from phony.Actor, pType wirePacketType, data wir
 }
 
 func (bs *blooms) _sendMulticast(pType wirePacketType, data wireEncodeable, fromKey publicKey, toKey publicKey) {
-	if !bloomMulticastEnabled {
-		return
-	}
 	xform := bs.xKey(toKey)
 	selfInfo := bs.router.infos[bs.router.core.crypto.publicKey]
 	for k, pbi := range bs.blooms {
