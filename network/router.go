@@ -167,6 +167,11 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 			delete(r.cache, p.key)
 			r.blooms._removeInfo(p.key)
 			r._fix()
+		} else {
+			// The bloom the remote node is tracking could be wrong due to a race
+			for p := range ps {
+				r.blooms._sendBloom(p)
+			}
 		}
 	})
 }

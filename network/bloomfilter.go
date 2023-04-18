@@ -11,21 +11,6 @@ import (
 	"github.com/Arceliar/ironwood/types"
 )
 
-// FIXME we need to sequence number blooms, or otherwise handle races somehow
-//  Currently, we just always use the latest received bloom
-//  Imagine a node had two links, A and B, and sends blooms 1 and 2 over both links
-//  We get A1, then A2 (over a fast link), then B1, then link B dies and we never receive B2
-//  So we need to detect this and stick with / rever to A2...
-//  But we also need to *not* get stuck never updating blooms if e.g. a node restarts faster than we close an existing connection to them (and delete the old blooms with, presumably, sequence numbers attached)
-//  Note that we could just keep seqs if we detected node restarts in general and treated them as separate peers (e.g. index by a general peerID instead of publicKey, where peerID includes publicKey plus some random nonce generated on startup).
-//    If we end up doing that anyway, then sequence numbering things is probably the right solution here too...
-//  Can delayed zero sending help us at all here? Can we at least guarantee that we fail in a state with excess 1s if there's a race?
-//    It would probably mean delaying zero sending to something much greater than peer timeout...
-//    And I *think* would technically still race, it would just make the dropped B2 much less likely to fail closed unintentionally...
-//  I guess forcing a resend periodically would also fix it (eventually), but that seems lazy and wrong...
-//  TODO? make the existing merkletree code more generic, and use that to synchronize between peers? Or a copy that's specific to this use case, if it can't be made generic enough (e.g. arbitrary key width)
-//    That would at least make it easy to chunk transmission / effectively send deltas / get wire compression for "free" (to some extent)... could also justify using larger bloom filters (at least as an option at config time) without worrying about trying to make them all fit inside 1 packet, since we'd be sending single chunks at a time (or blocks of chunks that fit in packet, if it's not a binary tree)
-
 const (
 	bloomFilterF          = 16               // number of bytes used for flags in the wire format, should be bloomFilterU / 8, rounded up
 	bloomFilterU          = bloomFilterF * 8 // number of uint64s in the backing array
@@ -308,6 +293,9 @@ func (bs *blooms) _sendBloom(p *peer) {
 	// FIXME we should really just make it part of what router.addPeer does
 	if bs.blooms[p.key].onTree {
 		b, _ := bs._getBloomFor(p.key, true)
+		p.sendBloom(bs.router, b)
+	} else {
+		b := newBloom()
 		p.sendBloom(bs.router, b)
 	}
 }
