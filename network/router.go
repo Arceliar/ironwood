@@ -258,7 +258,11 @@ func (r *router) _fix() {
 }
 
 func (r *router) _fixMerks() {
+	// FIXME this is pretty bad
+	//  We shouldn't recreate the merkle tree from scratch to compare with the existing root hash
+	//  We should just update the existing tree as-needed (minimize hashing)
 	var merk merkletree.Tree
+	var selfDists map[publicKey]uint64
 	if !bloomMulticastEnabled {
 		for k, info := range r.infos {
 			ann := info.getAnnounce(k)
@@ -269,13 +273,44 @@ func (r *router) _fixMerks() {
 			digest := merkletree.GetDigest(bs)
 			merk.Add(merkletree.Key(k), digest)
 		}
+	} else {
+		_, selfDists = r._getRootAndDists(r.core.crypto.publicKey)
 	}
 	for k, orig := range r.merks {
 		if !bloomMulticastEnabled {
 			// Merk is already in the right state, don't touch it
 		} else {
 			merk = merkletree.Tree{}
-			panic("TODO")
+			_, peerDists := r._getRootAndDists(k)
+			for k := range selfDists {
+				if info, isIn := r.infos[k]; isIn {
+					ann := info.getAnnounce(k)
+					bs, err := ann.encode(nil)
+					if err != nil {
+						panic("this should never happen")
+					}
+					digest := merkletree.GetDigest(bs)
+					merk.Add(merkletree.Key(k), digest)
+				} else {
+					panic("this should never happen")
+				}
+			}
+			for k := range peerDists {
+				if _, isIn := selfDists[k]; isIn {
+					continue
+				}
+				if info, isIn := r.infos[k]; isIn {
+					ann := info.getAnnounce(k)
+					bs, err := ann.encode(nil)
+					if err != nil {
+						panic("this should never happen")
+					}
+					digest := merkletree.GetDigest(bs)
+					merk.Add(merkletree.Key(k), digest)
+				} else {
+					panic("this should never happen")
+				}
+			}
 		}
 		if merk.Root.Digest == orig.Root.Digest {
 			continue

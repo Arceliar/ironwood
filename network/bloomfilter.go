@@ -33,7 +33,7 @@ const (
 	bloomFilterM          = bloomFilterB * 8 // number of bits in teh backing array
 	bloomFilterK          = 22
 	bloomZeroDelay        = time.Second
-	bloomMulticastEnabled = false // Make it easy to disable, for debugging purposes
+	bloomMulticastEnabled = true // Make it easy to disable, for debugging purposes
 )
 
 // bloom is bloomFilterM bits long bloom filter uses bloomFilterK hash functions.
