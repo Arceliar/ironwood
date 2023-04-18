@@ -103,8 +103,15 @@ func (pf *pathfinder) handleNotify(p *peer, notify *pathNotify) {
 }
 
 func (pf *pathfinder) _handleNotify(fromKey publicKey, notify *pathNotify) {
-	// Continue the multicast
-	pf.router.blooms._sendMulticast(wireProtoPathNotify, notify, fromKey, notify.dest)
+	// FIXME this is a hack
+	var tmp traffic
+	tmp.path = notify.path
+	tmp.watermark = notify.watermark
+	if p := pf.router._lookup(&tmp); p != nil {
+		notify.watermark = tmp.watermark
+		p.sendPathNotify(pf.router, notify)
+		return // TODO? Or don't?
+	}
 	// Check if we should accept this response
 	if notify.dest != pf.router.core.crypto.publicKey {
 		return

@@ -420,6 +420,10 @@ func (p *peer) _handlePathNotify(bs []byte) error {
 	return nil
 }
 
+func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
+	p.sendDirect(from, wireProtoPathNotify, notify)
+}
+
 func (p *peer) _handleTraffic(bs []byte) error {
 	tr := allocTraffic()
 	if err := tr.decode(bs); err != nil {
