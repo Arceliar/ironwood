@@ -3,7 +3,7 @@ package network
 import (
 	crand "crypto/rand"
 	"encoding/binary"
-	mrand "math/rand"
+	//mrand "math/rand"
 	"time"
 
 	//"fmt"
@@ -59,7 +59,6 @@ type router struct {
 	known      map[publicKey]map[publicKey]struct{} // tracks which info we and our peer both know
 	ports      map[peerPort]publicKey               // used in tree lookups
 	infos      map[publicKey]routerInfo
-	timers     map[publicKey]*time.Timer
 	cache      map[publicKey][]peerPort // Cache path slice for each peer
 	requests   map[publicKey]routerSigReq
 	responses  map[publicKey]routerSigRes
@@ -79,7 +78,6 @@ func (r *router) init(c *core) {
 	r.known = make(map[publicKey]map[publicKey]struct{})
 	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
-	r.timers = make(map[publicKey]*time.Timer)
 	r.cache = make(map[publicKey][]peerPort)
 	r.requests = make(map[publicKey]routerSigReq)
 	r.responses = make(map[publicKey]routerSigRes)
@@ -283,11 +281,17 @@ func (r *router) _purgeKnown(key publicKey) {
 func (r *router) _fixKnown() {
 	everything := make(map[publicKey]struct{})
 	selfAnc := r._getAncestry(r.core.crypto.publicKey)
+	for _, k := range selfAnc {
+		everything[k] = struct{}{}
+	}
+	var toSend []publicKey
+	var anns []*routerAnnounce
 	for peerKey, known := range r.known {
+		toSend = toSend[:0]
+		anns = anns[:0]
 		peerAnc := r._getAncestry(peerKey)
 		var toSend []publicKey
 		for _, k := range selfAnc {
-			everything[k] = struct{}{}
 			if _, isIn := known[k]; !isIn {
 				known[k] = struct{}{}
 				toSend = append(toSend, k)
@@ -300,7 +304,6 @@ func (r *router) _fixKnown() {
 				toSend = append(toSend, k)
 			}
 		}
-		var anns []*routerAnnounce
 		for _, k := range toSend {
 			if info, isIn := r.infos[k]; isIn {
 				anns = append(anns, info.getAnnounce(k))
@@ -315,13 +318,17 @@ func (r *router) _fixKnown() {
 		}
 	}
 	for key := range r.infos {
-		break // TODO remove obsolete stuff
+		//break
 		if _, isIn := everything[key]; isIn {
 			// This is important to someone, so keep it
 			continue
 		}
 		// This isn't in use, so clean it up
-		panic("TODO")
+		// FIXME this causes unit tests to hang/fail at random
+		//  Suggests that there's a race somewhere
+		//  So our state and our peer's state are becoming inconsistent
+		//  How? When? Why?
+		delete(r.infos, key)
 	}
 }
 
@@ -435,70 +442,8 @@ func (r *router) _update(ann *routerAnnounce) bool {
 		routerSigRes: ann.routerSigRes,
 		sig:          ann.sig,
 	}
-	key := ann.key
-	var timer *time.Timer
-	if key == r.core.crypto.publicKey {
-		delay := r.core.config.routerRefresh + time.Millisecond*time.Duration(mrand.Intn(1024))
-		timer = time.AfterFunc(delay, func() {
-			r.Act(nil, func() {
-				if r.timers[key] == timer {
-					r.refresh = true
-					r._fix()
-				}
-			})
-		})
-	} else {
-		timer = time.AfterFunc(r.core.config.routerTimeout, func() {
-			r.Act(nil, func() {
-				if r.timers[key] == timer {
-					info, isIn := r.infos[key]
-					if !isIn || info.expired {
-						timer.Stop() // Shouldn't matter, but just to be safe...
-						// TODO figure out if this is really the right thing to do
-						/*
-							for k, merk := range r.merks { // Shouldn't be needed, but just to be safe...
-								merk.Remove(merkletree.Key(key))
-								r.merks[k] = merk
-							}
-						*/
-						//r.merk.Remove(merkletree.Key(key)) // Shouldn't be needed, but just to be safe...
-						delete(r.infos, key)
-						delete(r.timers, key)
-						r._resetCache()
-						r._fix()
-					} else {
-						info.expired = true
-						r.infos[key] = info
-						// TODO figure out if this is really the right thing to do
-						/*
-							for k, merk := range r.merks { // Shouldn't be needed, but just to be safe...
-								merk.Remove(merkletree.Key(key))
-								r.merks[k] = merk
-							}
-						*/
-						//r.merk.Remove(merkletree.Key(key))
-						timer.Reset(time.Duration(2) * r.core.config.routerTimeout)
-						r._fix()
-					}
-				}
-			})
-		})
-	}
-	if oldTimer, isIn := r.timers[key]; isIn {
-		oldTimer.Stop()
-	}
-	/*
-		bs, _ := ann.encode(nil)
-		digest := merkletree.GetDigest(bs)
-		for k, merk := range r.merks { // TODO figure out if this is really the right thing to do
-			merk.Add(merkletree.Key(key), digest)
-			r.merks[k] = merk
-		}
-	*/
-	//r.merk.Add(merkletree.Key(key), digest)
-	r._purgeKnown(key)
-	r.infos[key] = info
-	r.timers[key] = timer
+	r._purgeKnown(ann.key)
+	r.infos[ann.key] = info
 	return true
 }
 
@@ -540,30 +485,6 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 		return
 	}
 	if r._update(ann) {
-		/*
-			for _, ps := range r.peers {
-				for p := range ps {
-					if p == sender {
-						continue
-					}
-					p.sendAnnounce(r, ann)
-				}
-			}
-		*/
-		if found {
-			// Cleanup worst
-			r.timers[worst].Stop()
-			/*
-				for k, merk := range r.merks {
-					merk.Remove(merkletree.Key(worst))
-					r.merks[k] = merk
-				}
-			*/
-			//r.merk.Remove(merkletree.Key(worst))
-			delete(r.infos, worst)
-			delete(r.timers, worst)
-			r._resetCache()
-		}
 		if ann.key == r.core.crypto.publicKey {
 			// We just updated our own info from a message we received by a peer
 			// That suggests we went offline, so our seq reset when we came back
@@ -573,17 +494,8 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 		}
 		r._fix() // This could require us to change parents
 	} else {
-		// We didn't accept the update
-		// If our current info is expired, then tell the sender about it
-		// That *should* find its way back to the original node, so they can update seqs etc more quickly...
-		/* TODO?
-		if info := r.infos[ann.key]; info.expired {
-			newAnn := info.getAnnounce(ann.key)
-			if *newAnn != *ann {
-				sender.sendAnnounce(r, newAnn)
-			}
-		}
-		*/
+		// TODO we didn't accept the ann, why did they send it?
+		// Do we need to do anything to make sure we're consistent?
 	}
 }
 
