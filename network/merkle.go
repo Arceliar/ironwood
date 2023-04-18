@@ -5,8 +5,6 @@ import (
 	"github.com/Arceliar/ironwood/types"
 )
 
-// TODO make all this stuff reply over all peer links for a given node, not just the one that happened to send the message
-
 type merkle struct {
 	router *router
 	merks  map[publicKey]merkletree.Tree
@@ -133,7 +131,9 @@ func (m *merkle) handleReq(p *peer, req *merkleReq) {
 		if uint64(plen) != req.prefixLen {
 			// We don't know anyone from the part of the network we were asked about, so we can't respond in any useful way
 			end := merkleEnd{*req}
-			p.sendMerkleEnd(m.router, &end)
+			for p := range m.router.peers[p.key] {
+				p.sendMerkleEnd(m.router, &end)
+			}
 			return
 		}
 		/*
@@ -164,7 +164,9 @@ func (m *merkle) handleReq(p *peer, req *merkleReq) {
 				res.prefix = prefix
 				res.digest = node.Digest
 				res.end = merkleEnd{*req}
-				p.sendMerkleRes(m.router, res)
+				for p := range m.router.peers[p.key] {
+					p.sendMerkleRes(m.router, res)
+				}
 			} else if node.Left != nil {
 				offset := int(prefixLen)
 				prefixLen += 1
@@ -186,9 +188,12 @@ func (m *merkle) handleReq(p *peer, req *merkleReq) {
 					panic("this should never happen")
 				}
 				if info, isIn := m.router.infos[prefix]; isIn {
-					p.sendAnnounce(m.router, info.getAnnounce(prefix))
 					end := merkleEnd{*req}
-					p.sendMerkleEnd(m.router, &end)
+					ann := info.getAnnounce(prefix)
+					for p := range m.router.peers[p.key] {
+						p.sendAnnounce(m.router, ann)
+						p.sendMerkleEnd(m.router, &end)
+					}
 				} else {
 					panic("this should never happen")
 				}
@@ -220,7 +225,6 @@ func (m *merkle) handleRes(p *peer, res *merkleRes) {
 			if !left.check() {
 				panic("this should never happen")
 			}
-			p.sendMerkleReq(m.router, &left)
 			right := merkleReq{
 				prefixLen: res.prefixLen + 1,
 				prefix:    publicKey(merkletree.GetRight(merkletree.Key(res.prefix), int(res.prefixLen))),
@@ -228,7 +232,10 @@ func (m *merkle) handleRes(p *peer, res *merkleRes) {
 			if !right.check() {
 				panic("this should never happen")
 			}
-			p.sendMerkleReq(m.router, &right)
+			for p := range m.router.peers[p.key] {
+				p.sendMerkleReq(m.router, &left)
+				p.sendMerkleReq(m.router, &right)
+			}
 			// Save that we sent these, in order
 			reqs = append(reqs, left)
 			reqs = append(reqs, right)
