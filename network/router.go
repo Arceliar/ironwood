@@ -105,14 +105,16 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			r.peers[p.key] = make(map[*peer]struct{})
 			r.ports[p.port] = p.key
 			r.blooms._addInfo(p.key)
-			var merk merkletree.Tree
-			for k, info := range r.infos {
-				ann := info.getAnnounce(k)
-				bs, _ := ann.encode(nil)
-				digest := merkletree.GetDigest(bs)
-				merk.Add(merkletree.Key(k), digest)
-			}
-			r.merks[p.key] = merk
+			r.merks[p.key] = merkletree.Tree{}
+			defer r._fixMerks()
+		} else {
+			defer func() {
+				res := routerMerkleRes{
+					digest: r.merks[p.key].Root.Digest,
+				}
+				p.sendMerkleRes(r, &res)
+				p.sendMerkleReq(r, new(routerMerkleReq))
+			}()
 		}
 		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
@@ -122,7 +124,6 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			req := r.requests[p.key]
 			p.sendSigReq(r, &req)
 		}
-		p.sendMerkleReq(r, new(routerMerkleReq))
 		r.blooms._sendBloom(p)
 	})
 }
@@ -170,6 +171,7 @@ func (r *router) _sendReqs() {
 }
 
 func (r *router) _fix() {
+	defer r._fixMerks()
 	defer r.blooms._sendAllBlooms(true) // FIXME this is bad, hack for not tracking when tree relationships change
 	defer r.blooms._fixOnTree()         // Defer second, so it happens first
 	bestRoot := r.core.crypto.publicKey
@@ -249,6 +251,41 @@ func (r *router) _fix() {
 		default:
 			// We need to self-root, but we already started a timer to do that later
 			// So this is a no-op
+		}
+	}
+}
+
+func (r *router) _fixMerks() {
+	var merk merkletree.Tree
+	if !bloomMulticastEnabled {
+		for k, info := range r.infos {
+			ann := info.getAnnounce(k)
+			bs, err := ann.encode(nil)
+			if err != nil {
+				panic("this should never happen")
+			}
+			digest := merkletree.GetDigest(bs)
+			merk.Add(merkletree.Key(k), digest)
+		}
+	}
+	for k, orig := range r.merks {
+		if !bloomMulticastEnabled {
+			// Merk is already in the right state, don't touch it
+		} else {
+			merk = merkletree.Tree{}
+			panic("TODO")
+		}
+		if merk.Root.Digest == orig.Root.Digest {
+			continue
+		}
+		r.merks[k] = merk
+		res := routerMerkleRes{
+			digest: merk.Root.Digest,
+		}
+		var req routerMerkleReq
+		for p := range r.peers[k] {
+			p.sendMerkleRes(r, &res)
+			p.sendMerkleReq(r, &req)
 		}
 	}
 }

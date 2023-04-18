@@ -23,6 +23,8 @@ import (
 //    It would probably mean delaying zero sending to something much greater than peer timeout...
 //    And I *think* would technically still race, it would just make the dropped B2 much less likely to fail closed unintentionally...
 //  I guess forcing a resend periodically would also fix it (eventually), but that seems lazy and wrong...
+//  TODO? make the existing merkletree code more generic, and use that to synchronize between peers? Or a copy that's specific to this use case, if it can't be made generic enough (e.g. arbitrary key width)
+//    That would at least make it easy to chunk transmission / effectively send deltas / get wire compression for "free" (to some extent)... could also justify using larger bloom filters (at least as an option at config time) without worrying about trying to make them all fit inside 1 packet, since we'd be sending single chunks at a time (or blocks of chunks that fit in packet, if it's not a binary tree)
 
 const (
 	bloomFilterF          = 16               // number of bytes used for flags in the wire format, should be bloomFilterU / 8, rounded up
@@ -31,7 +33,7 @@ const (
 	bloomFilterM          = bloomFilterB * 8 // number of bits in teh backing array
 	bloomFilterK          = 22
 	bloomZeroDelay        = time.Second
-	bloomMulticastEnabled = true // Make it easy to disable, for debugging purposes
+	bloomMulticastEnabled = false // Make it easy to disable, for debugging purposes
 )
 
 // bloom is bloomFilterM bits long bloom filter uses bloomFilterK hash functions.
