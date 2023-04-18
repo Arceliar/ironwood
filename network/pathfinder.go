@@ -95,15 +95,12 @@ func (pf *pathfinder) _handleLookup(fromKey publicKey, lookup *pathLookup) {
 
 func (pf *pathfinder) handleNotify(p *peer, notify *pathNotify) {
 	pf.router.Act(p, func() {
-		if !pf.router.blooms._isOnTree(p.key) {
-			return
-		}
 		pf._handleNotify(p.key, notify)
 	})
 }
 
 func (pf *pathfinder) _handleNotify(fromKey publicKey, notify *pathNotify) {
-	// FIXME this is a hack
+	// FIXME this is a hack, we should make lookup handle this (e.g. take path and pointer to watermark)
 	var tmp traffic
 	tmp.path = notify.path
 	tmp.watermark = notify.watermark
@@ -187,13 +184,13 @@ func (pf *pathfinder) _rumorSendLookup(dest publicKey) {
 		}
 		rumor.sendTime = time.Now()
 		rumor.timer.Reset(pf.router.core.config.pathTimeout)
+		pf.rumors[xform] = rumor
 	} else {
 		var timer *time.Timer
-		x := xform
 		timer = time.AfterFunc(pf.router.core.config.pathTimeout, func() {
 			pf.router.Act(nil, func() {
-				if rumor := pf.rumors[x]; rumor.timer == timer {
-					delete(pf.rumors, x)
+				if rumor := pf.rumors[xform]; rumor.timer == timer {
+					delete(pf.rumors, xform)
 					timer.Stop()
 					if rumor.traffic != nil {
 						freeTraffic(rumor.traffic)
@@ -201,7 +198,7 @@ func (pf *pathfinder) _rumorSendLookup(dest publicKey) {
 				}
 			})
 		})
-		pf.rumors[x] = pathRumor{
+		pf.rumors[xform] = pathRumor{
 			sendTime: time.Now(),
 			timer:    timer,
 		}
