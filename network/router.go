@@ -56,7 +56,8 @@ type router struct {
 	pathfinder pathfinder                           // see pathfinder.go
 	blooms     blooms                               // see bloomfilter.go
 	peers      map[publicKey]map[*peer]struct{}     // True if we're allowed to send a mirror to this peer (but have not done so already)
-	known      map[publicKey]map[publicKey]struct{} // tracks which info we and our peer both know
+	send       map[publicKey]map[publicKey]struct{} // tracks which info we've sent to our peer
+	recv       map[publicKey]map[publicKey]struct{} // tracks which info our peer has sent to us
 	ports      map[peerPort]publicKey               // used in tree lookups
 	infos      map[publicKey]routerInfo
 	cache      map[publicKey][]peerPort // Cache path slice for each peer
@@ -75,7 +76,8 @@ func (r *router) init(c *core) {
 	r.pathfinder.init(r)
 	r.blooms.init(r)
 	r.peers = make(map[publicKey]map[*peer]struct{})
-	r.known = make(map[publicKey]map[publicKey]struct{})
+	r.send = make(map[publicKey]map[publicKey]struct{})
+	r.recv = make(map[publicKey]map[publicKey]struct{})
 	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
 	r.cache = make(map[publicKey][]peerPort)
@@ -101,7 +103,8 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 		//r._resetCache()
 		if _, isIn := r.peers[p.key]; !isIn {
 			r.peers[p.key] = make(map[*peer]struct{})
-			r.known[p.key] = make(map[publicKey]struct{})
+			r.send[p.key] = make(map[publicKey]struct{})
+			r.recv[p.key] = make(map[publicKey]struct{})
 			r.ports[p.port] = p.key
 			r.blooms._addInfo(p.key)
 			defer r._fixKnown()
@@ -110,17 +113,18 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			// TODO deduplicate similar logic between here and _fixKnown
 			selfAnc := r._getAncestry(r.core.crypto.publicKey)
 			peerAnc := r._getAncestry(p.key)
-			var toSend []publicKey
-			known := make(map[publicKey]struct{})
-			for _, k := range selfAnc {
-				known[k] = struct{}{}
-				toSend = append(toSend, k)
-			}
+			toSend := selfAnc
 			for _, k := range peerAnc {
-				if _, isIn := known[k]; isIn {
-					continue
+				var found bool
+				for _, sendKey := range selfAnc {
+					if k == sendKey {
+						found = true
+						break
+					}
 				}
-				toSend = append(toSend, k)
+				if !found {
+					toSend = append(toSend, k)
+				}
 			}
 			for _, k := range toSend {
 				if info, isIn := r.infos[k]; isIn {
@@ -149,7 +153,8 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 		delete(ps, p)
 		if len(ps) == 0 {
 			delete(r.peers, p.key)
-			delete(r.known, p.key)
+			delete(r.send, p.key)
+			delete(r.recv, p.key)
 			delete(r.ports, p.port)
 			delete(r.requests, p.key)
 			delete(r.responses, p.key)
@@ -273,8 +278,11 @@ func (r *router) _fix() {
 }
 
 func (r *router) _purgeKnown(key publicKey) {
-	for _, known := range r.known {
-		delete(known, key)
+	for _, send := range r.send {
+		delete(send, key)
+	}
+	for _, recv := range r.recv {
+		delete(recv, key)
 	}
 }
 
@@ -286,30 +294,22 @@ func (r *router) _fixKnown() {
 	}
 	var toSend []publicKey
 	var anns []*routerAnnounce
-	for peerKey, known := range r.known {
+	for peerKey, send := range r.send {
 		toSend = toSend[:0]
 		anns = anns[:0]
 		peerAnc := r._getAncestry(peerKey)
 		var toSend []publicKey
 		for _, k := range selfAnc {
-			if _, isIn := known[k]; !isIn {
+			if _, isIn := send[k]; !isIn {
+				send[k] = struct{}{}
 				toSend = append(toSend, k)
 			}
 		}
 		for _, k := range peerAnc {
 			everything[k] = struct{}{}
-			if _, isIn := known[k]; !isIn {
-				// TODO skip if it's already in toSend, this is just testing for now
-				var found bool
-				for _, sendKey := range toSend {
-					if k == sendKey {
-						found = true
-						break
-					}
-				}
-				if !found {
-					toSend = append(toSend, k)
-				}
+			if _, isIn := send[k]; !isIn {
+				send[k] = struct{}{}
+				toSend = append(toSend, k)
 			}
 		}
 		for _, k := range toSend {
@@ -323,6 +323,11 @@ func (r *router) _fixKnown() {
 			for _, ann := range anns {
 				p.sendAnnounce(r, ann)
 			}
+		}
+	}
+	for _, recv := range r.recv {
+		for k := range recv {
+			everything[k] = struct{}{}
 		}
 	}
 	for key := range r.infos {
@@ -464,7 +469,7 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 			// So we need to set that an update is required, as if our refresh timer has passed
 			r.refresh = true
 		}
-		r.known[p.key][ann.key] = struct{}{}
+		r.recv[p.key][ann.key] = struct{}{}
 		r._fix() // This could require us to change parents
 	} else {
 		// TODO we didn't accept the ann, why did they send it?
@@ -475,7 +480,7 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 			sig:          ann.sig,
 		}
 		if info == r.infos[ann.key] {
-			r.known[p.key][ann.key] = struct{}{}
+			r.recv[p.key][ann.key] = struct{}{}
 		}
 	}
 }
