@@ -259,11 +259,13 @@ type pathRumor struct {
 type pathLookup struct {
 	source publicKey
 	dest   publicKey
+	from   []peerPort
 }
 
 func (lookup *pathLookup) size() int {
 	size := len(lookup.source)
 	size += len(lookup.dest)
+	size += wireSizePath(lookup.from)
 	return size
 }
 
@@ -271,6 +273,7 @@ func (lookup *pathLookup) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	out = append(out, lookup.source[:]...)
 	out = append(out, lookup.dest[:]...)
+	out = wireAppendPath(out, lookup.from)
 	end := len(out)
 	if end-start != lookup.size() {
 		panic("this should never happen")
@@ -284,6 +287,8 @@ func (lookup *pathLookup) decode(data []byte) error {
 	if !wireChopSlice(tmp.source[:], &orig) {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.dest[:], &orig) {
+		return types.ErrDecode
+	} else if !wireChopPath(&tmp.from, &orig) {
 		return types.ErrDecode
 	} else if len(orig) != 0 {
 		return types.ErrDecode
@@ -368,9 +373,11 @@ func (info *pathNotifyInfo) decode(data []byte) error {
  **************/
 
 type pathNotify struct {
-	source publicKey // who sent the response, not who resquested it
-	dest   publicKey // exact key we are sending response to
-	info   pathNotifyInfo
+	path      []peerPort
+	watermark uint64
+	source    publicKey // who sent the response, not who resquested it
+	dest      publicKey // exact key we are sending response to
+	info      pathNotifyInfo
 }
 
 func (notify *pathNotify) check() bool {
@@ -378,7 +385,9 @@ func (notify *pathNotify) check() bool {
 }
 
 func (notify *pathNotify) size() int {
-	size := len(notify.source)
+	size := wireSizePath(notify.path)
+	size += wireSizeUint(notify.watermark)
+	size += len(notify.source)
 	size += len(notify.dest)
 	size += notify.info.size()
 	return size
@@ -386,6 +395,8 @@ func (notify *pathNotify) size() int {
 
 func (notify *pathNotify) encode(out []byte) ([]byte, error) {
 	start := len(out)
+	out = wireAppendPath(out, notify.path)
+	out = wireAppendUint(out, notify.watermark)
 	out = append(out, notify.source[:]...)
 	out = append(out, notify.dest[:]...)
 	var err error
@@ -402,7 +413,11 @@ func (notify *pathNotify) encode(out []byte) ([]byte, error) {
 func (notify *pathNotify) decode(data []byte) error {
 	var tmp pathNotify
 	orig := data
-	if !wireChopSlice(tmp.source[:], &orig) {
+	if !wireChopPath(&tmp.path, &orig) {
+		return types.ErrDecode
+	} else if !wireChopUint(&tmp.watermark, &orig) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.source[:], &orig) {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.dest[:], &orig) {
 		return types.ErrDecode

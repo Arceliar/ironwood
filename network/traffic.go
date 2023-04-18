@@ -8,6 +8,7 @@ import "github.com/Arceliar/ironwood/types"
 
 type traffic struct {
 	path      []peerPort // *not* zero terminated
+	from      []peerPort
 	source    publicKey
 	dest      publicKey
 	watermark uint64 // TODO? uvarint
@@ -23,6 +24,7 @@ func (tr *traffic) copyFrom(original *traffic) {
 
 func (tr *traffic) size() int {
 	size := wireSizePath(tr.path)
+	size += wireSizePath(tr.from)
 	size += len(tr.source)
 	size += len(tr.dest)
 	size += wireSizeUint(tr.watermark)
@@ -33,6 +35,7 @@ func (tr *traffic) size() int {
 func (tr *traffic) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	out = wireAppendPath(out, tr.path)
+	out = wireAppendPath(out, tr.from)
 	out = append(out, tr.source[:]...)
 	out = append(out, tr.dest[:]...)
 	out = wireAppendUint(out, tr.watermark)
@@ -47,10 +50,12 @@ func (tr *traffic) encode(out []byte) ([]byte, error) {
 func (tr *traffic) decode(data []byte) error {
 	var tmp traffic
 	tmp.path = tr.path[:0]
+	tmp.from = tr.from[:0]
 	if !wireChopPath(&tmp.path, &data) {
 		return types.ErrDecode
-	}
-	if !wireChopSlice(tmp.source[:], &data) {
+	} else if !wireChopPath(&tmp.from, &data) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.source[:], &data) {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.dest[:], &data) {
 		return types.ErrDecode
