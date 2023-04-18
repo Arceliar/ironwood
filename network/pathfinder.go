@@ -43,9 +43,12 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 			return
 		}
 	}
+	selfKey := pf.router.core.crypto.publicKey
+	_, from := pf.router._getRootAndPath(selfKey)
 	lookup := pathLookup{
-		source: pf.router.core.crypto.publicKey,
+		source: selfKey,
 		dest:   dest,
+		from:   from,
 	}
 	pf._handleLookup(lookup.source, &lookup)
 }
@@ -70,8 +73,10 @@ func (pf *pathfinder) _handleLookup(fromKey publicKey, lookup *pathLookup) {
 		// TODO? throttle this per dest that we're sending a response to?
 		_, path := pf.router._getRootAndPath(pf.router.core.crypto.publicKey)
 		notify := pathNotify{
-			source: pf.router.core.crypto.publicKey,
-			dest:   lookup.source,
+			path:      lookup.from,
+			watermark: ^uint64(0),
+			source:    pf.router.core.crypto.publicKey,
+			dest:      lookup.source,
 			info: pathNotifyInfo{
 				seq:  pf.info.seq,
 				path: path,
@@ -197,6 +202,8 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 	const cache = pathfinderTrafficCache // TODO make this unconditional, this is just to easily toggle the cache on/off for now
 	if info, isIn := pf.paths[tr.dest]; isIn {
 		tr.path = append(tr.path[:0], info.path...)
+		_, from := pf.router._getRootAndPath(pf.router.core.crypto.publicKey)
+		tr.from = append(tr.from[:0], from...)
 		if cache {
 			if info.traffic != nil {
 				freeTraffic(info.traffic)
@@ -228,6 +235,7 @@ func (pf *pathfinder) _doBroken(tr *traffic) {
 		source: tr.source,
 		dest:   tr.dest,
 	}
+	lookup.from = append(lookup.from, tr.from...)
 	pf.router.blooms._sendMulticast(wireProtoPathLookup, &lookup, pf.router.core.crypto.publicKey, lookup.dest)
 }
 
