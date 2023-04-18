@@ -53,11 +53,11 @@ TODO: Mostly ignore the above
 type router struct {
 	phony.Inbox
 	core       *core
-	pathfinder pathfinder // see pathfinder.go
-	blooms     blooms     // see bloomfilter.go
-	merk       merkletree.Tree
+	pathfinder pathfinder                       // see pathfinder.go
+	blooms     blooms                           // see bloomfilter.go
 	peers      map[publicKey]map[*peer]struct{} // True if we're allowed to send a mirror to this peer (but have not done so already)
 	ports      map[peerPort]publicKey           // used in tree lookups
+	merks      map[publicKey]merkletree.Tree    // Merkle tree per peered node, to synchronize any relevant state with that peer
 	infos      map[publicKey]routerInfo
 	timers     map[publicKey]*time.Timer
 	cache      map[publicKey][]peerPort // Cache path slice for each peer
@@ -77,6 +77,7 @@ func (r *router) init(c *core) {
 	r.blooms.init(r)
 	r.peers = make(map[publicKey]map[*peer]struct{})
 	r.ports = make(map[peerPort]publicKey)
+	r.merks = make(map[publicKey]merkletree.Tree)
 	r.infos = make(map[publicKey]routerInfo)
 	r.timers = make(map[publicKey]*time.Timer)
 	r.cache = make(map[publicKey][]peerPort)
@@ -104,6 +105,14 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			r.peers[p.key] = make(map[*peer]struct{})
 			r.ports[p.port] = p.key
 			r.blooms._addInfo(p.key)
+			var merk merkletree.Tree
+			for k, info := range r.infos {
+				ann := info.getAnnounce(k)
+				bs, _ := ann.encode(nil)
+				digest := merkletree.GetDigest(bs)
+				merk.Add(merkletree.Key(k), digest)
+			}
+			r.merks[p.key] = merk
 		}
 		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
@@ -370,8 +379,13 @@ func (r *router) _update(ann *routerAnnounce) bool {
 				if r.timers[key] == timer {
 					info, isIn := r.infos[key]
 					if !isIn || info.expired {
-						timer.Stop()                       // Shouldn't matter, but just to be safe...
-						r.merk.Remove(merkletree.Key(key)) // Shouldn't be needed, but just to be safe...
+						timer.Stop() // Shouldn't matter, but just to be safe...
+						// TODO figure out if this is really the right thing to do
+						for k, merk := range r.merks { // Shouldn't be needed, but just to be safe...
+							merk.Remove(merkletree.Key(key))
+							r.merks[k] = merk
+						}
+						//r.merk.Remove(merkletree.Key(key)) // Shouldn't be needed, but just to be safe...
 						delete(r.infos, key)
 						delete(r.timers, key)
 						r._resetCache()
@@ -379,7 +393,12 @@ func (r *router) _update(ann *routerAnnounce) bool {
 					} else {
 						info.expired = true
 						r.infos[key] = info
-						r.merk.Remove(merkletree.Key(key))
+						// TODO figure out if this is really the right thing to do
+						for k, merk := range r.merks { // Shouldn't be needed, but just to be safe...
+							merk.Remove(merkletree.Key(key))
+							r.merks[k] = merk
+						}
+						//r.merk.Remove(merkletree.Key(key))
 						timer.Reset(time.Duration(2) * r.core.config.routerTimeout)
 						r._fix()
 					}
@@ -392,7 +411,11 @@ func (r *router) _update(ann *routerAnnounce) bool {
 	}
 	bs, _ := ann.encode(nil)
 	digest := merkletree.GetDigest(bs)
-	r.merk.Add(merkletree.Key(key), digest)
+	for k, merk := range r.merks { // TODO figure out if this is really the right thing to do
+		merk.Add(merkletree.Key(key), digest)
+		r.merks[k] = merk
+	}
+	//r.merk.Add(merkletree.Key(key), digest)
 	r.infos[key] = info
 	r.timers[key] = timer
 	return true
@@ -447,7 +470,11 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 		if found {
 			// Cleanup worst
 			r.timers[worst].Stop()
-			r.merk.Remove(merkletree.Key(worst))
+			for k, merk := range r.merks {
+				merk.Remove(merkletree.Key(worst))
+				r.merks[k] = merk
+			}
+			//r.merk.Remove(merkletree.Key(worst))
 			delete(r.infos, worst)
 			delete(r.timers, worst)
 			r._resetCache()
@@ -481,7 +508,8 @@ func (r *router) handleAnnounce(from phony.Actor, p *peer, ann *routerAnnounce) 
 
 func (r *router) handleMerkleReq(from phony.Actor, p *peer, req *routerMerkleReq) {
 	r.Act(from, func() {
-		node, plen := r.merk.NodeFor(merkletree.Key(req.prefix), int(req.prefixLen))
+		merk := r.merks[p.key]
+		node, plen := merk.NodeFor(merkletree.Key(req.prefix), int(req.prefixLen))
 		if uint64(plen) != req.prefixLen {
 			// We don't know anyone from the part of the network we were asked about, so we can't respond in any useful way
 			return
@@ -551,7 +579,8 @@ func (r *router) handleMerkleRes(from phony.Actor, p *peer, res *routerMerkleRes
 			// This is a response to a full key, we can't ask for children, and there's nothing useful to do with it right now.
 			return
 		}
-		if digest, ok := r.merk.Lookup(merkletree.Key(res.prefix), int(res.prefixLen)); !ok || digest != res.digest {
+		merk := r.merks[p.key]
+		if digest, ok := merk.Lookup(merkletree.Key(res.prefix), int(res.prefixLen)); !ok || digest != res.digest {
 			// We disagree, so ask about the left and right children
 			left := routerMerkleReq{
 				prefixLen: res.prefixLen + 1,
