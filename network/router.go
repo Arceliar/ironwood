@@ -10,7 +10,6 @@ import (
 
 	"github.com/Arceliar/phony"
 
-	"github.com/Arceliar/ironwood/network/internal/merkletree"
 	"github.com/Arceliar/ironwood/types"
 )
 
@@ -47,6 +46,7 @@ TODO: Mostly ignore the above
       If we *did* delete things immediately when they're not seen to be important, then we would at least learn the peer's info when we sync merkle trees. Then the peer's parent. Then the parent's parent, etc., so it would finish eventually, it's just wasteful. But that suggets we could set a short timeout for anything not important (e.g. 1 minute) or delete a random not-important thing if the store becomes too full.
     Sync merkle trees with peers... somehow.
       Sending a request and our own root whenever we change anything at all would, technically, be sufficient I think... just wasteful.
+      FIXME: yes, it spams like crazy because new info launches another merkle tree sync in paralllel with the existing one(s)
 
 */
 
@@ -55,9 +55,9 @@ type router struct {
 	core       *core
 	pathfinder pathfinder                       // see pathfinder.go
 	blooms     blooms                           // see bloomfilter.go
+	merkle     merkle                           // see merkle.go
 	peers      map[publicKey]map[*peer]struct{} // True if we're allowed to send a mirror to this peer (but have not done so already)
 	ports      map[peerPort]publicKey           // used in tree lookups
-	merks      map[publicKey]merkletree.Tree    // Merkle tree per peered node, to synchronize any relevant state with that peer
 	infos      map[publicKey]routerInfo
 	timers     map[publicKey]*time.Timer
 	cache      map[publicKey][]peerPort // Cache path slice for each peer
@@ -75,9 +75,9 @@ func (r *router) init(c *core) {
 	r.core = c
 	r.pathfinder.init(r)
 	r.blooms.init(r)
+	r.merkle.init(r)
 	r.peers = make(map[publicKey]map[*peer]struct{})
 	r.ports = make(map[peerPort]publicKey)
-	r.merks = make(map[publicKey]merkletree.Tree)
 	r.infos = make(map[publicKey]routerInfo)
 	r.timers = make(map[publicKey]*time.Timer)
 	r.cache = make(map[publicKey][]peerPort)
@@ -105,16 +105,10 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			r.peers[p.key] = make(map[*peer]struct{})
 			r.ports[p.port] = p.key
 			r.blooms._addInfo(p.key)
-			r.merks[p.key] = merkletree.Tree{}
-			defer r._fixMerks()
+			r.merkle._add(p.key)
+			defer r.merkle._fixMerks()
 		} else {
-			defer func() {
-				res := routerMerkleRes{
-					digest: r.merks[p.key].Root.Digest,
-				}
-				p.sendMerkleRes(r, &res)
-				p.sendMerkleReq(r, new(routerMerkleReq))
-			}()
+			defer r.merkle._flush(p)
 		}
 		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
@@ -141,6 +135,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 			delete(r.ports, p.port)
 			delete(r.cache, p.key)
 			r.blooms._removeInfo(p.key)
+			r.merkle._remove(p.key)
 			r._fix()
 		}
 	})
@@ -171,7 +166,7 @@ func (r *router) _sendReqs() {
 }
 
 func (r *router) _fix() {
-	defer r._fixMerks()
+	defer r.merkle._fixMerks()
 	defer r.blooms._sendAllBlooms(true) // FIXME this is bad, hack for not tracking when tree relationships change
 	defer r.blooms._fixOnTree()         // Defer second, so it happens first
 	bestRoot := r.core.crypto.publicKey
@@ -253,76 +248,6 @@ func (r *router) _fix() {
 		default:
 			// We need to self-root, but we already started a timer to do that later
 			// So this is a no-op
-		}
-	}
-}
-
-func (r *router) _fixMerks() {
-	// FIXME this is pretty bad
-	//  We shouldn't recreate the merkle tree from scratch to compare with the existing root hash
-	//  We should just update the existing tree as-needed (minimize hashing)
-	var merk merkletree.Tree
-	var selfDists map[publicKey]uint64
-	if !bloomMulticastEnabled {
-		for k, info := range r.infos {
-			ann := info.getAnnounce(k)
-			bs, err := ann.encode(nil)
-			if err != nil {
-				panic("this should never happen")
-			}
-			digest := merkletree.GetDigest(bs)
-			merk.Add(merkletree.Key(k), digest)
-		}
-	} else {
-		_, selfDists = r._getRootAndDists(r.core.crypto.publicKey)
-	}
-	for k, orig := range r.merks {
-		if !bloomMulticastEnabled {
-			// Merk is already in the right state, don't touch it
-		} else {
-			merk = merkletree.Tree{}
-			_, peerDists := r._getRootAndDists(k)
-			for k := range selfDists {
-				if info, isIn := r.infos[k]; isIn {
-					ann := info.getAnnounce(k)
-					bs, err := ann.encode(nil)
-					if err != nil {
-						panic("this should never happen")
-					}
-					digest := merkletree.GetDigest(bs)
-					merk.Add(merkletree.Key(k), digest)
-				} else {
-					panic("this should never happen")
-				}
-			}
-			for k := range peerDists {
-				if _, isIn := selfDists[k]; isIn {
-					continue
-				}
-				if info, isIn := r.infos[k]; isIn {
-					ann := info.getAnnounce(k)
-					bs, err := ann.encode(nil)
-					if err != nil {
-						panic("this should never happen")
-					}
-					digest := merkletree.GetDigest(bs)
-					merk.Add(merkletree.Key(k), digest)
-				} else {
-					panic("this should never happen")
-				}
-			}
-		}
-		if merk.Root.Digest == orig.Root.Digest {
-			continue
-		}
-		r.merks[k] = merk
-		res := routerMerkleRes{
-			digest: merk.Root.Digest,
-		}
-		var req routerMerkleReq
-		for p := range r.peers[k] {
-			p.sendMerkleRes(r, &res)
-			p.sendMerkleReq(r, &req)
 		}
 	}
 }
@@ -591,102 +516,6 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 func (r *router) handleAnnounce(from phony.Actor, p *peer, ann *routerAnnounce) {
 	r.Act(from, func() {
 		r._handleAnnounce(p, ann)
-	})
-}
-
-func (r *router) handleMerkleReq(from phony.Actor, p *peer, req *routerMerkleReq) {
-	r.Act(from, func() {
-		merk := r.merks[p.key]
-		node, plen := merk.NodeFor(merkletree.Key(req.prefix), int(req.prefixLen))
-		if uint64(plen) != req.prefixLen {
-			// We don't know anyone from the part of the network we were asked about, so we can't respond in any useful way
-			return
-		}
-		/*
-			// This is the "safe" but extra inefficient version of things
-			res := new(routerMerkleRes)
-			res.prefixLen = req.prefixLen
-			res.prefix = req.prefix
-			res.digest = node.Digest
-			p.sendMerkleRes(r, res)
-			if res.prefixLen == merkletree.KeyBits {
-				if info, isIn := r.infos[res.prefix]; isIn {
-					p.sendAnnounce(r, info.getAnnounce(res.prefix))
-				} else {
-					panic("this should never happen")
-				}
-			}
-			return
-		*/
-		// This is the slightly less inefficient but very delicate version of things
-		// Basically, if we get to a node that only has 1 child, follow it until we have 2 (or reach the end, to send a node announcement instead)
-		// TODO we need to test this thoroughly
-		prefixLen := req.prefixLen
-		prefix := req.prefix
-		for {
-			if node.Left != nil && node.Right != nil {
-				res := new(routerMerkleRes)
-				res.prefixLen = prefixLen
-				res.prefix = prefix
-				res.digest = node.Digest
-				p.sendMerkleRes(r, res)
-			} else if node.Left != nil {
-				offset := int(prefixLen)
-				prefixLen += 1
-				k := merkletree.Key(prefix)
-				k.SetBit(false, offset)
-				prefix = publicKey(k)
-				node = node.Left
-				continue
-			} else if node.Right != nil {
-				offset := int(prefixLen)
-				prefixLen += 1
-				k := merkletree.Key(prefix)
-				k.SetBit(true, offset)
-				prefix = publicKey(k)
-				node = node.Right
-				continue
-			} else {
-				if prefixLen != merkletree.KeyBits {
-					panic("this should never happen")
-				}
-				if info, isIn := r.infos[prefix]; isIn {
-					p.sendAnnounce(r, info.getAnnounce(prefix))
-				} else {
-					panic("this should never happen")
-				}
-			}
-			break
-		}
-	})
-}
-
-func (r *router) handleMerkleRes(from phony.Actor, p *peer, res *routerMerkleRes) {
-	r.Act(from, func() {
-		if res.prefixLen == merkletree.KeyBits {
-			// This is a response to a full key, we can't ask for children, and there's nothing useful to do with it right now.
-			return
-		}
-		merk := r.merks[p.key]
-		if digest, ok := merk.Lookup(merkletree.Key(res.prefix), int(res.prefixLen)); !ok || digest != res.digest {
-			// We disagree, so ask about the left and right children
-			left := routerMerkleReq{
-				prefixLen: res.prefixLen + 1,
-				prefix:    publicKey(merkletree.GetLeft(merkletree.Key(res.prefix), int(res.prefixLen))),
-			}
-			if !left.check() {
-				panic("this should never happen")
-			}
-			p.sendMerkleReq(r, &left)
-			right := routerMerkleReq{
-				prefixLen: res.prefixLen + 1,
-				prefix:    publicKey(merkletree.GetRight(merkletree.Key(res.prefix), int(res.prefixLen))),
-			}
-			if !right.check() {
-				panic("this should never happen")
-			}
-			p.sendMerkleReq(r, &right)
-		}
 	})
 }
 
@@ -1065,111 +894,4 @@ func (info *routerInfo) getAnnounce(key publicKey) *routerAnnounce {
 		routerSigRes: info.routerSigRes,
 		sig:          info.sig,
 	}
-}
-
-/*******************
- * routerMerkleReq *
- *******************/
-
-type routerMerkleReq struct {
-	prefixLen uint64
-	prefix    publicKey
-}
-
-func (req *routerMerkleReq) check() bool {
-	return req.prefixLen <= merkletree.KeyBits
-}
-
-func (req *routerMerkleReq) size() int {
-	size := wireSizeUint(req.prefixLen)
-	size += len(req.prefix)
-	return size
-}
-
-func (req *routerMerkleReq) encode(out []byte) ([]byte, error) {
-	start := len(out)
-	out = wireAppendUint(out, req.prefixLen)
-	out = append(out, req.prefix[:]...)
-	end := len(out)
-	if end-start != req.size() {
-		panic("this should never happen")
-	}
-	return out, nil
-}
-
-func (req *routerMerkleReq) chop(data *[]byte) error {
-	var tmp routerMerkleReq
-	orig := *data
-	if !wireChopUint(&tmp.prefixLen, &orig) {
-		return types.ErrDecode
-	} else if !wireChopSlice(tmp.prefix[:], &orig) {
-		return types.ErrDecode
-	}
-	*req = tmp
-	*data = orig
-	return nil
-}
-
-func (req *routerMerkleReq) decode(data []byte) error {
-	var tmp routerMerkleReq
-	if err := tmp.chop(&data); err != nil {
-		return err
-	} else if len(data) != 0 {
-		return types.ErrDecode
-	}
-	*req = tmp
-	return nil
-}
-
-/*******************
-* routerMerkleRes *
-*******************/
-
-type routerMerkleRes struct {
-	routerMerkleReq
-	digest merkletree.Digest
-}
-
-func (res *routerMerkleRes) size() int {
-	size := res.routerMerkleReq.size()
-	size += len(res.digest)
-	return size
-}
-
-func (res *routerMerkleRes) encode(out []byte) ([]byte, error) {
-	start := len(out)
-	var err error
-	if out, err = res.routerMerkleReq.encode(out); err != nil {
-		return nil, err
-	}
-	out = append(out, res.digest[:]...)
-	end := len(out)
-	if end-start != res.size() {
-		panic("this should never happen")
-	}
-	return out, nil
-}
-
-func (res *routerMerkleRes) chop(data *[]byte) error {
-	var tmp routerMerkleRes
-	orig := *data
-	if err := tmp.routerMerkleReq.chop(&orig); err != nil {
-		return err
-	} else if !wireChopSlice(tmp.digest[:], &orig) {
-		return types.ErrDecode
-	}
-	*res = tmp
-	*data = orig
-	return nil
-}
-
-func (res *routerMerkleRes) decode(data []byte) error {
-	var tmp routerMerkleRes
-	if err := tmp.chop(&data); err != nil {
-		return err
-	} else if len(data) != 0 {
-		return types.ErrDecode
-	}
-	*res = tmp
-	return nil
 }

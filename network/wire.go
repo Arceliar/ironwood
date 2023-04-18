@@ -11,8 +11,10 @@ const (
 	wireProtoSigReq
 	wireProtoSigRes
 	wireProtoAnnounce
+	wireProtoMerkleNotify
 	wireProtoMerkleReq
 	wireProtoMerkleRes
+	wireProtoMerkleEnd
 	wireProtoBloomFilter
 	wireProtoPathReq
 	wireProtoPathRes
