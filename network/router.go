@@ -293,15 +293,23 @@ func (r *router) _fixKnown() {
 		var toSend []publicKey
 		for _, k := range selfAnc {
 			if _, isIn := known[k]; !isIn {
-				known[k] = struct{}{}
 				toSend = append(toSend, k)
 			}
 		}
 		for _, k := range peerAnc {
 			everything[k] = struct{}{}
 			if _, isIn := known[k]; !isIn {
-				known[k] = struct{}{}
-				toSend = append(toSend, k)
+				// TODO skip if it's already in toSend, this is just testing for now
+				var found bool
+				for _, sendKey := range toSend {
+					if k == sendKey {
+						found = true
+						break
+					}
+				}
+				if !found {
+					toSend = append(toSend, k)
+				}
 			}
 		}
 		for _, k := range toSend {
@@ -447,43 +455,7 @@ func (r *router) _update(ann *routerAnnounce) bool {
 	return true
 }
 
-func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
-	var doUpdate bool
-	var worst publicKey
-	var found bool
-	if len(r.infos) < int(r.core.config.routerMaxInfos) {
-		// We're not at max capacity yet, so we have room to add more
-		doUpdate = true
-	} else if _, isIn := r.infos[ann.key]; isIn {
-		// We're at capacity (or, somehow, above) but we alread know about this
-		// Therefore, there's no harm in accepting the update (we can't force anything else out)
-		// If this was or last check, then this is basically TOFU for the network
-		doUpdate = true
-	} else {
-		// We're at or above capacity, and this is a new node
-		// It may be "better" than something we already know about
-		// We define better to mean lower key (so e.g. we all know the root)
-		// We also special case or own info, to avoid timer problems
-		for k := range r.infos {
-			if k == r.core.crypto.publicKey {
-				// Skip self
-				continue
-			}
-			if !found || worst.less(k) {
-				// This is the worst (non-self) node we've seen so far
-				worst = k
-				found = true
-			}
-		}
-		if ann.key.less(worst) {
-			// This means ann.key is better than some node we already know
-			// We will try to _update, and remove the worst node if we do
-			doUpdate = true
-		}
-	}
-	if !doUpdate {
-		return
-	}
+func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 	if r._update(ann) {
 		if ann.key == r.core.crypto.publicKey {
 			// We just updated our own info from a message we received by a peer
@@ -492,10 +464,19 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 			// So we need to set that an update is required, as if our refresh timer has passed
 			r.refresh = true
 		}
+		r.known[p.key][ann.key] = struct{}{}
 		r._fix() // This could require us to change parents
 	} else {
 		// TODO we didn't accept the ann, why did they send it?
 		// Do we need to do anything to make sure we're consistent?
+		info := routerInfo{
+			parent:       ann.parent,
+			routerSigRes: ann.routerSigRes,
+			sig:          ann.sig,
+		}
+		if info == r.infos[ann.key] {
+			r.known[p.key][ann.key] = struct{}{}
+		}
 	}
 }
 
