@@ -126,7 +126,12 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 					toSend = append(toSend, k)
 				}
 			}
+			recv := r.recv[p.key]
 			for _, k := range toSend {
+				if _, isIn := recv[k]; isIn {
+					// If we've received a copy of this from the node, then we shouldn't need to send it again
+					continue
+				}
 				if info, isIn := r.infos[k]; isIn {
 					p.sendAnnounce(r, info.getAnnounce(k))
 				} else {
