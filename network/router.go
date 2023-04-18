@@ -53,11 +53,11 @@ TODO: Mostly ignore the above
 type router struct {
 	phony.Inbox
 	core       *core
-	pathfinder pathfinder                       // see pathfinder.go
-	blooms     blooms                           // see bloomfilter.go
-	merkle     merkle                           // see merkle.go
-	peers      map[publicKey]map[*peer]struct{} // True if we're allowed to send a mirror to this peer (but have not done so already)
-	ports      map[peerPort]publicKey           // used in tree lookups
+	pathfinder pathfinder                           // see pathfinder.go
+	blooms     blooms                               // see bloomfilter.go
+	peers      map[publicKey]map[*peer]struct{}     // True if we're allowed to send a mirror to this peer (but have not done so already)
+	known      map[publicKey]map[publicKey]struct{} // tracks which info we and our peer both know
+	ports      map[peerPort]publicKey               // used in tree lookups
 	infos      map[publicKey]routerInfo
 	timers     map[publicKey]*time.Timer
 	cache      map[publicKey][]peerPort // Cache path slice for each peer
@@ -75,8 +75,8 @@ func (r *router) init(c *core) {
 	r.core = c
 	r.pathfinder.init(r)
 	r.blooms.init(r)
-	r.merkle.init(r)
 	r.peers = make(map[publicKey]map[*peer]struct{})
+	r.known = make(map[publicKey]map[publicKey]struct{})
 	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
 	r.timers = make(map[publicKey]*time.Timer)
@@ -103,12 +103,34 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 		//r._resetCache()
 		if _, isIn := r.peers[p.key]; !isIn {
 			r.peers[p.key] = make(map[*peer]struct{})
+			r.known[p.key] = make(map[publicKey]struct{})
 			r.ports[p.port] = p.key
 			r.blooms._addInfo(p.key)
-			r.merkle._add(p.key)
-			defer r.merkle._fixMerks()
+			defer r._fixKnown()
 		} else {
-			defer r.merkle._flush(p)
+			// Send known, but in order
+			// TODO deduplicate similar logic between here and _fixKnown
+			selfAnc := r._getAncestry(r.core.crypto.publicKey)
+			peerAnc := r._getAncestry(p.key)
+			var toSend []publicKey
+			known := make(map[publicKey]struct{})
+			for _, k := range selfAnc {
+				known[k] = struct{}{}
+				toSend = append(toSend, k)
+			}
+			for _, k := range peerAnc {
+				if _, isIn := known[k]; isIn {
+					continue
+				}
+				toSend = append(toSend, k)
+			}
+			for _, k := range toSend {
+				if info, isIn := r.infos[k]; isIn {
+					p.sendAnnounce(r, info.getAnnounce(k))
+				} else {
+					panic("this should never happen")
+				}
+			}
 		}
 		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
@@ -129,13 +151,13 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 		delete(ps, p)
 		if len(ps) == 0 {
 			delete(r.peers, p.key)
+			delete(r.known, p.key)
+			delete(r.ports, p.port)
 			delete(r.requests, p.key)
 			delete(r.responses, p.key)
 			delete(r.resSeqs, p.key)
-			delete(r.ports, p.port)
 			delete(r.cache, p.key)
 			r.blooms._removeInfo(p.key)
-			r.merkle._remove(p.key)
 			r._fix()
 		}
 	})
@@ -166,7 +188,7 @@ func (r *router) _sendReqs() {
 }
 
 func (r *router) _fix() {
-	defer r.merkle._fixMerks()
+	defer r._fixKnown()
 	defer r.blooms._sendAllBlooms(true) // FIXME this is bad, hack for not tracking when tree relationships change
 	defer r.blooms._fixOnTree()         // Defer second, so it happens first
 	bestRoot := r.core.crypto.publicKey
@@ -249,6 +271,57 @@ func (r *router) _fix() {
 			// We need to self-root, but we already started a timer to do that later
 			// So this is a no-op
 		}
+	}
+}
+
+func (r *router) _purgeKnown(key publicKey) {
+	for _, known := range r.known {
+		delete(known, key)
+	}
+}
+
+func (r *router) _fixKnown() {
+	everything := make(map[publicKey]struct{})
+	selfAnc := r._getAncestry(r.core.crypto.publicKey)
+	for peerKey, known := range r.known {
+		peerAnc := r._getAncestry(peerKey)
+		var toSend []publicKey
+		for _, k := range selfAnc {
+			everything[k] = struct{}{}
+			if _, isIn := known[k]; !isIn {
+				known[k] = struct{}{}
+				toSend = append(toSend, k)
+			}
+		}
+		for _, k := range peerAnc {
+			everything[k] = struct{}{}
+			if _, isIn := known[k]; !isIn {
+				known[k] = struct{}{}
+				toSend = append(toSend, k)
+			}
+		}
+		var anns []*routerAnnounce
+		for _, k := range toSend {
+			if info, isIn := r.infos[k]; isIn {
+				anns = append(anns, info.getAnnounce(k))
+			} else {
+				panic("this should never happen")
+			}
+		}
+		for p := range r.peers[peerKey] {
+			for _, ann := range anns {
+				p.sendAnnounce(r, ann)
+			}
+		}
+	}
+	for key := range r.infos {
+		break // TODO remove obsolete stuff
+		if _, isIn := everything[key]; isIn {
+			// This is important to someone, so keep it
+			continue
+		}
+		// This isn't in use, so clean it up
+		panic("TODO")
 	}
 }
 
@@ -423,6 +496,7 @@ func (r *router) _update(ann *routerAnnounce) bool {
 		}
 	*/
 	//r.merk.Add(merkletree.Key(key), digest)
+	r._purgeKnown(key)
 	r.infos[key] = info
 	r.timers[key] = timer
 	return true
@@ -683,6 +757,27 @@ func (r *router) _lookup(tr *traffic) *peer {
 	}
 
 	return bestPeer
+}
+
+func (r *router) _getAncestry(key publicKey) []publicKey {
+	// Return an ordered list of node ancestry, starting with the given key and ending at the root (or the end of the line)
+	var anc []publicKey
+	here := key
+	for {
+		// TODO? use a map or something to check visited nodes faster?
+		for _, k := range anc {
+			if k == here {
+				return anc
+			}
+		}
+		if info, isIn := r.infos[here]; isIn {
+			anc = append(anc, here)
+			here = info.parent
+			continue
+		}
+		// Dead end
+		return anc
+	}
 }
 
 /*****************
