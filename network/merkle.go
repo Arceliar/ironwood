@@ -102,17 +102,17 @@ func (m *merkle) _fixMerks() {
 		for p := range m.router.peers[k] {
 			p.sendMerkleNotify(m.router, &notify)
 		}
-		m._handleMerkleNotify(k, &notify)
+		m._handleNotify(k, &notify)
 	}
 }
 
-func (m *merkle) handleMerkleNotify(p *peer, notify *merkleNotify) {
+func (m *merkle) handleNotify(p *peer, notify *merkleNotify) {
 	m.router.Act(p, func() {
-		m._handleMerkleNotify(p.key, notify)
+		m._handleNotify(p.key, notify)
 	})
 }
 
-func (m *merkle) _handleMerkleNotify(peerKey publicKey, notify *merkleNotify) {
+func (m *merkle) _handleNotify(peerKey publicKey, notify *merkleNotify) {
 	reqs, isIn := m.reqs[peerKey]
 	if isIn {
 		// There's already a sync ongoing, so skip it
@@ -126,7 +126,7 @@ func (m *merkle) _handleMerkleNotify(peerKey publicKey, notify *merkleNotify) {
 	}
 }
 
-func (m *merkle) handleMerkleReq(p *peer, req *merkleReq) {
+func (m *merkle) handleReq(p *peer, req *merkleReq) {
 	m.router.Act(p, func() {
 		merk := m.merks[p.key]
 		node, plen := merk.NodeFor(merkletree.Key(req.prefix), int(req.prefixLen))
@@ -198,14 +198,14 @@ func (m *merkle) handleMerkleReq(p *peer, req *merkleReq) {
 	})
 }
 
-func (m *merkle) handleMerkleRes(p *peer, res *merkleRes) {
+func (m *merkle) handleRes(p *peer, res *merkleRes) {
 	m.router.Act(p, func() {
 		reqs := m.reqs[p.key]
 		if len(reqs) == 0 || reqs[0] != res.end.merkleReq {
 			// This is not the response we're looking for
 			return
 		}
-		defer m._handleMerkleEnd(p, &res.end)
+		defer m._handleEnd(p, &res.end)
 		if res.prefixLen == merkletree.KeyBits {
 			// This is a response to a full key, we can't ask for children, and there's nothing useful to do with it right now.
 			return
@@ -230,19 +230,20 @@ func (m *merkle) handleMerkleRes(p *peer, res *merkleRes) {
 			}
 			p.sendMerkleReq(m.router, &right)
 			// Save that we sent these, in order
-			reqs = append(reqs, left, right)
+			reqs = append(reqs, left)
+			reqs = append(reqs, right)
 			m.reqs[p.key] = reqs
 		}
 	})
 }
 
-func (m *merkle) handleMerkleEnd(p *peer, end *merkleEnd) {
+func (m *merkle) handleEnd(p *peer, end *merkleEnd) {
 	m.router.Act(p, func() {
-		m._handleMerkleEnd(p, end)
+		m._handleEnd(p, end)
 	})
 }
 
-func (m *merkle) _handleMerkleEnd(p *peer, end *merkleEnd) {
+func (m *merkle) _handleEnd(p *peer, end *merkleEnd) {
 	if reqs := m.reqs[p.key]; len(reqs) > 0 && reqs[0] == end.merkleReq {
 		reqs = reqs[1:]
 		if len(reqs) > 0 {
@@ -342,6 +343,7 @@ type merkleRes struct {
 func (res *merkleRes) size() int {
 	size := res.merkleReq.size()
 	size += len(res.digest)
+	size += res.end.size()
 	return size
 }
 
@@ -352,6 +354,9 @@ func (res *merkleRes) encode(out []byte) ([]byte, error) {
 		return nil, err
 	}
 	out = append(out, res.digest[:]...)
+	if out, err = res.end.encode(out); err != nil {
+		return nil, err
+	}
 	end := len(out)
 	if end-start != res.size() {
 		panic("this should never happen")
@@ -366,6 +371,8 @@ func (res *merkleRes) chop(data *[]byte) error {
 		return err
 	} else if !wireChopSlice(tmp.digest[:], &orig) {
 		return types.ErrDecode
+	} else if err := tmp.end.chop(&orig); err != nil {
+		return err
 	}
 	*res = tmp
 	*data = orig

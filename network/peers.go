@@ -326,13 +326,13 @@ func (p *peer) _handlePacket(bs []byte) error {
 	case wireProtoAnnounce:
 		return p._handleAnnounce(bs[1:])
 	case wireProtoMerkleNotify:
-		return p._handleMerkleNotify(bs[1:])
+		return p._handleNotify(bs[1:])
 	case wireProtoMerkleReq:
-		return p._handleMerkleReq(bs[1:])
+		return p._handleReq(bs[1:])
 	case wireProtoMerkleRes:
-		return p._handleMerkleRes(bs[1:])
+		return p._handleRes(bs[1:])
 	case wireProtoMerkleEnd:
-		return p._handleMerkleEnd(bs[1:])
+		return p._handleEnd(bs[1:])
 	case wireProtoBloomFilter:
 		return p._handleBloom(bs[1:])
 	case wireProtoPathReq:
@@ -397,12 +397,12 @@ func (p *peer) sendAnnounce(from phony.Actor, ann *routerAnnounce) {
 	p.sendDirect(from, wireProtoAnnounce, ann)
 }
 
-func (p *peer) _handleMerkleNotify(bs []byte) error {
+func (p *peer) _handleNotify(bs []byte) error {
 	notify := new(merkleNotify)
 	if err := notify.decode(bs); err != nil {
 		return err
 	}
-	p.peers.core.router.merkle.handleMerkleNotify(p, notify)
+	p.peers.core.router.merkle.handleNotify(p, notify)
 	return nil
 }
 
@@ -410,14 +410,14 @@ func (p *peer) sendMerkleNotify(from phony.Actor, notify *merkleNotify) {
 	p.sendDirect(from, wireProtoMerkleNotify, notify)
 }
 
-func (p *peer) _handleMerkleReq(bs []byte) error {
+func (p *peer) _handleReq(bs []byte) error {
 	req := new(merkleReq)
 	if err := req.decode(bs); err != nil {
 		return err
 	} else if !req.check() {
 		return types.ErrBadMessage
 	}
-	p.peers.core.router.merkle.handleMerkleReq(p, req)
+	p.peers.core.router.merkle.handleReq(p, req)
 	return nil
 }
 
@@ -425,14 +425,14 @@ func (p *peer) sendMerkleReq(from phony.Actor, req *merkleReq) {
 	p.sendDirect(from, wireProtoMerkleReq, req)
 }
 
-func (p *peer) _handleMerkleRes(bs []byte) error {
+func (p *peer) _handleRes(bs []byte) error {
 	res := new(merkleRes)
 	if err := res.decode(bs); err != nil {
 		return err
 	} else if !res.check() {
 		return types.ErrBadMessage
 	}
-	p.peers.core.router.merkle.handleMerkleRes(p, res)
+	p.peers.core.router.merkle.handleRes(p, res)
 	return nil
 }
 
@@ -440,14 +440,14 @@ func (p *peer) sendMerkleRes(from phony.Actor, res *merkleRes) {
 	p.sendDirect(from, wireProtoMerkleRes, res)
 }
 
-func (p *peer) _handleMerkleEnd(bs []byte) error {
+func (p *peer) _handleEnd(bs []byte) error {
 	end := new(merkleEnd)
 	if err := end.decode(bs); err != nil {
 		return err
 	} else if !end.check() {
 		return types.ErrBadMessage
 	}
-	p.peers.core.router.merkle.handleMerkleEnd(p, end)
+	p.peers.core.router.merkle.handleEnd(p, end)
 	return nil
 }
 
