@@ -36,7 +36,7 @@ func (pf *pathfinder) init(r *router) {
 	pf.rumors = make(map[publicKey]pathRumor)
 }
 
-func (pf *pathfinder) _sendRequest(dest publicKey) {
+func (pf *pathfinder) _sendLookup(dest publicKey) {
 	if info, isIn := pf.paths[dest]; isIn {
 		if time.Since(info.reqTime) < pf.router.core.config.pathThrottle {
 			// Don't flood with request, wait a bit
@@ -179,10 +179,13 @@ func (pf *pathfinder) _handleNotify(fromKey publicKey, notify *pathNotify) {
 	pf.router.core.config.pathNotify(notify.source.toEd())
 }
 
-func (pf *pathfinder) _sendLookup(dest publicKey) {
-	// TODO the real thing
+func (pf *pathfinder) _rumorSendLookup(dest publicKey) {
 	xform := pf.router.blooms.xKey(dest)
 	if rumor, isIn := pf.rumors[xform]; isIn {
+		if time.Since(rumor.sendTime) < pf.router.core.config.pathThrottle {
+			return
+		}
+		rumor.sendTime = time.Now()
 		rumor.timer.Reset(pf.router.core.config.pathTimeout)
 	} else {
 		var timer *time.Timer
@@ -199,10 +202,11 @@ func (pf *pathfinder) _sendLookup(dest publicKey) {
 			})
 		})
 		pf.rumors[x] = pathRumor{
-			timer: timer,
+			sendTime: time.Now(),
+			timer:    timer,
 		}
 	}
-	pf._sendRequest(dest)
+	pf._sendLookup(dest)
 }
 
 func (pf *pathfinder) _handleTraffic(tr *traffic) {
@@ -221,7 +225,7 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 		}
 		pf.router.handleTraffic(nil, tr)
 	} else {
-		pf._sendLookup(tr.dest)
+		pf._rumorSendLookup(tr.dest)
 		if cache {
 			xform := pf.router.blooms.xKey(tr.dest)
 			if rumor, isIn := pf.rumors[xform]; isIn {
@@ -263,8 +267,9 @@ type pathInfo struct {
  *************/
 
 type pathRumor struct {
-	traffic *traffic // TODO use this better, and/or add a similar buffer to pathInfo... quickly resend 1 dropped packet after we get a pathRes
-	timer   *time.Timer
+	traffic  *traffic  // TODO use this better, and/or add a similar buffer to pathInfo... quickly resend 1 dropped packet after we get a pathRes
+	sendTime time.Time // Time we last sent a rumor
+	timer    *time.Timer
 }
 
 /**************

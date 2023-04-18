@@ -287,6 +287,6 @@ func (pc *PacketConn) SendLookup(key ed25519.PublicKey) {
 	var k publicKey
 	copy(k[:], key)
 	pc.core.router.Act(nil, func() {
-		pc.core.router.pathfinder._sendLookup(k)
+		pc.core.router.pathfinder._rumorSendLookup(k)
 	})
 }
