@@ -9,6 +9,18 @@ import (
 // TODO we should make infos delay timeout as long as they keep *receiving* traffic, not sending
 //  We want a node that restarts (and resets seq) to be reachable again after the timeout
 
+// TODO we shouldn't have request and response both be multicast.
+//  It probably makes sense for traffic and requests to both include the source's path
+//  Then the response could be greedy routed as unicast traffic
+
+// TODO? fix asymmetry in request/response
+//  Requests are unsigned (by necessity) and smaller than responses
+//  This means it can be used for traffic amplification -- the response traffic is bigger by at least a sig
+//  We could sort-of fix that by foricng request traffic to include padding for a sig (and maybe an extra copy of the source path, to approximately match dest path size)
+//  Need to think about how much of a vulnerability this really is (the extra is probably small compared to E.G. TCP/IP overheads on the underlying link layer traffic
+
+const pathfinderTrafficCache = true
+
 // WARNING The pathfinder should only be used from within the router's actor, it's not threadsafe
 type pathfinder struct {
 	router *router
@@ -176,7 +188,7 @@ func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
 		tr := info.traffic
 		info.traffic = nil
 		// We defer so it happens after we've store the updated info in the map
-		defer pf._handleTraffic(tr, false)
+		defer pf._handleTraffic(tr)
 	}
 	pf.paths[res.source] = info
 	pf.router.core.config.pathNotify(res.source.toEd())
@@ -208,7 +220,8 @@ func (pf *pathfinder) _sendLookup(dest publicKey) {
 	pf._sendRequest(dest)
 }
 
-func (pf *pathfinder) _handleTraffic(tr *traffic, cache bool) {
+func (pf *pathfinder) _handleTraffic(tr *traffic) {
+	const cache = pathfinderTrafficCache // TODO make this unconditional, this is just to easily toggle the cache on/off for now
 	if !bloomMulticastEnabled {
 		_, path := pf.router._getRootAndPath(tr.dest)
 		tr.path = append(tr.path[:0], path...)

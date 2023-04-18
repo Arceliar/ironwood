@@ -11,6 +11,19 @@ import (
 	"github.com/Arceliar/ironwood/types"
 )
 
+// FIXME we need to sequence number blooms, or otherwise handle races somehow
+//  Currently, we just always use the latest received bloom
+//  Imagine a node had two links, A and B, and sends blooms 1 and 2 over both links
+//  We get A1, then A2 (over a fast link), then B1, then link B dies and we never receive B2
+//  So we need to detect this and stick with / rever to A2...
+//  But we also need to *not* get stuck never updating blooms if e.g. a node restarts faster than we close an existing connection to them (and delete the old blooms with, presumably, sequence numbers attached)
+//  Note that we could just keep seqs if we detected node restarts in general and treated them as separate peers (e.g. index by a general peerID instead of publicKey, where peerID includes publicKey plus some random nonce generated on startup).
+//    If we end up doing that anyway, then sequence numbering things is probably the right solution here too...
+//  Can delayed zero sending help us at all here? Can we at least guarantee that we fail in a state with excess 1s if there's a race?
+//    It would probably mean delaying zero sending to something much greater than peer timeout...
+//    And I *think* would technically still race, it would just make the dropped B2 much less likely to fail closed unintentionally...
+//  I guess forcing a resend periodically would also fix it (eventually), but that seems lazy and wrong...
+
 const (
 	bloomFilterF          = 16               // number of bytes used for flags in the wire format, should be bloomFilterU / 8, rounded up
 	bloomFilterU          = bloomFilterF * 8 // number of uint64s in the backing array

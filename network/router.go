@@ -36,6 +36,18 @@ TODO: Testing
     This means we need to be very sure the CRDT conflict resolution logic is eventually consistent.
   The max network size logic could use some futher testing.
 
+TODO: Mostly ignore the above
+  In the middle of rewriting things to not keep a full view of the network.
+  Need to:
+    Store a merkle tree per peer
+    Fill the tree with our nodes ancestry + the peer's ancestry
+    Don't store info that isn't needed for either
+      Slightly subtle, we receive things from the merkle trees in no particular order, so it may not be clear that it's ancestry info for some node until much later.
+      So we need to be careful about when we *delete* info, though if we don't (and just let it time out) then this doesn't really break anything, it's just a waste / opens the door to OOM issues (if a node spams irrelevant info -- though at least we don't forward it if they do).
+      If we *did* delete things immediately when they're not seen to be important, then we would at least learn the peer's info when we sync merkle trees. Then the peer's parent. Then the parent's parent, etc., so it would finish eventually, it's just wasteful. But that suggets we could set a short timeout for anything not important (e.g. 1 minute) or delete a random not-important thing if the store becomes too full.
+    Sync merkle trees with peers... somehow.
+      Sending a request and our own root whenever we change anything at all would, technically, be sufficient I think... just wasteful.
+
 */
 
 type router struct {
@@ -566,7 +578,7 @@ func (r *router) sendTraffic(tr *traffic) {
 	// Basically, WriteTo and ReadFrom can't be allowed to block each other, but they could if we allowed backpressure here
 	// There may be a better way to handle this, but it practice it probably won't be an issue (we'll throw the packet in a queue somewhere, or drop it)
 	r.Act(nil, func() {
-		r.pathfinder._handleTraffic(tr, true)
+		r.pathfinder._handleTraffic(tr)
 	})
 }
 
