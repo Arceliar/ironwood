@@ -223,13 +223,15 @@ func (r *router) _fix() {
 			if !r._becomeRoot() {
 				panic("this should never happen")
 			}
-			self = r.infos[r.core.crypto.publicKey]
-			ann := self.getAnnounce(r.core.crypto.publicKey)
-			for _, ps := range r.peers {
-				for p := range ps {
-					p.sendAnnounce(r, ann)
+			/*
+				self = r.infos[r.core.crypto.publicKey]
+				ann := self.getAnnounce(r.core.crypto.publicKey)
+				for _, ps := range r.peers {
+					for p := range ps {
+						p.sendAnnounce(r, ann)
+					}
 				}
-			}
+			*/
 			r.refresh = false
 			r.doRoot1 = false
 			r.doRoot2 = false
@@ -351,11 +353,13 @@ func (r *router) _useResponse(peerKey publicKey, res *routerSigRes) bool {
 	}
 	ann := info.getAnnounce(r.core.crypto.publicKey)
 	if r._update(ann) {
-		for _, ps := range r.peers {
-			for p := range ps {
-				p.sendAnnounce(r, ann)
+		/*
+			for _, ps := range r.peers {
+				for p := range ps {
+					p.sendAnnounce(r, ann)
+				}
 			}
-		}
+		*/
 		return true
 	}
 	return false
@@ -418,10 +422,12 @@ func (r *router) _update(ann *routerAnnounce) bool {
 					if !isIn || info.expired {
 						timer.Stop() // Shouldn't matter, but just to be safe...
 						// TODO figure out if this is really the right thing to do
-						for k, merk := range r.merks { // Shouldn't be needed, but just to be safe...
-							merk.Remove(merkletree.Key(key))
-							r.merks[k] = merk
-						}
+						/*
+							for k, merk := range r.merks { // Shouldn't be needed, but just to be safe...
+								merk.Remove(merkletree.Key(key))
+								r.merks[k] = merk
+							}
+						*/
 						//r.merk.Remove(merkletree.Key(key)) // Shouldn't be needed, but just to be safe...
 						delete(r.infos, key)
 						delete(r.timers, key)
@@ -431,10 +437,12 @@ func (r *router) _update(ann *routerAnnounce) bool {
 						info.expired = true
 						r.infos[key] = info
 						// TODO figure out if this is really the right thing to do
-						for k, merk := range r.merks { // Shouldn't be needed, but just to be safe...
-							merk.Remove(merkletree.Key(key))
-							r.merks[k] = merk
-						}
+						/*
+							for k, merk := range r.merks { // Shouldn't be needed, but just to be safe...
+								merk.Remove(merkletree.Key(key))
+								r.merks[k] = merk
+							}
+						*/
 						//r.merk.Remove(merkletree.Key(key))
 						timer.Reset(time.Duration(2) * r.core.config.routerTimeout)
 						r._fix()
@@ -446,12 +454,14 @@ func (r *router) _update(ann *routerAnnounce) bool {
 	if oldTimer, isIn := r.timers[key]; isIn {
 		oldTimer.Stop()
 	}
-	bs, _ := ann.encode(nil)
-	digest := merkletree.GetDigest(bs)
-	for k, merk := range r.merks { // TODO figure out if this is really the right thing to do
-		merk.Add(merkletree.Key(key), digest)
-		r.merks[k] = merk
-	}
+	/*
+		bs, _ := ann.encode(nil)
+		digest := merkletree.GetDigest(bs)
+		for k, merk := range r.merks { // TODO figure out if this is really the right thing to do
+			merk.Add(merkletree.Key(key), digest)
+			r.merks[k] = merk
+		}
+	*/
 	//r.merk.Add(merkletree.Key(key), digest)
 	r.infos[key] = info
 	r.timers[key] = timer
@@ -496,21 +506,25 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 		return
 	}
 	if r._update(ann) {
-		for _, ps := range r.peers {
-			for p := range ps {
-				if p == sender {
-					continue
+		/*
+			for _, ps := range r.peers {
+				for p := range ps {
+					if p == sender {
+						continue
+					}
+					p.sendAnnounce(r, ann)
 				}
-				p.sendAnnounce(r, ann)
 			}
-		}
+		*/
 		if found {
 			// Cleanup worst
 			r.timers[worst].Stop()
-			for k, merk := range r.merks {
-				merk.Remove(merkletree.Key(worst))
-				r.merks[k] = merk
-			}
+			/*
+				for k, merk := range r.merks {
+					merk.Remove(merkletree.Key(worst))
+					r.merks[k] = merk
+				}
+			*/
 			//r.merk.Remove(merkletree.Key(worst))
 			delete(r.infos, worst)
 			delete(r.timers, worst)
@@ -528,12 +542,14 @@ func (r *router) _handleAnnounce(sender *peer, ann *routerAnnounce) {
 		// We didn't accept the update
 		// If our current info is expired, then tell the sender about it
 		// That *should* find its way back to the original node, so they can update seqs etc more quickly...
+		/* TODO?
 		if info := r.infos[ann.key]; info.expired {
 			newAnn := info.getAnnounce(ann.key)
 			if *newAnn != *ann {
 				sender.sendAnnounce(r, newAnn)
 			}
 		}
+		*/
 	}
 }
 
