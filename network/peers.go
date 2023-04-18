@@ -327,10 +327,10 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleAnnounce(bs[1:])
 	case wireProtoBloomFilter:
 		return p._handleBloom(bs[1:])
-	case wireProtoPathReq:
-		return p._handlePathReq(bs[1:])
-	case wireProtoPathRes:
-		return p._handlePathRes(bs[1:])
+	case wireProtoPathLookup:
+		return p._handlePathLookup(bs[1:])
+	case wireProtoPathNotify:
+		return p._handlePathNotify(bs[1:])
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
@@ -402,21 +402,21 @@ func (p *peer) sendBloom(from phony.Actor, b *bloom) {
 	p.sendDirect(from, wireProtoBloomFilter, b)
 }
 
-func (p *peer) _handlePathReq(bs []byte) error {
-	req := new(pathRequest)
-	if err := req.decode(bs); err != nil {
+func (p *peer) _handlePathLookup(bs []byte) error {
+	lookup := new(pathLookup)
+	if err := lookup.decode(bs); err != nil {
 		return err
 	}
-	p.peers.core.router.pathfinder.handleReq(p, req)
+	p.peers.core.router.pathfinder.handleLookup(p, lookup)
 	return nil
 }
 
-func (p *peer) _handlePathRes(bs []byte) error {
-	res := new(pathResponse)
-	if err := res.decode(bs); err != nil {
+func (p *peer) _handlePathNotify(bs []byte) error {
+	notify := new(pathNotify)
+	if err := notify.decode(bs); err != nil {
 		return err
 	}
-	p.peers.core.router.pathfinder.handleRes(p, res)
+	p.peers.core.router.pathfinder.handleNotify(p, notify)
 	return nil
 }
 

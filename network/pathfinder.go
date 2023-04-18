@@ -24,7 +24,7 @@ const pathfinderTrafficCache = true
 // WARNING The pathfinder should only be used from within the router's actor, it's not threadsafe
 type pathfinder struct {
 	router *router
-	info   pathResponseInfo
+	info   pathNotifyInfo
 	paths  map[publicKey]pathInfo
 	rumors map[publicKey]pathRumor
 }
@@ -43,96 +43,96 @@ func (pf *pathfinder) _sendRequest(dest publicKey) {
 			return
 		}
 	}
-	req := pathRequest{
+	lookup := pathLookup{
 		source: pf.router.core.crypto.publicKey,
 		dest:   dest,
 	}
-	pf._handleReq(req.source, &req)
+	pf._handleLookup(lookup.source, &lookup)
 }
 
-func (pf *pathfinder) handleReq(p *peer, req *pathRequest) {
+func (pf *pathfinder) handleLookup(p *peer, lookup *pathLookup) {
 	pf.router.Act(p, func() {
 		if !pf.router.blooms._isOnTree(p.key) {
 			return
 		}
-		pf._handleReq(p.key, req)
+		pf._handleLookup(p.key, lookup)
 	})
 }
 
-func (pf *pathfinder) _handleReq(fromKey publicKey, req *pathRequest) {
+func (pf *pathfinder) _handleLookup(fromKey publicKey, lookup *pathLookup) {
 	// Continue the multicast
-	pf.router.blooms._sendMulticast(wireProtoPathReq, req, fromKey, req.dest)
+	pf.router.blooms._sendMulticast(wireProtoPathLookup, lookup, fromKey, lookup.dest)
 	// Check if we should send a response too
-	dx := pf.router.blooms.xKey(req.dest)
+	dx := pf.router.blooms.xKey(lookup.dest)
 	sx := pf.router.blooms.xKey(pf.router.core.crypto.publicKey)
 	if dx == sx {
 		// We match, send a response
 		// TODO? throttle this per dest that we're sending a response to?
 		_, path := pf.router._getRootAndPath(pf.router.core.crypto.publicKey)
-		res := pathResponse{
+		notify := pathNotify{
 			source: pf.router.core.crypto.publicKey,
-			dest:   req.source,
-			info: pathResponseInfo{
+			dest:   lookup.source,
+			info: pathNotifyInfo{
 				seq:  pf.info.seq,
 				path: path,
 			},
 		}
-		if !pf.info.equal(res.info) {
-			res.info.seq++
-			res.info.sign(pf.router.core.crypto.privateKey)
-			pf.info = res.info
+		if !pf.info.equal(notify.info) {
+			notify.info.seq++
+			notify.info.sign(pf.router.core.crypto.privateKey)
+			pf.info = notify.info
 		} else {
-			res.info = pf.info
+			notify.info = pf.info
 		}
-		pf._handleRes(res.source, &res)
+		pf._handleNotify(notify.source, &notify)
 	}
 }
 
-func (pf *pathfinder) handleRes(p *peer, res *pathResponse) {
+func (pf *pathfinder) handleNotify(p *peer, notify *pathNotify) {
 	pf.router.Act(p, func() {
 		if !pf.router.blooms._isOnTree(p.key) {
 			return
 		}
-		pf._handleRes(p.key, res)
+		pf._handleNotify(p.key, notify)
 	})
 }
 
-func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
+func (pf *pathfinder) _handleNotify(fromKey publicKey, notify *pathNotify) {
 	// Continue the multicast
-	pf.router.blooms._sendMulticast(wireProtoPathRes, res, fromKey, res.dest)
+	pf.router.blooms._sendMulticast(wireProtoPathNotify, notify, fromKey, notify.dest)
 	// Check if we should accept this response
-	if res.dest != pf.router.core.crypto.publicKey {
+	if notify.dest != pf.router.core.crypto.publicKey {
 		return
 	}
 	var info pathInfo
 	var isIn bool
 	// Note that we need to res.check() in every case (as soon as success is otherwise inevitable)
-	if info, isIn = pf.paths[res.source]; isIn {
-		if res.info.seq <= info.seq {
+	if info, isIn = pf.paths[notify.source]; isIn {
+		if notify.info.seq <= info.seq {
 			// This isn't newer than the last seq we received, so drop it
 			return
 		}
-		nfo := res.info
+		nfo := notify.info
 		nfo.path = info.path
-		if nfo.equal(res.info) {
+		if nfo.equal(notify.info) {
 			// This doesn't actually add anything new, so skip it
 			return
 		}
-		if !res.check() {
+		if !notify.check() {
 			return
 		}
 		info.timer.Reset(pf.router.core.config.pathTimeout)
-		info.path = res.info.path
-		info.seq = res.info.seq
+		info.path = notify.info.path
+		info.seq = notify.info.seq
 	} else {
-		xform := pf.router.blooms.xKey(res.source)
+		xform := pf.router.blooms.xKey(notify.source)
 		if _, isIn := pf.rumors[xform]; !isIn {
 			return
 		}
-		if !res.check() {
+		if !notify.check() {
 			return
 		}
-		key := res.source
+		key := notify.source
 		var timer *time.Timer
 		timer = time.AfterFunc(pf.router.core.config.pathTimeout, func() {
 			pf.router.Act(nil, func() {
@@ -149,22 +149,22 @@ func (pf *pathfinder) _handleRes(fromKey publicKey, res *pathResponse) {
 			reqTime: time.Now(),
 			timer:   timer,
 		}
-		if rumor := pf.rumors[xform]; rumor.traffic != nil && rumor.traffic.dest == res.source {
+		if rumor := pf.rumors[xform]; rumor.traffic != nil && rumor.traffic.dest == notify.source {
 			info.traffic = rumor.traffic
 			rumor.traffic = nil
 			pf.rumors[xform] = rumor
 		}
 	}
-	info.path = res.info.path
-	info.seq = res.info.seq
+	info.path = notify.info.path
+	info.seq = notify.info.seq
 	if info.traffic != nil {
 		tr := info.traffic
 		info.traffic = nil
 		// We defer so it happens after we've store the updated info in the map
 		defer pf._handleTraffic(tr)
 	}
-	pf.paths[res.source] = info
-	pf.router.core.config.pathNotify(res.source.toEd())
+	pf.paths[notify.source] = info
+	pf.router.core.config.pathNotify(notify.source.toEd())
 }
 
 func (pf *pathfinder) _sendLookup(dest publicKey) {
@@ -224,11 +224,11 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 }
 
 func (pf *pathfinder) _doBroken(tr *traffic) {
-	req := pathRequest{
+	lookup := pathLookup{
 		source: tr.source,
 		dest:   tr.dest,
 	}
-	pf.router.blooms._sendMulticast(wireProtoPathReq, &req, pf.router.core.crypto.publicKey, req.dest)
+	pf.router.blooms._sendMulticast(wireProtoPathLookup, &lookup, pf.router.core.crypto.publicKey, lookup.dest)
 }
 
 /************
@@ -252,34 +252,34 @@ type pathRumor struct {
 	timer   *time.Timer
 }
 
-/***************
- * pathRequest *
- ***************/
+/**************
+ * pathLookup *
+ **************/
 
-type pathRequest struct {
+type pathLookup struct {
 	source publicKey
 	dest   publicKey
 }
 
-func (req *pathRequest) size() int {
-	size := len(req.source)
-	size += len(req.dest)
+func (lookup *pathLookup) size() int {
+	size := len(lookup.source)
+	size += len(lookup.dest)
 	return size
 }
 
-func (req *pathRequest) encode(out []byte) ([]byte, error) {
+func (lookup *pathLookup) encode(out []byte) ([]byte, error) {
 	start := len(out)
-	out = append(out, req.source[:]...)
-	out = append(out, req.dest[:]...)
+	out = append(out, lookup.source[:]...)
+	out = append(out, lookup.dest[:]...)
 	end := len(out)
-	if end-start != req.size() {
+	if end-start != lookup.size() {
 		panic("this should never happen")
 	}
 	return out, nil
 }
 
-func (req *pathRequest) decode(data []byte) error {
-	var tmp pathRequest
+func (lookup *pathLookup) decode(data []byte) error {
+	var tmp pathLookup
 	orig := data
 	if !wireChopSlice(tmp.source[:], &orig) {
 		return types.ErrDecode
@@ -288,22 +288,22 @@ func (req *pathRequest) decode(data []byte) error {
 	} else if len(orig) != 0 {
 		return types.ErrDecode
 	}
-	*req = tmp
+	*lookup = tmp
 	return nil
 }
 
-/********************
- * pathResponseInfo *
- ********************/
+/******************
+ * pathNotifyInfo *
+ ******************/
 
-type pathResponseInfo struct {
+type pathNotifyInfo struct {
 	seq  uint64     // sequence number for this update, TODO only keep this, instead of the seq in the pathfinder itself?
 	path []peerPort // Path from root to source, aka coords, zero-terminated
 	sig  signature  // signature from the source key
 }
 
 // equal returns true if the pathResponseInfos are equal, inspecting the contents of the path and ignoring the sig
-func (info *pathResponseInfo) equal(cmp pathResponseInfo) bool {
+func (info *pathNotifyInfo) equal(cmp pathNotifyInfo) bool {
 	if info.seq != cmp.seq {
 		return false
 	} else if len(info.path) != len(cmp.path) {
@@ -317,25 +317,25 @@ func (info *pathResponseInfo) equal(cmp pathResponseInfo) bool {
 	return true
 }
 
-func (info *pathResponseInfo) bytesForSig() []byte {
+func (info *pathNotifyInfo) bytesForSig() []byte {
 	var out []byte
 	out = wireAppendUint(out, info.seq)
 	out = wireAppendPath(out, info.path)
 	return out
 }
 
-func (info *pathResponseInfo) sign(key privateKey) {
+func (info *pathNotifyInfo) sign(key privateKey) {
 	info.sig = key.sign(info.bytesForSig())
 }
 
-func (info *pathResponseInfo) size() int {
+func (info *pathNotifyInfo) size() int {
 	size := wireSizeUint(info.seq)
 	size += wireSizePath(info.path)
 	size += len(info.sig)
 	return size
 }
 
-func (info *pathResponseInfo) encode(out []byte) ([]byte, error) {
+func (info *pathNotifyInfo) encode(out []byte) ([]byte, error) {
 	start := len(out)
 	out = wireAppendUint(out, info.seq)
 	out = wireAppendPath(out, info.path)
@@ -347,8 +347,8 @@ func (info *pathResponseInfo) encode(out []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (info *pathResponseInfo) decode(data []byte) error {
-	var tmp pathResponseInfo
+func (info *pathNotifyInfo) decode(data []byte) error {
+	var tmp pathNotifyInfo
 	orig := data
 	if !wireChopUint(&tmp.seq, &orig) {
 		return types.ErrDecode
@@ -363,44 +363,44 @@ func (info *pathResponseInfo) decode(data []byte) error {
 	return nil
 }
 
-/****************
- * pathResponse *
- ****************/
+/**************
+ * pathNotify *
+ **************/
 
-type pathResponse struct {
+type pathNotify struct {
 	source publicKey // who sent the response, not who resquested it
 	dest   publicKey // exact key we are sending response to
-	info   pathResponseInfo
+	info   pathNotifyInfo
 }
 
-func (res *pathResponse) check() bool {
-	return res.source.verify(res.info.bytesForSig(), &res.info.sig)
+func (notify *pathNotify) check() bool {
+	return notify.source.verify(notify.info.bytesForSig(), &notify.info.sig)
 }
 
-func (res *pathResponse) size() int {
-	size := len(res.source)
-	size += len(res.dest)
-	size += res.info.size()
+func (notify *pathNotify) size() int {
+	size := len(notify.source)
+	size += len(notify.dest)
+	size += notify.info.size()
 	return size
 }
 
-func (res *pathResponse) encode(out []byte) ([]byte, error) {
+func (notify *pathNotify) encode(out []byte) ([]byte, error) {
 	start := len(out)
-	out = append(out, res.source[:]...)
-	out = append(out, res.dest[:]...)
+	out = append(out, notify.source[:]...)
+	out = append(out, notify.dest[:]...)
 	var err error
-	if out, err = res.info.encode(out); err != nil {
+	if out, err = notify.info.encode(out); err != nil {
 		return nil, err
 	}
 	end := len(out)
-	if end-start != res.size() {
+	if end-start != notify.size() {
 		panic("this should never happen")
 	}
 	return out, nil
 }
 
-func (res *pathResponse) decode(data []byte) error {
-	var tmp pathResponse
+func (notify *pathNotify) decode(data []byte) error {
+	var tmp pathNotify
 	orig := data
 	if !wireChopSlice(tmp.source[:], &orig) {
 		return types.ErrDecode
@@ -409,6 +409,6 @@ func (res *pathResponse) decode(data []byte) error {
 	} else if err := tmp.info.decode(orig); err != nil {
 		return err
 	}
-	*res = tmp
+	*notify = tmp
 	return nil
 }

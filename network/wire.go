@@ -12,8 +12,8 @@ const (
 	wireProtoSigRes
 	wireProtoAnnounce
 	wireProtoBloomFilter
-	wireProtoPathReq
-	wireProtoPathRes
+	wireProtoPathLookup
+	wireProtoPathNotify
 	wireTraffic
 )
 
