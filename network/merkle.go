@@ -131,9 +131,7 @@ func (m *merkle) handleReq(p *peer, req *merkleReq) {
 		if uint64(plen) != req.prefixLen {
 			// We don't know anyone from the part of the network we were asked about, so we can't respond in any useful way
 			end := merkleEnd{*req}
-			for p := range m.router.peers[p.key] {
-				p.sendMerkleEnd(m.router, &end)
-			}
+			p.sendMerkleEnd(m.router, &end)
 			return
 		}
 		/*
@@ -164,9 +162,7 @@ func (m *merkle) handleReq(p *peer, req *merkleReq) {
 				res.prefix = prefix
 				res.digest = node.Digest
 				res.end = merkleEnd{*req}
-				for p := range m.router.peers[p.key] {
-					p.sendMerkleRes(m.router, res)
-				}
+				p.sendMerkleRes(m.router, res)
 			} else if node.Left != nil {
 				offset := int(prefixLen)
 				prefixLen += 1
@@ -190,10 +186,8 @@ func (m *merkle) handleReq(p *peer, req *merkleReq) {
 				if info, isIn := m.router.infos[prefix]; isIn {
 					end := merkleEnd{*req}
 					ann := info.getAnnounce(prefix)
-					for p := range m.router.peers[p.key] {
-						p.sendAnnounce(m.router, ann)
-						p.sendMerkleEnd(m.router, &end)
-					}
+					p.sendAnnounce(m.router, ann)
+					p.sendMerkleEnd(m.router, &end)
 				} else {
 					panic("this should never happen")
 				}
