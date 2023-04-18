@@ -6,9 +6,6 @@ import (
 )
 
 type config struct {
-	routerRefresh      time.Duration
-	routerTimeout      time.Duration
-	routerMaxInfos     uint64
 	peerKeepAliveDelay time.Duration
 	peerTimeout        time.Duration
 	peerPingIncrement  time.Duration
@@ -24,9 +21,6 @@ type Option func(*config)
 
 func configDefaults() Option {
 	return func(c *config) {
-		c.routerRefresh = 23 * time.Hour
-		c.routerTimeout = 23 * time.Hour
-		c.routerMaxInfos = 65535
 		c.peerKeepAliveDelay = time.Second
 		c.peerTimeout = 3 * time.Second
 		c.peerPingIncrement = time.Second
@@ -36,24 +30,6 @@ func configDefaults() Option {
 		c.pathNotify = func(key ed25519.PublicKey) {}
 		c.pathTimeout = time.Minute
 		c.pathThrottle = time.Second
-	}
-}
-
-func WithRouterRefresh(duration time.Duration) Option {
-	return func(c *config) {
-		c.routerRefresh = duration
-	}
-}
-
-func WithRouterTimeout(duration time.Duration) Option {
-	return func(c *config) {
-		c.routerTimeout = duration
-	}
-}
-
-func WithRouterMaxEntries(entries uint64) Option {
-	return func(c *config) {
-		c.routerMaxInfos = entries
 	}
 }
 
