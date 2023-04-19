@@ -57,7 +57,7 @@ type router struct {
 	blooms     blooms                               // see bloomfilter.go
 	peers      map[publicKey]map[*peer]struct{}     // True if we're allowed to send a mirror to this peer (but have not done so already)
 	send       map[publicKey]map[publicKey]struct{} // tracks which info we've sent to our peer
-	recv       map[publicKey]map[publicKey]struct{} // tracks which info our peer has sent to us
+	recv       map[publicKey]publicKey              // tracks which info our peer has sent to us most recently
 	ports      map[peerPort]publicKey               // used in tree lookups
 	infos      map[publicKey]routerInfo
 	cache      map[publicKey][]peerPort // Cache path slice for each peer
@@ -77,7 +77,7 @@ func (r *router) init(c *core) {
 	r.blooms.init(r)
 	r.peers = make(map[publicKey]map[*peer]struct{})
 	r.send = make(map[publicKey]map[publicKey]struct{})
-	r.recv = make(map[publicKey]map[publicKey]struct{})
+	r.recv = make(map[publicKey]publicKey)
 	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
 	r.cache = make(map[publicKey][]peerPort)
@@ -104,7 +104,6 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 		if _, isIn := r.peers[p.key]; !isIn {
 			r.peers[p.key] = make(map[*peer]struct{})
 			r.send[p.key] = make(map[publicKey]struct{})
-			r.recv[p.key] = make(map[publicKey]struct{})
 			r.ports[p.port] = p.key
 			r.blooms._addInfo(p.key)
 			defer r._fixKnown()
@@ -126,12 +125,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 					toSend = append(toSend, k)
 				}
 			}
-			recv := r.recv[p.key]
 			for _, k := range toSend {
-				if _, isIn := recv[k]; isIn {
-					// If we've received a copy of this from the node, then we shouldn't need to send it again
-					continue
-				}
 				if info, isIn := r.infos[k]; isIn {
 					p.sendAnnounce(r, info.getAnnounce(k))
 				} else {
@@ -291,12 +285,16 @@ func (r *router) _purgeKnown(key publicKey) {
 	for _, send := range r.send {
 		delete(send, key)
 	}
-	for _, recv := range r.recv {
-		delete(recv, key)
+	for pk, recv := range r.recv {
+		if recv == key {
+			delete(r.recv, pk)
+		}
 	}
 }
 
 func (r *router) _fixKnown() {
+	// This is insanely delicate, lots of correctness is implicit across how nodes behave
+	// Change nothing here.
 	everything := make(map[publicKey]struct{})
 	selfAnc := r._getAncestry(r.core.crypto.publicKey)
 	for _, k := range selfAnc {
@@ -305,43 +303,106 @@ func (r *router) _fixKnown() {
 	var toSend []publicKey
 	var anns []*routerAnnounce
 	for peerKey, send := range r.send {
+
+		// Initial setup stuff
 		toSend = toSend[:0]
 		anns = anns[:0]
 		peerAnc := r._getAncestry(peerKey)
-		var toSend []publicKey
+
+		// Find the first index in selfAnc and peerAnc that we haven't sent yet
+		var sIdx, pIdx int // first index that's different
 		for _, k := range selfAnc {
-			if _, isIn := send[k]; !isIn {
-				send[k] = struct{}{}
-				toSend = append(toSend, k)
+			if _, isIn := send[k]; isIn {
+				sIdx++
+				continue
 			}
+			break
 		}
 		for _, k := range peerAnc {
-			everything[k] = struct{}{}
-			if _, isIn := send[k]; !isIn {
-				send[k] = struct{}{}
-				toSend = append(toSend, k)
+			if _, isIn := send[k]; isIn {
+				pIdx++
+				continue
 			}
+			break
 		}
+
+		// FIXME if anything at all has changed, we're just going to send everything
+		// We should just send the new parts (starting with the first change), but races mean I'm not sure that's safe...
+		if sIdx != len(selfAnc) {
+			sIdx = 0
+		}
+		if pIdx != len(peerAnc) {
+			pIdx = 0
+		}
+
+		// Clear send
+		for k := range send {
+			delete(send, k)
+		}
+
+		// Add everything that's not different, up til sIdx and pIdx, in selfAnc and peerAnc
+		// TODO something better, this means we can re-send info that they've already seen
+		//  However, it's hard to know what they've GCed already
+		//  We could introduce more protocol to track what has/hasn't been deleted...
+		//  I'm not sure the extra protocol is worth the cost...
+		for idx, k := range selfAnc {
+			if idx == sIdx {
+				break
+			}
+			send[k] = struct{}{}
+		}
+		for idx, k := range peerAnc {
+			if idx == pIdx {
+				break
+			}
+			send[k] = struct{}{}
+		}
+
+		// Build toSend from anything we haven't sent yet.
+		// The order here is significant, ancs are sorted from root to leaf.
+		// We could send self or peer first, but we must finish one before we send any announcements from the other.
+		for _, k := range selfAnc {
+			if _, isIn := send[k]; isIn {
+				continue
+			}
+			toSend = append(toSend, k)
+		}
+		for _, k := range peerAnc {
+			everything[k] = struct{}{} // Fill everything while we're here...
+			if _, isIn := send[k]; isIn {
+				continue
+			}
+			toSend = append(toSend, k)
+		}
+
+		// Now prepare announcements
 		for _, k := range toSend {
+			send[k] = struct{}{} // Fill this as we go
 			if info, isIn := r.infos[k]; isIn {
 				anns = append(anns, info.getAnnounce(k))
 			} else {
 				panic("this should never happen")
 			}
 		}
+
+		// Send announcements
 		for p := range r.peers[peerKey] {
 			for _, ann := range anns {
 				p.sendAnnounce(r, ann)
 			}
 		}
 	}
+
+	// We also need to keep anything pinned by recv
 	for _, recv := range r.recv {
-		for k := range recv {
+		anc := r._getAncestry(recv)
+		for _, k := range anc {
 			everything[k] = struct{}{}
 		}
 	}
+
+	// Now we clean up anything we don't care about
 	for key := range r.infos {
-		//break
 		if _, isIn := everything[key]; isIn {
 			// This is important to someone, so keep it
 			continue
@@ -351,6 +412,7 @@ func (r *router) _fixKnown() {
 		//  Suggests that there's a race somewhere
 		//  So our state and our peer's state are becoming inconsistent
 		//  How? When? Why?
+		// TODO delete everything not on the tree, and send everything that wasn't in our immediately previous ancestry when we change state (not just things we've never sent), likewise for peer info changes
 		delete(r.infos, key)
 	}
 }
@@ -479,7 +541,7 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 			// So we need to set that an update is required, as if our refresh timer has passed
 			r.refresh = true
 		}
-		r.recv[p.key][ann.key] = struct{}{}
+		r.recv[p.key] = ann.key
 		r._fix() // This could require us to change parents
 	} else {
 		// TODO we didn't accept the ann, why did they send it?
@@ -490,7 +552,12 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 			sig:          ann.sig,
 		}
 		if info == r.infos[ann.key] {
-			r.recv[p.key][ann.key] = struct{}{}
+			r.recv[p.key] = ann.key
+		} else {
+			// They sent something, but it was old.
+			// We've probably already told them about it, they just need to react.
+			// TODO? Just in case, send an announce for whatever info we already have?
+			// That would mess up recv... would it mess it up in a way that matters?
 		}
 	}
 }
@@ -668,6 +735,15 @@ func (r *router) _lookup(tr *traffic) *peer {
 }
 
 func (r *router) _getAncestry(key publicKey) []publicKey {
+	// Returns the ancestry starting with the root side, ordering is important for how we send over the network / GC info...
+	anc := r._backwardsAncestry(key)
+	for left, right := 0, len(anc)-1; left < right; left, right = left+1, right-1 {
+		anc[left], anc[right] = anc[right], anc[left]
+	}
+	return anc
+}
+
+func (r *router) _backwardsAncestry(key publicKey) []publicKey {
 	// Return an ordered list of node ancestry, starting with the given key and ending at the root (or the end of the line)
 	var anc []publicKey
 	here := key
