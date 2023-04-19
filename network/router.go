@@ -3,7 +3,6 @@ package network
 import (
 	crand "crypto/rand"
 	"encoding/binary"
-	//mrand "math/rand"
 	"time"
 
 	//"fmt"
@@ -59,6 +58,7 @@ type router struct {
 	sent       map[publicKey]map[publicKey]struct{} // tracks which info we've sent to our peer
 	ports      map[peerPort]publicKey               // used in tree lookups
 	infos      map[publicKey]routerInfo
+	timers     map[publicKey]*time.Timer
 	cache      map[publicKey][]peerPort // Cache path slice for each peer
 	requests   map[publicKey]routerSigReq
 	responses  map[publicKey]routerSigRes
@@ -450,6 +450,34 @@ func (r *router) _update(ann *routerAnnounce) bool {
 		parent:       ann.parent,
 		routerSigRes: ann.routerSigRes,
 		sig:          ann.sig,
+	}
+	key := ann.key
+	var timer *time.Timer
+	if key == r.core.crypto.publicKey {
+		delay := r.core.config.routerRefresh // TODO? slightly randomize
+		timer = time.AfterFunc(delay, func() {
+			r.Act(nil, func() {
+				if r.timers[key] == timer {
+					r.refresh = true
+					r._fix()
+				}
+			})
+		})
+	} else {
+		timer = time.AfterFunc(r.core.config.routerTimeout, func() {
+			r.Act(nil, func() {
+				if r.timers[key] == timer {
+					timer.Stop() // Shouldn't matter, but just to be safe...
+					delete(r.infos, key)
+					delete(r.timers, key)
+					r._resetCache()
+					r._fix()
+				}
+			})
+		})
+	}
+	if oldTimer, isIn := r.timers[key]; isIn {
+		oldTimer.Stop()
 	}
 	r.infos[ann.key] = info
 	return true

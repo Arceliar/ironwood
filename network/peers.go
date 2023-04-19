@@ -113,7 +113,7 @@ type peerMonitor struct {
 	peer           *peer
 	keepAliveTimer *time.Timer
 	pingTimer      *time.Timer
-	pDelay         uint64
+	pDelay         time.Duration
 	deadlined      bool
 }
 
@@ -163,17 +163,15 @@ func (m *peerMonitor) sent(pType wirePacketType) {
 		case pType == wireDummy:
 		case pType == wireKeepAlive:
 		case pType == wirePing:
-			m.pDelay += 1
-			delay := time.Duration(m.pDelay) * time.Second // TODO? slightly randomize
-			if delay < m.peer.peers.core.config.peerPingMaxDelay {
-				select {
-				case <-m.peer.done:
-				default:
-					m.pingTimer = time.AfterFunc(delay, m.doPing)
-				}
-			} else if m.pingTimer != nil {
-				m.pingTimer.Stop()
-				m.pingTimer = nil
+			m.pDelay += m.peer.peers.core.config.peerPingIncrement
+			if m.pDelay > m.peer.peers.core.config.peerPingMaxDelay {
+				m.pDelay = m.peer.peers.core.config.peerPingMaxDelay
+			}
+			delay := m.pDelay // TODO? slightly randomize
+			select {
+			case <-m.peer.done:
+			default:
+				m.pingTimer = time.AfterFunc(delay, m.doPing)
 			}
 			fallthrough
 		default:
