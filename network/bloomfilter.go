@@ -17,7 +17,7 @@ const (
 	bloomFilterB   = bloomFilterU * 8 // number of bytes in the backing array
 	bloomFilterM   = bloomFilterB * 8 // number of bits in teh backing array
 	bloomFilterK   = 22               // TODO optimize this, it affects false positive rate, 22 is ~optimal for 256 entries per filter
-	bloomZeroDelay = time.Second
+	bloomZeroDelay = 3 * time.Second
 )
 
 // bloom is bloomFilterM bits long bloom filter uses bloomFilterK hash functions.
@@ -232,7 +232,7 @@ func (bs blooms) _handleBloom(fromPeer *peer, b *bloom) {
 			}
 		}
 	*/
-	bs._sendAllBlooms(true)
+	//bs._sendAllBlooms(true)
 }
 
 func (bs *blooms) zTimerWork() {

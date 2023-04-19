@@ -300,14 +300,6 @@ func (r *router) _fixKnown() {
 			}
 		}
 
-		// TODO decide sane scheme for limiting toSend size
-		// We should also prioritize things better than the above... e.g. the least recently changed state wins
-		/*
-		   if len(toSend) > 1 {
-		     toSend = toSend[:1]
-		   }
-		*/
-
 		// Add toSend stuff to sent
 		for _, k := range toSend {
 			sent[k] = struct{}{}
