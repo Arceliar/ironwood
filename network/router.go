@@ -557,7 +557,7 @@ func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint
 		if _, isIn := dists[next]; isIn {
 			break
 		}
-		if info, isIn := r.infos[next]; isIn && !info.expired {
+		if info, isIn := r.infos[next]; isIn {
 			root = next
 			dists[next] = dist
 			dist++
@@ -579,7 +579,7 @@ func (r *router) _getRootAndPath(dest publicKey) (publicKey, []peerPort) {
 			// We hit a loop
 			return dest, nil
 		}
-		if info, isIn := r.infos[next]; isIn && !info.expired {
+		if info, isIn := r.infos[next]; isIn {
 			root = next
 			visited[next] = struct{}{}
 			if next == info.parent {
@@ -883,8 +883,7 @@ func (ann *routerAnnounce) decode(data []byte) error {
 type routerInfo struct {
 	parent publicKey
 	routerSigRes
-	sig     signature
-	expired bool
+	sig signature
 }
 
 func (info *routerInfo) getAnnounce(key publicKey) *routerAnnounce {
