@@ -23,13 +23,13 @@ type Option func(*config)
 
 func configDefaults() Option {
 	return func(c *config) {
-		c.routerRefresh = 23 * time.Hour
-		c.routerTimeout = 24 * time.Hour
+		c.routerRefresh = time.Minute
+		c.routerTimeout = 2 * time.Minute
 		c.peerKeepAliveDelay = time.Second
 		c.peerTimeout = 3 * time.Second
 		c.peerPingIncrement = time.Second
-		c.peerPingMaxDelay = time.Second //time.Minute
-		c.peerMaxMessageSize = 1048576   // 1 megabyte
+		c.peerPingMaxDelay = time.Minute
+		c.peerMaxMessageSize = 1048576 // 1 megabyte
 		c.bloomTransform = func(key ed25519.PublicKey) ed25519.PublicKey { return key }
 		c.pathNotify = func(key ed25519.PublicKey) {}
 		c.pathTimeout = time.Minute
