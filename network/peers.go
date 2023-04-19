@@ -325,6 +325,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handleSigRes(bs[1:])
 	case wireProtoAnnounce:
 		return p._handleAnnounce(bs[1:])
+	case wireProtoForget:
+		return p._handleForget(bs[1:])
 	case wireProtoBloomFilter:
 		return p._handleBloom(bs[1:])
 	case wireProtoPathLookup:
@@ -387,6 +389,22 @@ func (p *peer) _handleAnnounce(bs []byte) error {
 
 func (p *peer) sendAnnounce(from phony.Actor, ann *routerAnnounce) {
 	p.sendDirect(from, wireProtoAnnounce, ann)
+}
+
+func (p *peer) _handleForget(bs []byte) error {
+	forget := new(routerForget)
+	if err := forget.decode(bs); err != nil {
+		return err
+	}
+	if !forget.check() {
+		return types.ErrBadMessage
+	}
+	p.peers.core.router.handleForget(p, p, forget)
+	return nil
+}
+
+func (p *peer) sendForget(from phony.Actor, forget *routerForget) {
+	p.sendDirect(from, wireProtoForget, forget)
 }
 
 func (p *peer) _handleBloom(bs []byte) error {
