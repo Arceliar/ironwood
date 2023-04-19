@@ -67,7 +67,7 @@ type router struct {
 	refresh    bool
 	doRoot1    bool
 	doRoot2    bool
-	fixTimer   *time.Timer
+	mainTimer  *time.Timer
 }
 
 func (r *router) init(c *core) {
@@ -83,12 +83,34 @@ func (r *router) init(c *core) {
 	r.responses = make(map[publicKey]routerSigRes)
 	r.resSeqs = make(map[publicKey]uint64)
 	// Kick off actor to do initial work / become root
-	r.fixTimer = time.AfterFunc(0, func() {})
+	r.mainTimer = time.AfterFunc(time.Second, func() {
+		r.Act(nil, r._doMaintenance)
+	})
 	r.doRoot2 = true
-	r.Act(nil, r._fix)
+	r.Act(nil, r._doMaintenance)
 }
 
-func (r *router) _shutdown() {} // TODO cleanup (stop any timers etc)
+func (r *router) _doMaintenance() {
+	if r.mainTimer == nil {
+		return
+	}
+	r.doRoot2 = r.doRoot2 || r.doRoot1
+	r._resetCache()               // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
+	r._fix()                      // Selects new parent, if needed
+	r.blooms._fixOnTree()         // Figures out which bloom filters matter
+	r.blooms._sendAllBlooms(true) // Sends updated bloom filters, if needed
+	r._fixKnown()                 // Sends announcements to peers, if needed
+	r.mainTimer.Reset(time.Second)
+}
+
+func (r *router) _shutdown() {
+	if r.mainTimer != nil {
+		r.mainTimer.Stop()
+		r.mainTimer = nil
+	}
+	// TODO clean up pathfinder etc...
+	//  There's a lot more to do here
+}
 
 func (r *router) _resetCache() {
 	for k := range r.cache {
@@ -105,31 +127,6 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			r.ports[p.port] = p.key
 			r.blooms._addInfo(p.key)
 			defer r._fixKnown()
-		} else {
-			// Send known, but in order
-			// TODO deduplicate similar logic between here and _fixKnown
-			selfAnc := r._getAncestry(r.core.crypto.publicKey)
-			peerAnc := r._getAncestry(p.key)
-			toSend := selfAnc
-			for _, k := range peerAnc {
-				var found bool
-				for _, sendKey := range selfAnc {
-					if k == sendKey {
-						found = true
-						break
-					}
-				}
-				if !found {
-					toSend = append(toSend, k)
-				}
-			}
-			for _, k := range toSend {
-				if info, isIn := r.infos[k]; isIn {
-					p.sendAnnounce(r, info.getAnnounce(k))
-				} else {
-					panic("this should never happen")
-				}
-			}
 		}
 		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
@@ -157,7 +154,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 			delete(r.resSeqs, p.key)
 			delete(r.cache, p.key)
 			r.blooms._removeInfo(p.key)
-			r._fix()
+			//r._fix()
 		} else {
 			// The bloom the remote node is tracking could be wrong due to a race
 			for p := range ps {
@@ -192,9 +189,6 @@ func (r *router) _sendReqs() {
 }
 
 func (r *router) _fix() {
-	defer r._fixKnown()
-	defer r.blooms._sendAllBlooms(true) // FIXME this is bad, hack for not tracking when tree relationships change
-	defer r.blooms._fixOnTree()         // Defer second, so it happens first
 	bestRoot := r.core.crypto.publicKey
 	bestParent := r.core.crypto.publicKey
 	self := r.infos[r.core.crypto.publicKey]
@@ -234,7 +228,6 @@ func (r *router) _fix() {
 			if !r._useResponse(bestParent, &res) {
 				panic("this should never happen")
 			}
-			r.fixTimer.Stop()
 			r.refresh = false
 			r.doRoot1 = false
 			r.doRoot2 = false // TODO panic to check that this was already false
@@ -256,17 +249,8 @@ func (r *router) _fix() {
 			r.refresh = false
 			r.doRoot1 = false
 			r.doRoot2 = false
-			r.fixTimer.Stop()
 			r._sendReqs()
 		case !r.doRoot1:
-			r.fixTimer = time.AfterFunc(time.Second, func() {
-				r.Act(nil, func() {
-					if r.doRoot1 {
-						r.doRoot2 = true
-						r._fix()
-					}
-				})
-			})
 			r.doRoot1 = true
 			// No need to sendReqs in this case
 			//  either we already have a req, or we've already requested one
@@ -284,6 +268,7 @@ func (r *router) _fixKnown() {
 	selfAnc := r._getAncestry(r.core.crypto.publicKey)
 	var toSend []publicKey
 	var anns []*routerAnnounce
+	scratch := make(map[publicKey]struct{})
 
 	for peerKey, sent := range r.sent {
 		// Initial setup stuff
@@ -291,31 +276,49 @@ func (r *router) _fixKnown() {
 		anns = anns[:0]
 		peerAnc := r._getAncestry(peerKey)
 
+		// Clear scratch
+		for k := range scratch {
+			delete(scratch, k)
+		}
+
 		// Get whatever we haven't sent from selfAnc
 		for _, k := range selfAnc {
+			scratch[k] = struct{}{}
 			if _, isIn := sent[k]; !isIn {
-				sent[k] = struct{}{}
 				toSend = append(toSend, k)
 			}
 		}
 
 		// Get whatever we haven't sent from peerAnc
 		for _, k := range peerAnc {
+			if _, isIn := scratch[k]; isIn {
+				continue // Already added from the selfAnc side
+			}
+			scratch[k] = struct{}{}
 			if _, isIn := sent[k]; !isIn {
-				sent[k] = struct{}{}
 				toSend = append(toSend, k)
 			}
 		}
 
-		// Finally, reset sent to be just the ancestry info, since that's all we would send to new peer connections
+		// TODO decide sane scheme for limiting toSend size
+		// We should also prioritize things better than the above... e.g. the least recently changed state wins
+		/*
+		   if len(toSend) > 1 {
+		     toSend = toSend[:1]
+		   }
+		*/
+
+		// Add toSend stuff to sent
+		for _, k := range toSend {
+			sent[k] = struct{}{}
+		}
+
+		// Finally, remove anything from sent that isn't in our ancestry... TODO or don't? We'll clean it up anyway eventually
 		for k := range sent {
+			if _, isIn := scratch[k]; isIn {
+				continue
+			}
 			delete(sent, k)
-		}
-		for _, k := range selfAnc {
-			sent[k] = struct{}{}
-		}
-		for _, k := range peerAnc {
-			sent[k] = struct{}{}
 		}
 
 		// Now prepare announcements
@@ -384,7 +387,7 @@ func (r *router) _handleResponse(p *peer, res *routerSigRes) {
 		r.resSeqCtr++
 		r.resSeqs[p.key] = r.resSeqCtr
 		r.responses[p.key] = *res
-		r._fix() // This could become our new parent
+		//r._fix() // This could become our new parent
 	}
 }
 
@@ -459,7 +462,7 @@ func (r *router) _update(ann *routerAnnounce) bool {
 			r.Act(nil, func() {
 				if r.timers[key] == timer {
 					r.refresh = true
-					r._fix()
+					//r._fix()
 				}
 			})
 		})
@@ -470,8 +473,11 @@ func (r *router) _update(ann *routerAnnounce) bool {
 					timer.Stop() // Shouldn't matter, but just to be safe...
 					delete(r.infos, key)
 					delete(r.timers, key)
+					for _, sent := range r.sent {
+						delete(sent, key)
+					}
 					r._resetCache()
-					r._fix()
+					//r._fix()
 				}
 			})
 		})
@@ -492,7 +498,7 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 			// So we need to set that an update is required, as if our refresh timer has passed
 			r.refresh = true
 		}
-		r._fix() // This could require us to change parents
+		//r._fix() // This could require us to change parents
 	} else {
 		// We didn't accept the info, because we alerady know it or something better
 		// TODO we didn't accept the ann, why did they send it?
