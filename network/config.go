@@ -23,8 +23,8 @@ type Option func(*config)
 
 func configDefaults() Option {
 	return func(c *config) {
-		c.routerRefresh = time.Minute
-		c.routerTimeout = 2 * time.Minute
+		c.routerRefresh = 4 * time.Minute
+		c.routerTimeout = 5 * time.Minute
 		c.peerKeepAliveDelay = time.Second
 		c.peerTimeout = 3 * time.Second
 		c.peerPingIncrement = time.Second

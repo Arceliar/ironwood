@@ -47,6 +47,12 @@ TODO: Mostly ignore the above
       Sending a request and our own root whenever we change anything at all would, technically, be sufficient I think... just wasteful.
       FIXME: yes, it spams like crazy because new info launches another merkle tree sync in paralllel with the existing one(s)
 
+OK, now most of the above is irrelevant anyway, we're just using soft state and tracking what we've already sent to reduce spamming
+
+TODO: we need a way to detect if a peer changes the coords they advertise to us, we should require that they stay fixed (disconnect the peer if it happens?)
+
+TODO: we do need to bring back some way to limit memory use... we don't forward things that aren't important, but we'd happily accept everything until we OOM, so that's not great for public nodes (we should either stop accepting anything until traffic things time out, TOFU, drop "worst", or something...)
+
 */
 
 type router struct {
@@ -64,7 +70,6 @@ type router struct {
 	responses  map[publicKey]routerSigRes
 	resSeqs    map[publicKey]uint64
 	resSeqCtr  uint64
-	selfAnc    []publicKey // Updated and/or checked in fix
 	refresh    bool
 	doRoot1    bool
 	doRoot2    bool
@@ -96,12 +101,11 @@ func (r *router) _doMaintenance() {
 		return
 	}
 	r.doRoot2 = r.doRoot2 || r.doRoot1
-	r._resetCache()                                     // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
-	r._fix()                                            // Selects new parent, if needed
-	r._fixKnown()                                       // Sends announcements to peers, if needed
-	r.blooms._fixOnTree()                               // Figures out which bloom filters matter
-	r.blooms._sendAllBlooms(true)                       // Sends updated bloom filters, if needed
-	r.selfAnc = r._getAncestry(r.core.crypto.publicKey) // For fix() to check against next time around
+	r._resetCache()               // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
+	r._fix()                      // Selects new parent, if needed
+	r._sendAnnounces()            // Sends announcements to peers, if needed
+	r.blooms._fixOnTree()         // Figures out which bloom filters matter
+	r.blooms._sendAllBlooms(true) // Sends updated bloom filters, if needed
 	r.mainTimer.Reset(time.Second)
 }
 
@@ -128,7 +132,15 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			r.sent[p.key] = make(map[publicKey]struct{})
 			r.ports[p.port] = p.key
 			r.blooms._addInfo(p.key)
-			defer r._fixKnown()
+		} else {
+			// Send anything we've already sent over previous peer connections to this node
+			for k := range r.sent[p.key] {
+				if info, isIn := r.infos[k]; isIn {
+					p.sendAnnounce(r, info.getAnnounce(k))
+				} else {
+					panic("this should never happen")
+				}
+			}
 		}
 		r.peers[p.key][p] = struct{}{}
 		if _, isIn := r.responses[p.key]; !isIn {
@@ -159,6 +171,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 			//r._fix()
 		} else {
 			// The bloom the remote node is tracking could be wrong due to a race
+			// TODO? don't send it immediately, reset the "sent" state to blank so we'll resend next maintenance period
 			for p := range ps {
 				r.blooms._sendBloom(p)
 			}
@@ -191,24 +204,10 @@ func (r *router) _sendReqs() {
 }
 
 func (r *router) _fix() {
-	selfAnc := r._getAncestry(r.core.crypto.publicKey)
-	var changed bool
-	if len(selfAnc) != len(r.selfAnc) {
-		changed = true
-	}
-	for idx := range selfAnc {
-		if changed {
-			break
-		}
-		if selfAnc[idx] != r.selfAnc[idx] {
-			changed = true
-		}
-	}
 	bestRoot := r.core.crypto.publicKey
 	bestParent := r.core.crypto.publicKey
 	self := r.infos[r.core.crypto.publicKey]
 	// Check if our current parent leads to a better root than ourself
-	// TODO reuse selfAnc for some of this
 	if _, isIn := r.peers[self.parent]; isIn {
 		root, _ := r._getRootAndDists(r.core.crypto.publicKey)
 		if root.less(bestRoot) {
@@ -229,8 +228,11 @@ func (r *router) _fix() {
 		if pRoot.less(bestRoot) {
 			bestRoot, bestParent = pRoot, pk
 		}
-		// If our ancestry must change anyway, then we should take this chance to select a better parent
-		if changed || bestParent != self.parent {
+		// TODO? Update parents even if the old one works, if the new one is "better"
+		//  But it has to be by a lot, stability is high priority (affects all downstream nodes)
+		//  For now, if we're forced to select a new parent, then choose the "best" one
+		//  Otherwise, just always keep the current parent if possible
+		if /* r.refresh  || */ bestParent != self.parent {
 			if pRoot == bestRoot && r.resSeqs[pk] < r.resSeqs[bestParent] {
 				bestRoot, bestParent = pRoot, pk
 			}
@@ -278,13 +280,12 @@ func (r *router) _fix() {
 	}
 }
 
-func (r *router) _fixKnown() {
+func (r *router) _sendAnnounces() {
 	// This is insanely delicate, lots of correctness is implicit across how nodes behave
 	// Change nothing here.
 	selfAnc := r._getAncestry(r.core.crypto.publicKey)
 	var toSend []publicKey
 	var anns []*routerAnnounce
-	scratch := make(map[publicKey]struct{})
 
 	for peerKey, sent := range r.sent {
 		// Initial setup stuff
@@ -292,41 +293,31 @@ func (r *router) _fixKnown() {
 		anns = anns[:0]
 		peerAnc := r._getAncestry(peerKey)
 
-		// Clear scratch
-		for k := range scratch {
-			delete(scratch, k)
-		}
-
 		// Get whatever we haven't sent from selfAnc
 		for _, k := range selfAnc {
-			scratch[k] = struct{}{}
 			if _, isIn := sent[k]; !isIn {
 				toSend = append(toSend, k)
+				sent[k] = struct{}{}
 			}
 		}
 
 		// Get whatever we haven't sent from peerAnc
 		for _, k := range peerAnc {
-			if _, isIn := scratch[k]; isIn {
-				continue // Already added from the selfAnc side
-			}
-			scratch[k] = struct{}{}
 			if _, isIn := sent[k]; !isIn {
 				toSend = append(toSend, k)
+				sent[k] = struct{}{}
 			}
 		}
 
-		// Add toSend stuff to sent
-		for _, k := range toSend {
+		// Reset sent so it only contains the ancestry info
+		for k := range sent {
+			delete(sent, k)
+		}
+		for _, k := range selfAnc {
 			sent[k] = struct{}{}
 		}
-
-		// Finally, remove anything from sent that isn't in our ancestry... TODO or don't? We'll clean it up anyway eventually
-		for k := range sent {
-			if _, isIn := scratch[k]; isIn {
-				continue
-			}
-			delete(sent, k)
+		for _, k := range peerAnc {
+			sent[k] = struct{}{}
 		}
 
 		// Now prepare announcements
