@@ -56,9 +56,7 @@ type router struct {
 	pathfinder pathfinder                           // see pathfinder.go
 	blooms     blooms                               // see bloomfilter.go
 	peers      map[publicKey]map[*peer]struct{}     // True if we're allowed to send a mirror to this peer (but have not done so already)
-	send       map[publicKey]map[publicKey]struct{} // tracks which info we've sent to our peer
-	recv       map[publicKey]map[publicKey]struct{} // tracks which info our peer has sent to us, so we know who to notify if we delete something
-	hold       map[publicKey]publicKey              // tracks which info our peer has sent to us most recently
+	sent       map[publicKey]map[publicKey]struct{} // tracks which info we've sent to our peer
 	ports      map[peerPort]publicKey               // used in tree lookups
 	infos      map[publicKey]routerInfo
 	cache      map[publicKey][]peerPort // Cache path slice for each peer
@@ -77,9 +75,7 @@ func (r *router) init(c *core) {
 	r.pathfinder.init(r)
 	r.blooms.init(r)
 	r.peers = make(map[publicKey]map[*peer]struct{})
-	r.send = make(map[publicKey]map[publicKey]struct{})
-	r.recv = make(map[publicKey]map[publicKey]struct{})
-	r.hold = make(map[publicKey]publicKey)
+	r.sent = make(map[publicKey]map[publicKey]struct{})
 	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
 	r.cache = make(map[publicKey][]peerPort)
@@ -105,8 +101,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 		//r._resetCache()
 		if _, isIn := r.peers[p.key]; !isIn {
 			r.peers[p.key] = make(map[*peer]struct{})
-			r.send[p.key] = make(map[publicKey]struct{})
-			r.recv[p.key] = make(map[publicKey]struct{})
+			r.sent[p.key] = make(map[publicKey]struct{})
 			r.ports[p.port] = p.key
 			r.blooms._addInfo(p.key)
 			defer r._fixKnown()
@@ -155,9 +150,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 		delete(ps, p)
 		if len(ps) == 0 {
 			delete(r.peers, p.key)
-			delete(r.send, p.key)
-			delete(r.recv, p.key)
-			delete(r.hold, p.key)
+			delete(r.sent, p.key)
 			delete(r.ports, p.port)
 			delete(r.requests, p.key)
 			delete(r.responses, p.key)
@@ -285,62 +278,14 @@ func (r *router) _fix() {
 	}
 }
 
-func (r *router) sendForget(peerKey publicKey, ann *routerAnnounce) {
-	r.Act(nil, func() {
-		forget := routerForget{*ann}
-		for p := range r.peers[peerKey] {
-			p.sendForget(r, &forget)
-		}
-	})
-}
-
-func (r *router) handleForget(from phony.Actor, p *peer, forget *routerForget) {
-	r.Act(from, func() {
-		fInfo := routerInfo{
-			parent:       forget.parent,
-			routerSigRes: forget.routerSigRes,
-			sig:          forget.sig,
-		}
-		if fInfo == r.infos[forget.key] {
-			delete(r.send[p.key], forget.key)
-		}
-	})
-}
-
-func (r *router) _purgeKnown(key publicKey) {
-	for _, send := range r.send {
-		delete(send, key)
-	}
-	for pk, hold := range r.hold {
-		if hold == key {
-			delete(r.hold, pk)
-		}
-	}
-	for pk, recv := range r.recv {
-		if _, isIn := recv[key]; isIn {
-			if info, isIn := r.infos[key]; isIn {
-				r.sendForget(pk, info.getAnnounce(key))
-			} else {
-				panic("this should never happen")
-			}
-		}
-		delete(recv, key)
-	}
-	delete(r.infos, key)
-}
-
 func (r *router) _fixKnown() {
 	// This is insanely delicate, lots of correctness is implicit across how nodes behave
 	// Change nothing here.
-	everything := make(map[publicKey]struct{})
 	selfAnc := r._getAncestry(r.core.crypto.publicKey)
-	for _, k := range selfAnc {
-		everything[k] = struct{}{}
-	}
 	var toSend []publicKey
 	var anns []*routerAnnounce
-	for peerKey, send := range r.send {
 
+	for peerKey, sent := range r.sent {
 		// Initial setup stuff
 		toSend = toSend[:0]
 		anns = anns[:0]
@@ -348,30 +293,29 @@ func (r *router) _fixKnown() {
 
 		// Get whatever we haven't sent from selfAnc
 		for _, k := range selfAnc {
-			if _, isIn := send[k]; !isIn {
-				send[k] = struct{}{}
+			if _, isIn := sent[k]; !isIn {
+				sent[k] = struct{}{}
 				toSend = append(toSend, k)
 			}
 		}
 
-		// Get whatever we haven't sent from peerAnc, fill everything on the way
+		// Get whatever we haven't sent from peerAnc
 		for _, k := range peerAnc {
-			if _, isIn := send[k]; !isIn {
-				send[k] = struct{}{}
+			if _, isIn := sent[k]; !isIn {
+				sent[k] = struct{}{}
 				toSend = append(toSend, k)
 			}
-			everything[k] = struct{}{}
 		}
 
-		// Finally, reset send to be just the ancestry info, since that's all we send to new peer connections
-		for k := range send {
-			delete(send, k)
+		// Finally, reset sent to be just the ancestry info, since that's all we would send to new peer connections
+		for k := range sent {
+			delete(sent, k)
 		}
 		for _, k := range selfAnc {
-			send[k] = struct{}{}
+			sent[k] = struct{}{}
 		}
 		for _, k := range peerAnc {
-			send[k] = struct{}{}
+			sent[k] = struct{}{}
 		}
 
 		// Now prepare announcements
@@ -389,30 +333,6 @@ func (r *router) _fixKnown() {
 				p.sendAnnounce(r, ann)
 			}
 		}
-	}
-
-	// We also need to keep anything pinned by hold
-	for _, hold := range r.hold {
-		anc := r._getAncestry(hold)
-		for _, k := range anc {
-			everything[k] = struct{}{}
-		}
-	}
-
-	// Now we clean up anything we don't care about
-	for key := range r.infos {
-		if _, isIn := everything[key]; isIn {
-			// This is important to someone, so keep it
-			continue
-		}
-		// This isn't in use, so clean it up
-		// FIXME this causes unit tests to hang/fail at random
-		//  Suggests that there's a race somewhere
-		//  So our state and our peer's state are becoming inconsistent
-		//  How? When? Why?
-		// TODO delete everything not on the tree, and send everything that wasn't in our immediately previous ancestry when we change state (not just things we've never sent), likewise for peer info changes
-		r._purgeKnown(key)
-
 	}
 }
 
@@ -520,13 +440,17 @@ func (r *router) _update(ann *routerAnnounce) bool {
 			return false
 		}
 	}
+	// Clean up sent info and cache
+	for _, sent := range r.sent {
+		delete(sent, ann.key)
+	}
 	r._resetCache()
+	// Save info
 	info := routerInfo{
 		parent:       ann.parent,
 		routerSigRes: ann.routerSigRes,
 		sig:          ann.sig,
 	}
-	r._purgeKnown(ann.key)
 	r.infos[ann.key] = info
 	return true
 }
@@ -540,10 +464,9 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 			// So we need to set that an update is required, as if our refresh timer has passed
 			r.refresh = true
 		}
-		r.recv[p.key][ann.key] = struct{}{}
-		r.hold[p.key] = ann.key
 		r._fix() // This could require us to change parents
 	} else {
+		// We didn't accept the info, because we alerady know it or something better
 		// TODO we didn't accept the ann, why did they send it?
 		// Do we need to do anything to make sure we're consistent?
 		info := routerInfo{
@@ -551,14 +474,11 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 			routerSigRes: ann.routerSigRes,
 			sig:          ann.sig,
 		}
-		if info == r.infos[ann.key] {
-			r.recv[p.key][ann.key] = struct{}{}
-			r.hold[p.key] = ann.key
-		} else {
-			// They sent something, but it was old.
-			// We've probably already told them about it, they just need to react.
-			// In any case, we need to tell them that we don't know about this.
-			r.sendForget(p.key, ann)
+		if oldInfo := r.infos[ann.key]; info != oldInfo {
+			// They sent something, but it was worse
+			// We should tell them what we know
+			// Only to the p that sent it, since we'll spam the rest as messages arrive
+			p.sendAnnounce(r, oldInfo.getAnnounce(ann.key))
 		}
 	}
 }
