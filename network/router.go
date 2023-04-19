@@ -64,6 +64,7 @@ type router struct {
 	responses  map[publicKey]routerSigRes
 	resSeqs    map[publicKey]uint64
 	resSeqCtr  uint64
+	selfAnc    []publicKey // Updated and/or checked in fix
 	refresh    bool
 	doRoot1    bool
 	doRoot2    bool
@@ -95,11 +96,12 @@ func (r *router) _doMaintenance() {
 		return
 	}
 	r.doRoot2 = r.doRoot2 || r.doRoot1
-	r._resetCache()               // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
-	r._fix()                      // Selects new parent, if needed
-	r.blooms._fixOnTree()         // Figures out which bloom filters matter
-	r.blooms._sendAllBlooms(true) // Sends updated bloom filters, if needed
-	r._fixKnown()                 // Sends announcements to peers, if needed
+	r._resetCache()                                     // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
+	r._fix()                                            // Selects new parent, if needed
+	r._fixKnown()                                       // Sends announcements to peers, if needed
+	r.blooms._fixOnTree()                               // Figures out which bloom filters matter
+	r.blooms._sendAllBlooms(true)                       // Sends updated bloom filters, if needed
+	r.selfAnc = r._getAncestry(r.core.crypto.publicKey) // For fix() to check against next time around
 	r.mainTimer.Reset(time.Second)
 }
 
@@ -189,10 +191,24 @@ func (r *router) _sendReqs() {
 }
 
 func (r *router) _fix() {
+	selfAnc := r._getAncestry(r.core.crypto.publicKey)
+	var changed bool
+	if len(selfAnc) != len(r.selfAnc) {
+		changed = true
+	}
+	for idx := range selfAnc {
+		if changed {
+			break
+		}
+		if selfAnc[idx] != r.selfAnc[idx] {
+			changed = true
+		}
+	}
 	bestRoot := r.core.crypto.publicKey
 	bestParent := r.core.crypto.publicKey
 	self := r.infos[r.core.crypto.publicKey]
 	// Check if our current parent leads to a better root than ourself
+	// TODO reuse selfAnc for some of this
 	if _, isIn := r.peers[self.parent]; isIn {
 		root, _ := r._getRootAndDists(r.core.crypto.publicKey)
 		if root.less(bestRoot) {
@@ -213,8 +229,8 @@ func (r *router) _fix() {
 		if pRoot.less(bestRoot) {
 			bestRoot, bestParent = pRoot, pk
 		}
-		// TODO? switch to another parent (to the same root) if they're "better", at least sometimes
-		if r.refresh || bestParent != self.parent {
+		// If our ancestry must change anyway, then we should take this chance to select a better parent
+		if changed || bestParent != self.parent {
 			if pRoot == bestRoot && r.resSeqs[pk] < r.resSeqs[bestParent] {
 				bestRoot, bestParent = pRoot, pk
 			}
