@@ -363,6 +363,17 @@ func (r *router) _fixKnown() {
 			everything[k] = struct{}{}
 		}
 
+		// Finally, reset send to be just the ancestry info, since that's all we send to new peer connections
+		for k := range send {
+			delete(send, k)
+		}
+		for _, k := range selfAnc {
+			send[k] = struct{}{}
+		}
+		for _, k := range peerAnc {
+			send[k] = struct{}{}
+		}
+
 		// Now prepare announcements
 		for _, k := range toSend {
 			if info, isIn := r.infos[k]; isIn {
@@ -401,6 +412,7 @@ func (r *router) _fixKnown() {
 		//  How? When? Why?
 		// TODO delete everything not on the tree, and send everything that wasn't in our immediately previous ancestry when we change state (not just things we've never sent), likewise for peer info changes
 		r._purgeKnown(key)
+
 	}
 }
 
