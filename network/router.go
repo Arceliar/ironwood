@@ -53,6 +53,10 @@ TODO: we need a way to detect if a peer changes the coords they advertise to us,
 
 TODO: we do need to bring back some way to limit memory use... we don't forward things that aren't important, but we'd happily accept everything until we OOM, so that's not great for public nodes (we should either stop accepting anything until traffic things time out, TOFU, drop "worst", or something...)
 
+TODO: when our path to the root flaps, we should try to switch to a more stable path
+  Consider the whole path, not just the parent
+  We probably need to track peer ancestry and record when they change. "When" meaning we sequence number it.
+
 */
 
 type router struct {
@@ -101,11 +105,10 @@ func (r *router) _doMaintenance() {
 		return
 	}
 	r.doRoot2 = r.doRoot2 || r.doRoot1
-	r._resetCache()               // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
-	r._fix()                      // Selects new parent, if needed
-	r._sendAnnounces()            // Sends announcements to peers, if needed
-	r.blooms._fixOnTree()         // Figures out which bloom filters matter
-	r.blooms._sendAllBlooms(true) // Sends updated bloom filters, if needed
+	r._resetCache()    // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
+	r._fix()           // Selects new parent, if needed
+	r._sendAnnounces() // Sends announcements to peers, if needed
+	r.blooms._doMaintenance()
 	r.mainTimer.Reset(time.Second)
 }
 

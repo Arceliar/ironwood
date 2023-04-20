@@ -126,8 +126,6 @@ func (b *bloom) decode(data []byte) error {
 type blooms struct {
 	router *router
 	blooms map[publicKey]bloomInfo
-	zTimer *time.Timer // Used to delay / throttle sending updates that set bits to 0
-	zDirty bool        // Used to track when we're preparing to send updates with bits changed to zero
 	// TODO add some kind of timeout and keepalive timer to force an update/send
 }
 
@@ -135,12 +133,12 @@ type bloomInfo struct {
 	send   bloom
 	recv   bloom
 	onTree bool
+	zDirty bool
 }
 
 func (bs *blooms) init(r *router) {
 	bs.router = r
 	bs.blooms = make(map[publicKey]bloomInfo)
-	bs.zTimer = time.AfterFunc(0, bs.zTimerWork)
 }
 
 func (bs *blooms) _isOnTree(key publicKey) bool {
@@ -164,7 +162,7 @@ func (bs *blooms) _fixOnTree() {
 				// TODO? delay creating a bloomInfo until we at least have an info from them?
 			}
 			if wasOn && !pbi.onTree {
-				// We dropped them from the tree, so we need to send a blank (but sequence numbered) update
+				// We dropped them from the tree, so we need to send a blank update
 				// That way, if the link returns to the tree, we don't start with false positives
 				b := newBloom()
 				pbi.send = *b
@@ -196,10 +194,7 @@ func (bs *blooms) _addInfo(key publicKey) {
 
 func (bs *blooms) _removeInfo(key publicKey) {
 	delete(bs.blooms, key)
-	// At some later point (after we've finished cleaning things up), send blooms to everyone
-	bs.router.Act(nil, func() {
-		bs._sendAllBlooms(true)
-	})
+	// We'll need to send updated blooms, but this can happen during regular maintenance
 }
 
 func (bs *blooms) handleBloom(fromPeer *peer, b *bloom) {
@@ -213,34 +208,13 @@ func (bs blooms) _handleBloom(fromPeer *peer, b *bloom) {
 	if !isIn {
 		return
 	}
-	doSend := !b.filter.Equal(pbi.recv.filter)
 	pbi.recv = *b
 	bs.blooms[fromPeer.key] = pbi
-	if !doSend {
-		return
-	}
-	// Our filter changed, so we need to send an update to all other peers
-	/*
-		for destKey, destPeers := range bs.router.peers {
-			if destKey == fromPeer.key {
-				continue
-			}
-			if send, isNew := bs._getBloomFor(destKey, true); isNew {
-				for p := range destPeers {
-					p.sendBloom(bs.router, send)
-				}
-			}
-		}
-	*/
-	//bs._sendAllBlooms(true)
 }
 
-func (bs *blooms) zTimerWork() {
-	bs.router.Act(nil, func() {
-		// TODO? clean up non-tree blooms as well? When/how?
-		bs._sendAllBlooms(false)
-		bs.zDirty = false
-	})
+func (bs *blooms) _doMaintenance() {
+	bs._fixOnTree()
+	bs._sendAllBlooms()
 }
 
 func (bs *blooms) _getBloomFor(key publicKey, keepOnes bool) (*bloom, bool) {
@@ -263,15 +237,15 @@ func (bs *blooms) _getBloomFor(key publicKey, keepOnes bool) (*bloom, bool) {
 		b.addFilter(bs.blooms[k].recv.filter)
 	}
 	if keepOnes {
-		// Don't reset existing 1 bits, the zTimer will take care of that (if needed)
+		// Don't reset existing 1 bits, we'll set anything unnecessairy to 0 next time
+		// Ensures that 1s travel faster than 0s, to help prevent flapping
 		// TODO only start the timer if we have unnecessairy 1 bits, need to check
-		if !bs.zDirty {
+		if !pbi.zDirty {
 			c := b.filter.Copy()
 			b.addFilter(pbi.send.filter)
 			if !b.filter.Equal(c) {
-				// We're keeping unnecessairy 1 bits, so start the timer
-				bs.zDirty = true
-				bs.zTimer.Reset(bloomZeroDelay)
+				// We're keeping unnecessairy 1 bits, so set the dirty flag
+				pbi.zDirty = true
 			}
 		} else {
 			b.addFilter(pbi.send.filter)
@@ -289,21 +263,18 @@ func (bs *blooms) _getBloomFor(key publicKey, keepOnes bool) (*bloom, bool) {
 }
 
 func (bs *blooms) _sendBloom(p *peer) {
-	// FIXME we should really just make it part of what router.addPeer does
-	if bs.blooms[p.key].onTree {
-		b, _ := bs._getBloomFor(p.key, true)
-		p.sendBloom(bs.router, b)
-	} else {
-		b := newBloom()
-		p.sendBloom(bs.router, b)
-	}
+	// Just send whatever our most recently sent bloom is
+	// For new or off-tree nodes, this is the empty bloom filter
+	b := bs.blooms[p.key].send
+	p.sendBloom(bs.router, &b)
 }
 
-func (bs *blooms) _sendAllBlooms(keepOnes bool) {
+func (bs *blooms) _sendAllBlooms() {
 	for k, pbi := range bs.blooms {
 		if !pbi.onTree {
 			continue
 		}
+		keepOnes := !pbi.zDirty
 		if b, isNew := bs._getBloomFor(k, keepOnes); isNew {
 			if ps, isIn := bs.router.peers[k]; isIn {
 				for p := range ps {
