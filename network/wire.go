@@ -14,6 +14,7 @@ const (
 	wireProtoBloomFilter
 	wireProtoPathLookup
 	wireProtoPathNotify
+	wireProtoPathBroken
 	wireTraffic
 )
 

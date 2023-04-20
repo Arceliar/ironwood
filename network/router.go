@@ -57,6 +57,21 @@ TODO: when our path to the root flaps, we should try to switch to a more stable 
   Consider the whole path, not just the parent
   We probably need to track peer ancestry and record when they change. "When" meaning we sequence number it.
 
+FIXME Potential showstopping issue:
+  Greedy routing using coords is fundamentally insecure.
+    Nothing prevents a node from advertising the same port number to two different children.
+    Everything downstream of the attacker is at risk of random blackholes etc.
+    This costs the attacker essentially nothing.
+  Workaround: use full keys.
+    That obviously won't work for normal traffic -- it's too much info.
+    It *may* work for protocol traffic, so we can use it for pathfinding.
+    We could then e.g. build a source route along the way, and use the source route... if we can do that securely...
+    Added benefit, we do expect source routing to be more stable in the face of tree flapping...
+  Obvious issues with ygg v0.4 style source routing... alternatives?
+    Detect if we've visited the same node before so we can drop traffic? How?
+      Bloom filter would work, except for the issue of false positives...
+      If we store a reverse route, we could send back an error, so the sender can resize the bloom filter... Seems messy...
+
 */
 
 type router struct {

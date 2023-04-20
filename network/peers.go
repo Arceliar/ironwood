@@ -334,6 +334,8 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return p._handlePathLookup(bs[1:])
 	case wireProtoPathNotify:
 		return p._handlePathNotify(bs[1:])
+	case wireProtoPathBroken:
+		return p._handlePathBroken(bs[1:])
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
@@ -425,6 +427,19 @@ func (p *peer) _handlePathNotify(bs []byte) error {
 
 func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
 	p.sendDirect(from, wireProtoPathNotify, notify)
+}
+
+func (p *peer) _handlePathBroken(bs []byte) error {
+	broken := new(pathBroken)
+	if err := broken.decode(bs); err != nil {
+		return err
+	}
+	p.peers.core.router.pathfinder.handleBroken(p, broken)
+	return nil
+}
+
+func (p *peer) sendPathBroken(from phony.Actor, broken *pathBroken) {
+	p.sendDirect(from, wireProtoPathBroken, broken)
 }
 
 func (p *peer) _handleTraffic(bs []byte) error {

@@ -239,12 +239,38 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 }
 
 func (pf *pathfinder) _doBroken(tr *traffic) {
-	lookup := pathLookup{
-		source: tr.source,
-		dest:   tr.dest,
+	broken := pathBroken{
+		path:      append([]peerPort(nil), tr.path...),
+		watermark: ^uint64(0),
+		source:    tr.source,
+		dest:      tr.dest,
 	}
-	lookup.from = append(lookup.from, tr.from...)
-	pf.router.blooms._sendMulticast(wireProtoPathLookup, &lookup, pf.router.core.crypto.publicKey, lookup.dest)
+	pf._handleBroken(&broken)
+}
+
+func (pf *pathfinder) _handleBroken(broken *pathBroken) {
+	// Hack using traffic to do routing
+	var tmp traffic
+	tmp.path = broken.path
+	tmp.watermark = broken.watermark
+	if p := pf.router._lookup(&tmp); p != nil {
+		broken.watermark = tmp.watermark
+		p.sendPathBroken(pf.router, broken)
+		return // TODO? Or don't?
+	}
+	// Check if we should accept this pathBroken
+	if broken.source != pf.router.core.crypto.publicKey {
+		return
+	}
+	if _, isIn := pf.paths[broken.dest]; isIn {
+		pf._sendLookup(broken.dest) // Throttled inside this function
+	}
+}
+
+func (pf *pathfinder) handleBroken(p *peer, broken *pathBroken) {
+	pf.router.Act(p, func() {
+		pf._handleBroken(broken)
+	})
 }
 
 /************
@@ -272,6 +298,10 @@ type pathRumor struct {
 /**************
  * pathLookup *
  **************/
+
+// TODO? sign this? if the result is going to be signed then we should force the sender to go through that first...
+// OTOH then dest doesn't use this info for anything except sending back a response, and they pre-sign that...
+// So that's kind of just adding cost for the sake of adding cost to try to keep things symmetric... Maybe not worth it...
 
 type pathLookup struct {
 	source publicKey
@@ -442,5 +472,55 @@ func (notify *pathNotify) decode(data []byte) error {
 		return err
 	}
 	*notify = tmp
+	return nil
+}
+
+/**************
+ * pathBroken *
+ **************/
+
+type pathBroken struct {
+	path      []peerPort
+	watermark uint64
+	source    publicKey
+	dest      publicKey
+}
+
+func (broken *pathBroken) size() int {
+	size := wireSizePath(broken.path)
+	size += wireSizeUint(broken.watermark)
+	size += len(broken.source)
+	size += len(broken.dest)
+	return size
+}
+
+func (broken *pathBroken) encode(out []byte) ([]byte, error) {
+	start := len(out)
+	out = wireAppendPath(out, broken.path)
+	out = wireAppendUint(out, broken.watermark)
+	out = append(out, broken.source[:]...)
+	out = append(out, broken.dest[:]...)
+	end := len(out)
+	if end-start != broken.size() {
+		panic("this should never happen")
+	}
+	return out, nil
+}
+
+func (broken *pathBroken) decode(data []byte) error {
+	var tmp pathBroken
+	orig := data
+	if !wireChopPath(&tmp.path, &orig) {
+		return types.ErrDecode
+	} else if !wireChopUint(&tmp.watermark, &data) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.source[:], &orig) {
+		return types.ErrDecode
+	} else if !wireChopSlice(tmp.dest[:], &orig) {
+		return types.ErrDecode
+	} else if len(orig) != 0 {
+		return types.ErrDecode
+	}
+	*broken = tmp
 	return nil
 }
