@@ -353,16 +353,18 @@ func (r *router) _sendAnnounces() {
 			}
 		}
 
-		// Reset sent so it only contains the ancestry info
-		for k := range sent {
-			delete(sent, k)
-		}
-		for _, k := range selfAnc {
-			sent[k] = struct{}{}
-		}
-		for _, k := range peerAnc {
-			sent[k] = struct{}{}
-		}
+		/*
+			// Reset sent so it only contains the ancestry info
+			for k := range sent {
+				delete(sent, k)
+			}
+			for _, k := range selfAnc {
+				sent[k] = struct{}{}
+			}
+			for _, k := range peerAnc {
+				sent[k] = struct{}{}
+			}
+		*/
 
 		// Now prepare announcements
 		for _, k := range toSend {
