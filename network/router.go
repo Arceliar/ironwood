@@ -69,6 +69,9 @@ type router struct {
 	ports      map[peerPort]publicKey               // used in tree lookups
 	infos      map[publicKey]routerInfo
 	timers     map[publicKey]*time.Timer
+	ancs       map[publicKey][]publicKey // Peer ancestry info
+	ancSeqs    map[publicKey]uint64
+	ancSeqCtr  uint64
 	cache      map[publicKey][]peerPort // Cache path slice for each peer
 	requests   map[publicKey]routerSigReq
 	responses  map[publicKey]routerSigRes
@@ -88,6 +91,9 @@ func (r *router) init(c *core) {
 	r.sent = make(map[publicKey]map[publicKey]struct{})
 	r.ports = make(map[peerPort]publicKey)
 	r.infos = make(map[publicKey]routerInfo)
+	r.timers = make(map[publicKey]*time.Timer)
+	r.ancs = make(map[publicKey][]publicKey)
+	r.ancSeqs = make(map[publicKey]uint64)
 	r.cache = make(map[publicKey][]peerPort)
 	r.requests = make(map[publicKey]routerSigReq)
 	r.responses = make(map[publicKey]routerSigRes)
@@ -105,7 +111,8 @@ func (r *router) _doMaintenance() {
 		return
 	}
 	r.doRoot2 = r.doRoot2 || r.doRoot1
-	r._resetCache()    // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
+	r._resetCache() // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
+	r._updateAncestries()
 	r._fix()           // Selects new parent, if needed
 	r._sendAnnounces() // Sends announcements to peers, if needed
 	r.blooms._doMaintenance()
@@ -134,6 +141,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			r.peers[p.key] = make(map[*peer]struct{})
 			r.sent[p.key] = make(map[publicKey]struct{})
 			r.ports[p.port] = p.key
+			r.ancSeqs[p.key] = r.ancSeqCtr
 			r.blooms._addInfo(p.key)
 		} else {
 			// Send anything we've already sent over previous peer connections to this node
@@ -169,6 +177,8 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 			delete(r.requests, p.key)
 			delete(r.responses, p.key)
 			delete(r.resSeqs, p.key)
+			delete(r.ancs, p.key)
+			delete(r.ancSeqs, p.key)
 			delete(r.cache, p.key)
 			r.blooms._removeInfo(p.key)
 			//r._fix()
@@ -206,6 +216,29 @@ func (r *router) _sendReqs() {
 	}
 }
 
+func (r *router) _updateAncestries() {
+	r.ancSeqCtr++
+	for pkey := range r.peers {
+		anc := r._getAncestry(pkey)
+		old := r.ancs[pkey]
+		var diff bool
+		if len(anc) != len(old) {
+			diff = true
+		} else {
+			for idx := range anc {
+				if anc[idx] != old[idx] {
+					diff = true
+					break
+				}
+			}
+		}
+		if diff {
+			r.ancs[pkey] = anc
+			r.ancSeqs[pkey] = r.ancSeqCtr
+		}
+	}
+}
+
 func (r *router) _fix() {
 	bestRoot := r.core.crypto.publicKey
 	bestParent := r.core.crypto.publicKey
@@ -230,6 +263,14 @@ func (r *router) _fix() {
 		}
 		if pRoot.less(bestRoot) {
 			bestRoot, bestParent = pRoot, pk
+		} else if pRoot != bestRoot {
+			continue // wrong root
+		}
+		if r.ancSeqs[pk] < r.ancSeqs[bestParent] {
+			// This node is advertising a more stable path, so we should probably switch to it...
+			bestRoot, bestParent = pRoot, pk
+		} else if r.ancSeqs[pk] != r.ancSeqs[bestParent] {
+			continue // less stable path
 		}
 		// TODO? Update parents even if the old one works, if the new one is "better"
 		//  But it has to be by a lot, stability is high priority (affects all downstream nodes)
@@ -487,6 +528,7 @@ func (r *router) _update(ann *routerAnnounce) bool {
 	if oldTimer, isIn := r.timers[key]; isIn {
 		oldTimer.Stop()
 	}
+	r.timers[ann.key] = timer
 	r.infos[ann.key] = info
 	return true
 }

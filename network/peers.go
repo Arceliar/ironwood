@@ -68,6 +68,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 		p.port = port
 		p.prio = prio
 		p.monitor.peer = p
+		p.monitor.pDelay = ps.core.config.peerTimeout // It doesn't make sense to start the ping delay any shorter than this
 		p.writer.peer = p
 		p.writer.wbuf = bufio.NewWriter(p.conn)
 		p.time = time.Now()
@@ -131,6 +132,7 @@ func (m *peerMonitor) keepAlive() {
 }
 
 func (m *peerMonitor) doPing() {
+	return // FIXME DEBUG stop sending pings
 	m.Act(nil, func() {
 		select {
 		case <-m.peer.done:
@@ -167,14 +169,17 @@ func (m *peerMonitor) sent(pType wirePacketType) {
 			if m.pDelay > m.peer.peers.core.config.peerPingMaxDelay {
 				m.pDelay = m.peer.peers.core.config.peerPingMaxDelay
 			}
-			delay := m.pDelay // TODO? slightly randomize
+			fallthrough
+		default:
+			// Reset the timer until our next ping is sent
 			select {
 			case <-m.peer.done:
 			default:
-				m.pingTimer = time.AfterFunc(delay, m.doPing)
+				if m.pingTimer != nil {
+					delay := m.pDelay // TODO? slightly randomize
+					m.pingTimer.Reset(delay)
+				}
 			}
-			fallthrough
-		default:
 			// We're sending non-keepalive traffic
 			// This means we expect some kind of acknowledgement (at least a keepalive)
 			// Set a read deadline for that (and make a note that we did so)
@@ -271,7 +276,7 @@ func (p *peer) handler() error {
 	p.conn.SetDeadline(time.Time{})
 	// Calling doPing here ensures that it's the first traffic we ever send
 	// That helps to e.g. initialize the pingTimer
-	p.monitor.doPing()
+	p.monitor.pingTimer = time.AfterFunc(p.monitor.pDelay, p.monitor.doPing)
 	// Add peer to the router, to kick off protocol exchanges
 	p.peers.core.router.addPeer(p, p)
 	// Now allocate buffers and start reading / handling packets...
