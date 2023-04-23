@@ -297,9 +297,14 @@ func (bs *blooms) sendMulticast(from phony.Actor, pType wirePacketType, data wir
 }
 
 func (bs *blooms) _sendMulticast(pType wirePacketType, data wireEncodeable, fromKey publicKey, toKey publicKey) {
+	// TODO make very sure this can't loop
+	//  Does the onTree state stay safe, even when we're delaying maintenance from message updates?...
 	xform := bs.xKey(toKey)
-	selfInfo := bs.router.infos[bs.router.core.crypto.publicKey]
 	for k, pbi := range bs.blooms {
+		if !pbi.onTree {
+			// This is not on the tree, so skip it
+			continue
+		}
 		if k == fromKey {
 			// From this key, so don't send it back
 			continue
@@ -307,16 +312,6 @@ func (bs *blooms) _sendMulticast(pType wirePacketType, data wireEncodeable, from
 		if !pbi.recv.filter.Test(xform[:]) {
 			// The bloom filter tells us this peer definitely doesn't carea bout this xformed toKey
 			continue
-		}
-		// Skip non-tree peers!
-		if selfInfo.parent != k {
-			// This is not our parent
-			if info := bs.router.infos[k]; info.parent != bs.router.core.crypto.publicKey {
-				// This is not our child
-				// So this is not a link used in the tree, we must not broadcast on it
-				// TODO at the very least, we should set a flag or something, on the pbi, so we don't keep needing to check this
-				continue
-			}
 		}
 		// Send this broadcast packet to the peer
 		var bestPeer *peer

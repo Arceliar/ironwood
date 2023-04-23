@@ -132,7 +132,6 @@ func (m *peerMonitor) keepAlive() {
 }
 
 func (m *peerMonitor) doPing() {
-	return // FIXME DEBUG stop sending pings
 	m.Act(nil, func() {
 		select {
 		case <-m.peer.done:
@@ -236,7 +235,6 @@ func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 		if bufSize > w.peer.peers.core.config.peerMaxMessageSize {
 			return
 		}
-		// TODO packet size checks (right now there's no max, that's bad)
 		writeBuf := allocBytes(0)
 		defer freeBytes(writeBuf)
 		// The +1 is from 1 byte for the pType
@@ -290,7 +288,6 @@ func (p *peer) handler() error {
 		if usize > p.peers.core.config.peerMaxMessageSize {
 			return types.ErrOversizedMessage
 		}
-		// TODO max packet size logic (right now there's no max, that's bad)
 		size := int(usize)
 		bs := allocBytes(size)
 		if _, err = io.ReadFull(rbuf, bs); err != nil {
