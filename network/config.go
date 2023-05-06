@@ -10,8 +10,6 @@ type config struct {
 	routerTimeout      time.Duration
 	peerKeepAliveDelay time.Duration
 	peerTimeout        time.Duration
-	peerPingIncrement  time.Duration
-	peerPingMaxDelay   time.Duration
 	peerMaxMessageSize uint64
 	bloomTransform     func(ed25519.PublicKey) ed25519.PublicKey
 	pathNotify         func(ed25519.PublicKey)
@@ -27,8 +25,6 @@ func configDefaults() Option {
 		c.routerTimeout = 5 * time.Minute
 		c.peerKeepAliveDelay = time.Second
 		c.peerTimeout = 3 * time.Second
-		c.peerPingIncrement = time.Second
-		c.peerPingMaxDelay = time.Minute
 		c.peerMaxMessageSize = 1048576 // 1 megabyte
 		c.bloomTransform = func(key ed25519.PublicKey) ed25519.PublicKey { return key }
 		c.pathNotify = func(key ed25519.PublicKey) {}
@@ -58,18 +54,6 @@ func WithPeerKeepAliveDelay(duration time.Duration) Option {
 func WithPeerTimeout(duration time.Duration) Option {
 	return func(c *config) {
 		c.peerTimeout = duration
-	}
-}
-
-func WithPeerPingIncrement(duration time.Duration) Option {
-	return func(c *config) {
-		c.peerPingIncrement = duration
-	}
-}
-
-func WithPeerPingMaxDelay(duration time.Duration) Option {
-	return func(c *config) {
-		c.peerPingMaxDelay = duration
 	}
 }
 

@@ -113,7 +113,6 @@ type peerMonitor struct {
 	phony.Inbox
 	peer           *peer
 	keepAliveTimer *time.Timer
-	pingTimer      *time.Timer
 	pDelay         time.Duration
 	deadlined      bool
 }
@@ -131,28 +130,8 @@ func (m *peerMonitor) keepAlive() {
 	})
 }
 
-func (m *peerMonitor) doPing() {
-	m.Act(nil, func() {
-		select {
-		case <-m.peer.done:
-			return
-		default:
-		}
-		m.peer.writer.Act(m, func() {
-			m.peer.writer._write([]byte{0x01, byte(wirePing)}, wirePing)
-		})
-	})
-}
-
 func (m *peerMonitor) sent(pType wirePacketType) {
 	m.Act(&m.peer.writer, func() {
-		defer func() {
-			if m.pingTimer != nil {
-				// In a defer so we reset to the new delay
-				delay := time.Duration(m.pDelay) * time.Second // TODO? slightly randomize
-				m.pingTimer.Reset(delay)
-			}
-		}()
 		if m.keepAliveTimer != nil {
 			// We're sending a packet, so we definitely don't need to send a keepalive after this
 			m.keepAliveTimer.Stop()
@@ -163,22 +142,7 @@ func (m *peerMonitor) sent(pType wirePacketType) {
 			return
 		case pType == wireDummy:
 		case pType == wireKeepAlive:
-		case pType == wirePing:
-			m.pDelay += m.peer.peers.core.config.peerPingIncrement
-			if m.pDelay > m.peer.peers.core.config.peerPingMaxDelay {
-				m.pDelay = m.peer.peers.core.config.peerPingMaxDelay
-			}
-			fallthrough
 		default:
-			// Reset the timer until our next ping is sent
-			select {
-			case <-m.peer.done:
-			default:
-				if m.pingTimer != nil {
-					delay := m.pDelay // TODO? slightly randomize
-					m.pingTimer.Reset(delay)
-				}
-			}
 			// We're sending non-keepalive traffic
 			// This means we expect some kind of acknowledgement (at least a keepalive)
 			// Set a read deadline for that (and make a note that we did so)
@@ -264,17 +228,8 @@ func (p *peer) handler() error {
 			p.monitor.keepAliveTimer = nil
 		}
 	})
-	defer p.monitor.Act(nil, func() {
-		if p.monitor.pingTimer != nil {
-			p.monitor.pingTimer.Stop()
-			p.monitor.pingTimer = nil
-		}
-	})
 	defer close(p.done)
 	p.conn.SetDeadline(time.Time{})
-	// Calling doPing here ensures that it's the first traffic we ever send
-	// That helps to e.g. initialize the pingTimer
-	p.monitor.pingTimer = time.AfterFunc(p.monitor.pDelay, p.monitor.doPing)
 	// Add peer to the router, to kick off protocol exchanges
 	p.peers.core.router.addPeer(p, p)
 	// Now allocate buffers and start reading / handling packets...
@@ -316,8 +271,6 @@ func (p *peer) _handlePacket(bs []byte) error {
 	case wireDummy:
 		return nil
 	case wireKeepAlive:
-		return nil
-	case wirePing:
 		return nil
 	case wireProtoSigReq:
 		return p._handleSigReq(bs[1:])
