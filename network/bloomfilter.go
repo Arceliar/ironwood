@@ -2,7 +2,6 @@ package network
 
 import (
 	"encoding/binary"
-	"time"
 
 	bfilter "github.com/bits-and-blooms/bloom/v3"
 
@@ -12,12 +11,11 @@ import (
 )
 
 const (
-	bloomFilterF   = 16               // number of bytes used for flags in the wire format, should be bloomFilterU / 8, rounded up
-	bloomFilterU   = bloomFilterF * 8 // number of uint64s in the backing array
-	bloomFilterB   = bloomFilterU * 8 // number of bytes in the backing array
-	bloomFilterM   = bloomFilterB * 8 // number of bits in teh backing array
-	bloomFilterK   = 22               // TODO optimize this, it affects false positive rate, 22 is ~optimal for 256 entries per filter
-	bloomZeroDelay = 3 * time.Second
+	bloomFilterF = 16               // number of bytes used for flags in the wire format, should be bloomFilterU / 8, rounded up
+	bloomFilterU = bloomFilterF * 8 // number of uint64s in the backing array
+	bloomFilterB = bloomFilterU * 8 // number of bytes in the backing array
+	bloomFilterM = bloomFilterB * 8 // number of bits in teh backing array
+	bloomFilterK = 8                // TODO optimize this, it affects false positive rate
 )
 
 // bloom is bloomFilterM bits long bloom filter uses bloomFilterK hash functions.

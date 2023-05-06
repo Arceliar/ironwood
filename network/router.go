@@ -559,6 +559,8 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 			// So we need to set that an update is required, as if our refresh timer has passed
 			r.refresh = true
 		}
+		// No point in sending this back to the original sender
+		r.sent[p.key][ann.key] = struct{}{}
 		//r._fix() // This could require us to change parents
 	} else {
 		// We didn't accept the info, because we alerady know it or something better
@@ -574,6 +576,10 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 			// We should tell them what we know
 			// Only to the p that sent it, since we'll spam the rest as messages arrive
 			p.sendAnnounce(r, oldInfo.getAnnounce(ann.key))
+		} else {
+			// They sent us exactly the same info we already have
+			// No point in sending it back when we do maintenance
+			r.sent[p.key][ann.key] = struct{}{}
 		}
 	}
 }
