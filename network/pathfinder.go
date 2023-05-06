@@ -489,6 +489,18 @@ func (notify *pathNotify) decode(data []byte) error {
 	return nil
 }
 
+func (notify *pathNotify) wireType() wirePacketType {
+	return wireProtoPathNotify
+}
+
+func (notify *pathNotify) sourceKey() publicKey {
+	return notify.source
+}
+
+func (notify *pathNotify) destKey() publicKey {
+	return notify.dest
+}
+
 /**************
  * pathBroken *
  **************/
@@ -537,4 +549,16 @@ func (broken *pathBroken) decode(data []byte) error {
 	}
 	*broken = tmp
 	return nil
+}
+
+func (broken *pathBroken) wireType() wirePacketType {
+	return wireProtoPathBroken
+}
+
+func (broken *pathBroken) sourceKey() publicKey {
+	return broken.source
+}
+
+func (broken *pathBroken) destKey() publicKey {
+	return broken.dest
 }

@@ -376,7 +376,8 @@ func (p *peer) _handlePathNotify(bs []byte) error {
 }
 
 func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
-	p.sendDirect(from, wireProtoPathNotify, notify)
+	//p.sendDirect(from, wireProtoPathNotify, notify)
+	p.sendQueued(from, notify)
 }
 
 func (p *peer) _handlePathBroken(bs []byte) error {
@@ -389,7 +390,8 @@ func (p *peer) _handlePathBroken(bs []byte) error {
 }
 
 func (p *peer) sendPathBroken(from phony.Actor, broken *pathBroken) {
-	p.sendDirect(from, wireProtoPathBroken, broken)
+	//p.sendDirect(from, wireProtoPathBroken, broken)
+	p.sendQueued(from, broken)
 }
 
 func (p *peer) _handleTraffic(bs []byte) error {
@@ -402,14 +404,10 @@ func (p *peer) _handleTraffic(bs []byte) error {
 }
 
 func (p *peer) sendTraffic(from phony.Actor, tr *traffic) {
-	p.Act(from, func() {
-		p._push(tr)
-	})
+	p.sendQueued(from, tr)
 }
 
-func (p *peer) sendMulticast(from phony.Actor, packet pqPacket) {
-	// Anything sent multicast must be droppable, so it goes in the queue, just like user traffic
-	// TODO put it in a separate queue, so this and user traffic both get to progress without interference
+func (p *peer) sendQueued(from phony.Actor, packet pqPacket) {
 	p.Act(from, func() {
 		p._push(packet)
 	})

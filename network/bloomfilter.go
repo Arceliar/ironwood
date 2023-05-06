@@ -321,6 +321,6 @@ func (bs *blooms) _sendMulticast(packet pqPacket, fromKey publicKey, toKey publi
 		if bestPeer == nil {
 			panic("this should never happen")
 		}
-		bestPeer.sendMulticast(bs.router, packet)
+		bestPeer.sendQueued(bs.router, packet)
 	}
 }
