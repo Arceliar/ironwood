@@ -64,7 +64,7 @@ func (pf *pathfinder) handleLookup(p *peer, lookup *pathLookup) {
 
 func (pf *pathfinder) _handleLookup(fromKey publicKey, lookup *pathLookup) {
 	// Continue the multicast
-	pf.router.blooms._sendMulticast(wireProtoPathLookup, lookup, fromKey, lookup.dest)
+	pf.router.blooms._sendMulticast(lookup, fromKey, lookup.dest)
 	// Check if we should send a response too
 	dx := pf.router.blooms.xKey(lookup.dest)
 	sx := pf.router.blooms.xKey(pf.router.core.crypto.publicKey)
@@ -342,6 +342,20 @@ func (lookup *pathLookup) decode(data []byte) error {
 	}
 	*lookup = tmp
 	return nil
+}
+
+// Needed for pqPacket interface
+
+func (lookup *pathLookup) wireType() wirePacketType {
+	return wireProtoPathLookup
+}
+
+func (lookup *pathLookup) sourceKey() publicKey {
+	return lookup.source
+}
+
+func (lookup *pathLookup) destKey() publicKey {
+	return lookup.dest
 }
 
 /******************

@@ -407,28 +407,34 @@ func (p *peer) sendTraffic(from phony.Actor, tr *traffic) {
 	})
 }
 
-func (p *peer) _push(tr *traffic) {
+func (p *peer) sendMulticast(from phony.Actor, packet pqPacket) {
+	// Anything sent multicast must be droppable, so it goes in the queue, just like user traffic
+	// TODO put it in a separate queue, so this and user traffic both get to progress without interference
+	p.Act(from, func() {
+		p._push(packet)
+	})
+}
+
+func (p *peer) _push(packet pqPacket) {
 	if p.ready {
-		p.writer.sendPacket(wireTraffic, tr)
+		p.writer.sendPacket(packet.wireType(), packet)
 		p.ready = false
 		return
 	}
 	// We're waiting, so queue the packet up for later
-	sKey, dKey := tr.source, tr.dest
-	size := len(tr.payload)
 	if info, ok := p.queue.peek(); ok && time.Since(info.time) > 25*time.Millisecond {
 		// The queue already has a significant delay
 		// Drop the oldest packet from the larget queue to make room
 		p.queue.drop()
 	}
 	// Add the packet to the queue
-	p.queue.push(sKey, dKey, tr, size)
+	p.queue.push(packet)
 }
 
 func (p *peer) pop() {
 	p.Act(nil, func() {
 		if info, ok := p.queue.pop(); ok {
-			p.writer.sendPacket(wireTraffic, info.packet)
+			p.writer.sendPacket(info.packet.wireType(), info.packet)
 		} else {
 			p.ready = true
 			p.writer.Act(nil, func() {

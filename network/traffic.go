@@ -66,3 +66,17 @@ func (tr *traffic) decode(data []byte) error {
 	*tr = tmp
 	return nil
 }
+
+// Functions needed for pqPacket
+
+func (tr *traffic) wireType() wirePacketType {
+	return wireTraffic
+}
+
+func (tr *traffic) sourceKey() publicKey {
+	return tr.source
+}
+
+func (tr *traffic) destKey() publicKey {
+	return tr.dest
+}

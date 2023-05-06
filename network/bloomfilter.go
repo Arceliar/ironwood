@@ -285,16 +285,16 @@ func (bs *blooms) _sendAllBlooms() {
 	}
 }
 
-func (bs *blooms) sendMulticast(from phony.Actor, pType wirePacketType, data wireEncodeable, fromKey publicKey, toKey publicKey) {
+func (bs *blooms) sendMulticast(from phony.Actor, packet pqPacket, fromKey publicKey, toKey publicKey) {
 	// TODO we need a way to detect duplicate packets from multiple links to the same peer, so we can drop them
 	// I.e. we need to sequence number all multicast packets... This can maybe be part of the framing, along side the packet length, or something
 	// For now, we just send to 1 peer (possibly at random)
 	bs.router.Act(from, func() {
-		bs._sendMulticast(pType, data, fromKey, toKey)
+		bs._sendMulticast(packet, fromKey, toKey)
 	})
 }
 
-func (bs *blooms) _sendMulticast(pType wirePacketType, data wireEncodeable, fromKey publicKey, toKey publicKey) {
+func (bs *blooms) _sendMulticast(packet pqPacket, fromKey publicKey, toKey publicKey) {
 	// TODO make very sure this can't loop
 	//  Does the onTree state stay safe, even when we're delaying maintenance from message updates?...
 	xform := bs.xKey(toKey)
@@ -321,6 +321,6 @@ func (bs *blooms) _sendMulticast(pType wirePacketType, data wireEncodeable, from
 		if bestPeer == nil {
 			panic("this should never happen")
 		}
-		bestPeer.sendDirect(bs.router, pType, data)
+		bestPeer.sendMulticast(bs.router, packet)
 	}
 }

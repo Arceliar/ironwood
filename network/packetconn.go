@@ -208,7 +208,7 @@ func (pc *PacketConn) handleTraffic(from phony.Actor, tr *traffic) {
 				// Drop the oldest packet from the larget queue to make room
 				pc.recvq.drop()
 			}
-			pc.recvq.push(tr.source, tr.dest, tr, len(tr.payload))
+			pc.recvq.push(tr)
 		}
 	})
 }
@@ -217,7 +217,7 @@ func (pc *PacketConn) doPop() {
 	pc.actor.Act(nil, func() {
 		if info, ok := pc.recvq.pop(); ok {
 			select {
-			case pc.recv <- info.packet:
+			case pc.recv <- info.packet.(*traffic):
 			case <-pc.closed:
 			default:
 				panic("this should never happen")
