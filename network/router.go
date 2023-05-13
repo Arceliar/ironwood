@@ -18,46 +18,7 @@ import (
 
 /*
 
-TODO: Testing
-  The merkle tree logic hasn't been very thoroughly tested yet.
-    In particular, when responding to a request, we skip over parts of the tree with only 1 non-empty child node.
-    That logic is a bit delicate... some fuzz testing would probably be nice.
-  Also need to test how expired node infos are handled.
-    We mark an info as expired, and ignore it in lookups etc., after it times out.
-    We don't delete the info until after 2 timeout periods.
-    The intent is that this gives us some time to let all nodes mark the info as timed out, so we stop sending it as part of the merkle tree updates.
-    Otherwise, info could hit a live-lock scenario where nothing ever expired in a dynamic enough network.
-    However, that leads to issues with nodes disconnecting/reconnecting, and retting their sequence number.
-    To combat this, if we decline an update but see that our local info is expired (and not equivalent to the update we saw), then we send back an announce for it.
-    The intent is for this announce to travel back to the corresponding node, so they can quickly update their seq (if needed).
-    Sending back an announce is a delicate matter -- if nodes disagree on what announcement is "better", then they can infinitely spam eachother.
-    This means we need to be very sure the CRDT conflict resolution logic is eventually consistent.
-  The max network size logic could use some futher testing.
-
-TODO: Mostly ignore the above
-  In the middle of rewriting things to not keep a full view of the network.
-  Need to:
-    Store a merkle tree per peer
-    Fill the tree with our nodes ancestry + the peer's ancestry
-    Don't store info that isn't needed for either
-      Slightly subtle, we receive things from the merkle trees in no particular order, so it may not be clear that it's ancestry info for some node until much later.
-      So we need to be careful about when we *delete* info, though if we don't (and just let it time out) then this doesn't really break anything, it's just a waste / opens the door to OOM issues (if a node spams irrelevant info -- though at least we don't forward it if they do).
-      If we *did* delete things immediately when they're not seen to be important, then we would at least learn the peer's info when we sync merkle trees. Then the peer's parent. Then the parent's parent, etc., so it would finish eventually, it's just wasteful. But that suggets we could set a short timeout for anything not important (e.g. 1 minute) or delete a random not-important thing if the store becomes too full.
-    Sync merkle trees with peers... somehow.
-      Sending a request and our own root whenever we change anything at all would, technically, be sufficient I think... just wasteful.
-      FIXME: yes, it spams like crazy because new info launches another merkle tree sync in paralllel with the existing one(s)
-
-OK, now most of the above is irrelevant anyway, we're just using soft state and tracking what we've already sent to reduce spamming
-
-TODO: we need a way to detect if a peer changes the coords they advertise to us, we should require that they stay fixed (disconnect the peer if it happens?)
-
-TODO: we do need to bring back some way to limit memory use... we don't forward things that aren't important, but we'd happily accept everything until we OOM, so that's not great for public nodes (we should either stop accepting anything until traffic things time out, TOFU, drop "worst", or something...)
-
-TODO: when our path to the root flaps, we should try to switch to a more stable path
-  Consider the whole path, not just the parent
-  We probably need to track peer ancestry and record when they change. "When" meaning we sequence number it.
-
-FIXME Potential showstopping issue:
+Potential showstopping issue (long term):
   Greedy routing using coords is fundamentally insecure.
     Nothing prevents a node from advertising the same port number to two different children.
     Everything downstream of the attacker is at risk of random blackholes etc.
@@ -71,6 +32,7 @@ FIXME Potential showstopping issue:
     Detect if we've visited the same node before so we can drop traffic? How?
       Bloom filter would work, except for the issue of false positives...
       If we store a reverse route, we could send back an error, so the sender can resize the bloom filter... Seems messy...
+    Bloom filter to track visited nodes, and if in the filter then add to a list? If in the list already, drop traffic entirely?
 
 */
 
@@ -126,7 +88,7 @@ func (r *router) _doMaintenance() {
 		return
 	}
 	r.doRoot2 = r.doRoot2 || r.doRoot1
-	r._resetCache() // Resets path caches, since that info may no longer be good, TODO don't wait for maintenance to do this
+	r._resetCache() // Resets path caches, since that info may no longer be good, TODO? don't wait for maintenance to do this
 	r._updateAncestries()
 	r._fix()           // Selects new parent, if needed
 	r._sendAnnounces() // Sends announcements to peers, if needed
@@ -307,7 +269,7 @@ func (r *router) _fix() {
 			}
 			r.refresh = false
 			r.doRoot1 = false
-			r.doRoot2 = false // TODO panic to check that this was already false
+			r.doRoot2 = false
 			r._sendReqs()
 		case r.doRoot2:
 			// Become root
@@ -412,7 +374,7 @@ func (r *router) _becomeRoot() bool {
 	req := r._newReq()
 	res := routerSigRes{
 		routerSigReq: *req,
-		port:         0, // TODO? something sane?
+		port:         0, // TODO? something else?
 	}
 	res.psig = r.core.crypto.privateKey.sign(res.bytesForSig(r.core.crypto.publicKey, r.core.crypto.publicKey))
 	ann := routerAnnounce{
@@ -564,8 +526,6 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 		//r._fix() // This could require us to change parents
 	} else {
 		// We didn't accept the info, because we alerady know it or something better
-		// TODO we didn't accept the ann, why did they send it?
-		// Do we need to do anything to make sure we're consistent?
 		info := routerInfo{
 			parent:       ann.parent,
 			routerSigRes: ann.routerSigRes,
@@ -573,8 +533,9 @@ func (r *router) _handleAnnounce(p *peer, ann *routerAnnounce) {
 		}
 		if oldInfo := r.infos[ann.key]; info != oldInfo {
 			// They sent something, but it was worse
-			// We should tell them what we know
-			// Only to the p that sent it, since we'll spam the rest as messages arrive
+			// Should we tell them what we know
+			// Only to the p that sent it, since we'll spam the rest as messages arrive...
+			r.sent[p.key][ann.key] = struct{}{}
 			p.sendAnnounce(r, oldInfo.getAnnounce(ann.key))
 		} else {
 			// They sent us exactly the same info we already have
@@ -601,9 +562,10 @@ func (r *router) sendTraffic(tr *traffic) {
 
 func (r *router) handleTraffic(from phony.Actor, tr *traffic) {
 	r.Act(from, func() {
-		if p := r._lookup(tr); p != nil {
+		if p := r._lookup(tr.path, &tr.watermark); p != nil {
 			p.sendTraffic(r, tr)
 		} else if tr.dest == r.core.crypto.publicKey {
+			r.pathfinder._resetTimeout(tr.source)
 			r.core.pconn.handleTraffic(r, tr)
 		} else {
 			// Not addressed to us, and we don't know a next hop.
@@ -611,40 +573,6 @@ func (r *router) handleTraffic(from phony.Actor, tr *traffic) {
 			r.pathfinder._doBroken(tr)
 		}
 	})
-}
-
-func (r *router) _keyLookup(dest publicKey) publicKey {
-	// Returns the key that's the closest match to the destination publicKey
-	if _, isIn := r.infos[dest]; !isIn {
-		// Switch dest to the closest known key, so out-of-band stuff works
-		// This would be a hack to make the example code run without modification
-		// Long term, TODO remove out-of-band stuff, provide a function to simply look up the closest known node for a given key
-		var lowest *publicKey
-		var best *publicKey
-		for key := range r.infos {
-			if lowest == nil || key.less(*lowest) {
-				k := key
-				lowest = &k
-			}
-			if best == nil && key.less(dest) {
-				k := key
-				best = &k
-			}
-			if key.less(dest) && best.less(key) {
-				k := key
-				best = &k
-			}
-		}
-		if best == nil {
-			best = lowest
-		}
-		if best == nil {
-			//return nil
-		} else {
-			dest = *best
-		}
-	}
-	return dest
 }
 
 func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint64) {
@@ -725,18 +653,20 @@ func (r *router) _getDist(destPath []peerPort, key publicKey) uint64 {
 	return dist
 }
 
-func (r *router) _lookup(tr *traffic) *peer {
+func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 	// Look up the next hop (in treespace) towards the destination
 	var bestPeer *peer
 	bestDist := ^uint64(0)
-	if dist := r._getDist(tr.path, r.core.crypto.publicKey); dist < tr.watermark {
-		bestDist = dist // Self dist, so other nodes must be strictly better by distance
-		tr.watermark = dist
-	} else {
-		return nil
+	if watermark != nil {
+		if dist := r._getDist(path, r.core.crypto.publicKey); dist < *watermark {
+			bestDist = dist // Self dist, so other nodes must be strictly better by distance
+			*watermark = dist
+		} else {
+			return nil
+		}
 	}
 	for k, ps := range r.peers {
-		if dist := r._getDist(tr.path, k); dist < bestDist {
+		if dist := r._getDist(path, k); dist < bestDist {
 			for p := range ps {
 				switch {
 				case bestPeer != nil && p.prio > bestPeer.prio:

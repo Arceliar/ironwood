@@ -11,7 +11,7 @@ type traffic struct {
 	from      []peerPort
 	source    publicKey
 	dest      publicKey
-	watermark uint64 // TODO? uvarint
+	watermark uint64
 	payload   []byte
 }
 

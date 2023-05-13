@@ -15,11 +15,11 @@ const (
 	bloomFilterU = bloomFilterF * 8 // number of uint64s in the backing array
 	bloomFilterB = bloomFilterU * 8 // number of bytes in the backing array
 	bloomFilterM = bloomFilterB * 8 // number of bits in teh backing array
-	bloomFilterK = 8                // TODO optimize this, it affects false positive rate
+	bloomFilterK = 8                // number of hashes to use per inserted key
 )
 
 // bloom is bloomFilterM bits long bloom filter uses bloomFilterK hash functions.
-// TODO? just make this a bfilter.BloomFilter directly, no struct?
+// Maybe this should be a *bfilter.BloomFilter directly, no struct?
 type bloom struct {
 	filter *bfilter.BloomFilter
 }
@@ -119,12 +119,10 @@ func (b *bloom) decode(data []byte) error {
  * router bloom filter stuff *
  *****************************/
 
-// TODO? replace the global zTimer with one per peer?
-
 type blooms struct {
 	router *router
 	blooms map[publicKey]bloomInfo
-	// TODO add some kind of timeout and keepalive timer to force an update/send
+	// TODO? add some kind of timeout and keepalive timer to force an update/send
 }
 
 type bloomInfo struct {
@@ -146,7 +144,7 @@ func (bs *blooms) _isOnTree(key publicKey) bool {
 func (bs *blooms) _fixOnTree() {
 	selfKey := bs.router.core.crypto.publicKey
 	if selfInfo, isIn := bs.router.infos[selfKey]; isIn {
-		for pk, pbi := range bs.blooms { // TODO? only store blooms for on-tree links?
+		for pk, pbi := range bs.blooms {
 			wasOn := pbi.onTree
 			pbi.onTree = false
 			if selfInfo.parent == pk {
@@ -157,7 +155,6 @@ func (bs *blooms) _fixOnTree() {
 				}
 			} else {
 				// They must not have sent us their info yet
-				// TODO? delay creating a bloomInfo until we at least have an info from them?
 			}
 			if wasOn && !pbi.onTree {
 				// We dropped them from the tree, so we need to send a blank update
@@ -237,7 +234,6 @@ func (bs *blooms) _getBloomFor(key publicKey, keepOnes bool) (*bloom, bool) {
 	if keepOnes {
 		// Don't reset existing 1 bits, we'll set anything unnecessairy to 0 next time
 		// Ensures that 1s travel faster than 0s, to help prevent flapping
-		// TODO only start the timer if we have unnecessairy 1 bits, need to check
 		if !pbi.zDirty {
 			c := b.filter.Copy()
 			b.addFilter(pbi.send.filter)
@@ -286,7 +282,7 @@ func (bs *blooms) _sendAllBlooms() {
 }
 
 func (bs *blooms) sendMulticast(from phony.Actor, packet pqPacket, fromKey publicKey, toKey publicKey) {
-	// TODO we need a way to detect duplicate packets from multiple links to the same peer, so we can drop them
+	// Ideally we need a way to detect duplicate packets from multiple links to the same peer, so we can drop them
 	// I.e. we need to sequence number all multicast packets... This can maybe be part of the framing, along side the packet length, or something
 	// For now, we just send to 1 peer (possibly at random)
 	bs.router.Act(from, func() {
@@ -295,7 +291,7 @@ func (bs *blooms) sendMulticast(from phony.Actor, packet pqPacket, fromKey publi
 }
 
 func (bs *blooms) _sendMulticast(packet pqPacket, fromKey publicKey, toKey publicKey) {
-	// TODO make very sure this can't loop
+	// TODO make very sure this can't loop, even temporarily due to network state changes being delayed
 	//  Does the onTree state stay safe, even when we're delaying maintenance from message updates?...
 	xform := bs.xKey(toKey)
 	for k, pbi := range bs.blooms {

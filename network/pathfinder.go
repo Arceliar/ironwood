@@ -6,19 +6,6 @@ import (
 	"github.com/Arceliar/ironwood/types"
 )
 
-// TODO we should make infos delay timeout as long as they keep *receiving* traffic, not sending
-//  We want a node that restarts (and resets seq) to be reachable again after the timeout
-
-// TODO we shouldn't have request and response both be multicast.
-//  It probably makes sense for traffic and requests to both include the source's path
-//  Then the response could be greedy routed as unicast traffic
-
-// TODO? fix asymmetry in request/response
-//  Requests are unsigned (by necessity) and smaller than responses
-//  This means it can be used for traffic amplification -- the response traffic is bigger by at least a sig
-//  We could sort-of fix that by foricng request traffic to include padding for a sig (and maybe an extra copy of the source path, to approximately match dest path size)
-//  Need to think about how much of a vulnerability this really is (the extra is probably small compared to E.G. TCP/IP overheads on the underlying link layer traffic
-
 const pathfinderTrafficCache = true
 
 // WARNING The pathfinder should only be used from within the router's actor, it's not threadsafe
@@ -100,14 +87,9 @@ func (pf *pathfinder) handleNotify(p *peer, notify *pathNotify) {
 }
 
 func (pf *pathfinder) _handleNotify(fromKey publicKey, notify *pathNotify) {
-	// FIXME this is a hack, we should make lookup handle this (e.g. take path and pointer to watermark)
-	var tmp traffic
-	tmp.path = notify.path
-	tmp.watermark = notify.watermark
-	if p := pf.router._lookup(&tmp); p != nil {
-		notify.watermark = tmp.watermark
+	if p := pf.router._lookup(notify.path, &notify.watermark); p != nil {
 		p.sendPathNotify(pf.router, notify)
-		return // TODO? Or don't?
+		return
 	}
 	// Check if we should accept this response
 	if notify.dest != pf.router.core.crypto.publicKey {
@@ -250,13 +232,9 @@ func (pf *pathfinder) _doBroken(tr *traffic) {
 
 func (pf *pathfinder) _handleBroken(broken *pathBroken) {
 	// Hack using traffic to do routing
-	var tmp traffic
-	tmp.path = broken.path
-	tmp.watermark = broken.watermark
-	if p := pf.router._lookup(&tmp); p != nil {
-		broken.watermark = tmp.watermark
+	if p := pf.router._lookup(broken.path, &broken.watermark); p != nil {
 		p.sendPathBroken(pf.router, broken)
-		return // TODO? Or don't?
+		return
 	}
 	// Check if we should accept this pathBroken
 	if broken.source != pf.router.core.crypto.publicKey {
@@ -273,6 +251,15 @@ func (pf *pathfinder) handleBroken(p *peer, broken *pathBroken) {
 	})
 }
 
+func (pf *pathfinder) _resetTimeout(key publicKey) {
+	// Note: We should call this when we receive a packet from this destination
+	// We should *not* reset just because we tried to send a packet
+	// We need things to time out eventually if e.g. a node restarts and resets its seqs
+	if info, isIn := pf.paths[key]; isIn {
+		info.timer.Reset(pf.router.core.config.pathTimeout)
+	}
+}
+
 /************
  * pathInfo *
  ************/
@@ -281,7 +268,7 @@ type pathInfo struct {
 	path    []peerPort // *not* zero terminated (and must be free of zeros)
 	seq     uint64
 	reqTime time.Time   // Time a request was last sent (to prevent spamming)
-	timer   *time.Timer // time.AfterFunc(cleanup...), reset whenever this is used
+	timer   *time.Timer // time.AfterFunc(cleanup...), reset whenever we receive traffic from this node
 	traffic *traffic
 }
 
@@ -290,18 +277,14 @@ type pathInfo struct {
  *************/
 
 type pathRumor struct {
-	traffic  *traffic  // TODO use this better, and/or add a similar buffer to pathInfo... quickly resend 1 dropped packet after we get a pathRes
-	sendTime time.Time // Time we last sent a rumor
-	timer    *time.Timer
+	traffic  *traffic
+	sendTime time.Time   // Time we last sent a rumor (to prevnt spamming)
+	timer    *time.Timer // time.AfterFunc(cleanup...)
 }
 
 /**************
  * pathLookup *
  **************/
-
-// TODO? sign this? if the result is going to be signed then we should force the sender to go through that first...
-// OTOH then dest doesn't use this info for anything except sending back a response, and they pre-sign that...
-// So that's kind of just adding cost for the sake of adding cost to try to keep things symmetric... Maybe not worth it...
 
 type pathLookup struct {
 	source publicKey
@@ -363,7 +346,7 @@ func (lookup *pathLookup) destKey() publicKey {
  ******************/
 
 type pathNotifyInfo struct {
-	seq  uint64     // sequence number for this update, TODO only keep this, instead of the seq in the pathfinder itself?
+	seq  uint64
 	path []peerPort // Path from root to source, aka coords, zero-terminated
 	sig  signature  // signature from the source key
 }

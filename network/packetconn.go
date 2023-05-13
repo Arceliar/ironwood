@@ -2,6 +2,7 @@ package network
 
 import (
 	"crypto/ed25519"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -152,7 +153,11 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn, prio uint
 	var pk publicKey
 	copy(pk[:], key)
 	if pc.core.crypto.publicKey.equal(pk) {
-		return types.ErrBadKey // TODO? wrap, to provide more context
+		return fmt.Errorf("%w: Expected %s, Found %s",
+			types.ErrBadKey,
+			pc.core.crypto.publicKey.addr().String(),
+			pk.addr().String(),
+		)
 	}
 	p, err := pc.core.peers.addPeer(pk, conn, prio)
 	if err != nil {
@@ -187,11 +192,13 @@ func (pc *PacketConn) MTU() uint64 {
 	var tr traffic
 	tr.watermark = ^uint64(0)
 	overhead := uint64(tr.size()) + 1 // 1 byte type overhead
+	// TODO extra padding for source/destination paths... but that would imply a max path length...
 	return pc.core.config.peerMaxMessageSize - overhead
 }
 
 func (pc *PacketConn) handleTraffic(from phony.Actor, tr *traffic) {
-	// FIXME? if there are multiple concurrent ReadFrom calls, packets can be returned out-of-order
+	// Note: if there are multiple concurrent ReadFrom calls, packets can be returned out-of-order at the channel level
+	// But concurrent reads can always do things out of order, so that probaby doesn't matter...
 	pc.actor.Act(from, func() {
 		if !tr.dest.equal(pc.core.crypto.publicKey) {
 			// Wrong key, do nothing
@@ -271,16 +278,6 @@ func (d *deadline) getCancel() chan struct{} {
 	defer d.m.Unlock()
 	ch := d.cancel
 	return ch
-}
-
-func (pc *PacketConn) GetKeyFor(target ed25519.PublicKey) (key ed25519.PublicKey) {
-	phony.Block(&pc.core.router, func() {
-		var k publicKey
-		copy(k[:], target[:])
-		k = pc.core.router._keyLookup(k)
-		key = ed25519.PublicKey(k[:])
-	})
-	return
 }
 
 func (pc *PacketConn) SendLookup(key ed25519.PublicKey) {
