@@ -44,6 +44,12 @@ type DebugPathInfo struct {
 	Sequence uint64
 }
 
+type DebugBloomInfo struct {
+	Key  ed25519.PublicKey
+	Send [bloomFilterU]uint64
+	Recv [bloomFilterU]uint64
+}
+
 func (d *Debug) GetSelf() (info DebugSelfInfo) {
 	info.Key = append(info.Key[:0], d.c.crypto.publicKey[:]...)
 	phony.Block(&d.c.router, func() {
@@ -91,6 +97,19 @@ func (d *Debug) GetPaths() (infos []DebugPathInfo) {
 				info.Path = append(info.Path, uint64(port))
 			}
 			info.Sequence = pinfo.seq
+			infos = append(infos, info)
+		}
+	})
+	return
+}
+
+func (d *Debug) GetBlooms() (infos []DebugBloomInfo) {
+	phony.Block(&d.c.router, func() {
+		for key, binfo := range d.c.router.blooms.blooms {
+			var info DebugBloomInfo
+			info.Key = append(info.Key[:0], key[:]...)
+			copy(info.Send[:], binfo.send.filter.BitSet().Bytes())
+			copy(info.Recv[:], binfo.recv.filter.BitSet().Bytes())
 			infos = append(infos, info)
 		}
 	})
