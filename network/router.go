@@ -262,7 +262,7 @@ func (r *router) _fix() {
 	if r.refresh || r.doRoot1 || r.doRoot2 || self.parent != bestParent {
 		res, isIn := r.responses[bestParent]
 		switch {
-		case isIn && bestRoot != r.core.crypto.publicKey && t._useResponse(bestParent, &res):
+		case isIn && bestRoot != r.core.crypto.publicKey && r._useResponse(bestParent, &res):
 			// Somebody else should be root
 			// Note that it's possible our current parent hasn't sent a res for our current req
 			// (Link failure in progress, or from bad luck with timing)
