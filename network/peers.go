@@ -21,12 +21,14 @@ type peerPort uint64
 type peers struct {
 	phony.Inbox // Used to create/remove peers
 	core        *core
-	peers       map[peerPort]*peer
+	ports       map[peerPort]struct{}
+	peers       map[publicKey]map[*peer]struct{}
 }
 
 func (ps *peers) init(c *core) {
 	ps.core = c
-	ps.peers = make(map[peerPort]*peer)
+	ps.ports = make(map[peerPort]struct{})
+	ps.peers = make(map[publicKey]map[*peer]struct{})
 }
 
 func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error) {
@@ -41,12 +43,22 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 	}
 	phony.Block(ps, func() {
 		var port peerPort
-		for idx := 1; ; idx++ { // skip 0
-			if _, isIn := ps.peers[peerPort(idx)]; isIn {
-				continue
+		if keyPeers, isIn := ps.peers[key]; isIn {
+			for p := range keyPeers {
+				port = p.port
+				break
 			}
-			port = peerPort(idx)
-			break
+		} else {
+			// Allocate port
+			for idx := 1; ; idx++ { // skip 0
+				if _, isIn := ps.ports[peerPort(idx)]; isIn {
+					continue
+				}
+				port = peerPort(idx)
+				break
+			}
+			ps.ports[port] = struct{}{}
+			ps.peers[key] = make(map[*peer]struct{})
 		}
 		p = new(peer)
 		p.peers = ps
@@ -56,21 +68,27 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 		p.port = port
 		p.prio = prio
 		p.monitor.peer = p
+		p.monitor.pDelay = ps.core.config.peerTimeout // It doesn't make sense to start the ping delay any shorter than this
 		p.writer.peer = p
 		p.writer.wbuf = bufio.NewWriter(p.conn)
 		p.time = time.Now()
-		ps.peers[port] = p
+		ps.peers[p.key][p] = struct{}{}
 	})
 	return p, err
 }
 
-func (ps *peers) removePeer(port peerPort) error {
+func (ps *peers) removePeer(p *peer) error {
 	var err error
 	phony.Block(ps, func() {
-		if _, isIn := ps.peers[port]; !isIn {
+		kps := ps.peers[p.key]
+		if _, isIn := kps[p]; !isIn {
 			err = types.ErrPeerNotFound
 		} else {
-			delete(ps.peers, port)
+			delete(kps, p)
+			if len(kps) == 0 {
+				delete(ps.peers, p.key)
+				delete(ps.ports, p.port)
+			}
 		}
 	})
 	return err
@@ -95,8 +113,7 @@ type peerMonitor struct {
 	phony.Inbox
 	peer           *peer
 	keepAliveTimer *time.Timer
-	pingTimer      *time.Timer
-	pDelay         uint64
+	pDelay         time.Duration
 	deadlined      bool
 }
 
@@ -113,28 +130,8 @@ func (m *peerMonitor) keepAlive() {
 	})
 }
 
-func (m *peerMonitor) doPing() {
-	m.Act(nil, func() {
-		select {
-		case <-m.peer.done:
-			return
-		default:
-		}
-		m.peer.writer.Act(m, func() {
-			m.peer.writer._write([]byte{0x01, byte(wirePing)}, wirePing)
-		})
-	})
-}
-
 func (m *peerMonitor) sent(pType wirePacketType) {
 	m.Act(&m.peer.writer, func() {
-		defer func() {
-			if m.pingTimer != nil {
-				// In a defer so we reset to the new delay
-				delay := time.Duration(m.pDelay) * time.Second // TODO? slightly randomize
-				m.pingTimer.Reset(delay)
-			}
-		}()
 		if m.keepAliveTimer != nil {
 			// We're sending a packet, so we definitely don't need to send a keepalive after this
 			m.keepAliveTimer.Stop()
@@ -145,20 +142,6 @@ func (m *peerMonitor) sent(pType wirePacketType) {
 			return
 		case pType == wireDummy:
 		case pType == wireKeepAlive:
-		case pType == wirePing:
-			m.pDelay += 1
-			delay := time.Duration(m.pDelay) * time.Second // TODO? slightly randomize
-			if delay < m.peer.peers.core.config.peerPingMaxDelay {
-				select {
-				case <-m.peer.done:
-				default:
-					m.pingTimer = time.AfterFunc(delay, m.doPing)
-				}
-			} else if m.pingTimer != nil {
-				m.pingTimer.Stop()
-				m.pingTimer = nil
-			}
-			fallthrough
 		default:
 			// We're sending non-keepalive traffic
 			// This means we expect some kind of acknowledgement (at least a keepalive)
@@ -216,7 +199,6 @@ func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 		if bufSize > w.peer.peers.core.config.peerMaxMessageSize {
 			return
 		}
-		// TODO packet size checks (right now there's no max, that's bad)
 		writeBuf := allocBytes(0)
 		defer freeBytes(writeBuf)
 		// The +1 is from 1 byte for the pType
@@ -246,17 +228,8 @@ func (p *peer) handler() error {
 			p.monitor.keepAliveTimer = nil
 		}
 	})
-	defer p.monitor.Act(nil, func() {
-		if p.monitor.pingTimer != nil {
-			p.monitor.pingTimer.Stop()
-			p.monitor.pingTimer = nil
-		}
-	})
 	defer close(p.done)
 	p.conn.SetDeadline(time.Time{})
-	// Calling doPing here ensures that it's the first traffic we ever send
-	// That helps to e.g. initialize the pingTimer
-	p.monitor.doPing()
 	// Add peer to the router, to kick off protocol exchanges
 	p.peers.core.router.addPeer(p, p)
 	// Now allocate buffers and start reading / handling packets...
@@ -270,7 +243,6 @@ func (p *peer) handler() error {
 		if usize > p.peers.core.config.peerMaxMessageSize {
 			return types.ErrOversizedMessage
 		}
-		// TODO max packet size logic (right now there's no max, that's bad)
 		size := int(usize)
 		bs := allocBytes(size)
 		if _, err = io.ReadFull(rbuf, bs); err != nil {
@@ -300,23 +272,31 @@ func (p *peer) _handlePacket(bs []byte) error {
 		return nil
 	case wireKeepAlive:
 		return nil
-	case wirePing:
-		return nil
 	case wireProtoSigReq:
 		return p._handleSigReq(bs[1:])
 	case wireProtoSigRes:
 		return p._handleSigRes(bs[1:])
 	case wireProtoAnnounce:
 		return p._handleAnnounce(bs[1:])
-	case wireProtoMerkleReq:
-		return p._handleMerkleReq(bs[1:])
-	case wireProtoMerkleRes:
-		return p._handleMerkleRes(bs[1:])
+	case wireProtoBloomFilter:
+		return p._handleBloom(bs[1:])
+	case wireProtoPathLookup:
+		return p._handlePathLookup(bs[1:])
+	case wireProtoPathNotify:
+		return p._handlePathNotify(bs[1:])
+	case wireProtoPathBroken:
+		return p._handlePathBroken(bs[1:])
 	case wireTraffic:
 		return p._handleTraffic(bs[1:])
 	default:
 		return types.ErrUnrecognizedMessage
 	}
+}
+
+func (p *peer) sendDirect(from phony.Actor, pType wirePacketType, data wireEncodeable) {
+	p.Act(from, func() {
+		p.writer.sendPacket(pType, data)
+	})
 }
 
 func (p *peer) _handleSigReq(bs []byte) error {
@@ -329,9 +309,7 @@ func (p *peer) _handleSigReq(bs []byte) error {
 }
 
 func (p *peer) sendSigReq(from phony.Actor, req *routerSigReq) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoSigReq, req)
-	})
+	p.sendDirect(from, wireProtoSigReq, req)
 }
 
 func (p *peer) _handleSigRes(bs []byte) error {
@@ -347,9 +325,7 @@ func (p *peer) _handleSigRes(bs []byte) error {
 }
 
 func (p *peer) sendSigRes(from phony.Actor, res *routerSigRes) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoSigRes, res)
-	})
+	p.sendDirect(from, wireProtoSigRes, res)
 }
 
 func (p *peer) _handleAnnounce(bs []byte) error {
@@ -365,43 +341,57 @@ func (p *peer) _handleAnnounce(bs []byte) error {
 }
 
 func (p *peer) sendAnnounce(from phony.Actor, ann *routerAnnounce) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoAnnounce, ann)
-	})
+	p.sendDirect(from, wireProtoAnnounce, ann)
 }
 
-func (p *peer) _handleMerkleReq(bs []byte) error {
-	req := new(routerMerkleReq)
-	if err := req.decode(bs); err != nil {
+func (p *peer) _handleBloom(bs []byte) error {
+	b := newBloom()
+	if err := b.decode(bs); err != nil {
 		return err
-	} else if !req.check() {
-		return types.ErrBadMessage
 	}
-	p.peers.core.router.handleMerkleReq(p, p, req)
+	p.peers.core.router.blooms.handleBloom(p, b)
 	return nil
 }
 
-func (p *peer) sendMerkleReq(from phony.Actor, req *routerMerkleReq) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoMerkleReq, req)
-	})
+func (p *peer) sendBloom(from phony.Actor, b *bloom) {
+	p.sendDirect(from, wireProtoBloomFilter, b)
 }
 
-func (p *peer) _handleMerkleRes(bs []byte) error {
-	res := new(routerMerkleRes)
-	if err := res.decode(bs); err != nil {
+func (p *peer) _handlePathLookup(bs []byte) error {
+	lookup := new(pathLookup)
+	if err := lookup.decode(bs); err != nil {
 		return err
-	} else if !res.check() {
-		return types.ErrBadMessage
 	}
-	p.peers.core.router.handleMerkleRes(p, p, res)
+	p.peers.core.router.pathfinder.handleLookup(p, lookup)
 	return nil
 }
 
-func (p *peer) sendMerkleRes(from phony.Actor, res *routerMerkleRes) {
-	p.Act(from, func() {
-		p.writer.sendPacket(wireProtoMerkleRes, res)
-	})
+func (p *peer) _handlePathNotify(bs []byte) error {
+	notify := new(pathNotify)
+	if err := notify.decode(bs); err != nil {
+		return err
+	}
+	p.peers.core.router.pathfinder.handleNotify(p, notify)
+	return nil
+}
+
+func (p *peer) sendPathNotify(from phony.Actor, notify *pathNotify) {
+	//p.sendDirect(from, wireProtoPathNotify, notify)
+	p.sendQueued(from, notify)
+}
+
+func (p *peer) _handlePathBroken(bs []byte) error {
+	broken := new(pathBroken)
+	if err := broken.decode(bs); err != nil {
+		return err
+	}
+	p.peers.core.router.pathfinder.handleBroken(p, broken)
+	return nil
+}
+
+func (p *peer) sendPathBroken(from phony.Actor, broken *pathBroken) {
+	//p.sendDirect(from, wireProtoPathBroken, broken)
+	p.sendQueued(from, broken)
 }
 
 func (p *peer) _handleTraffic(bs []byte) error {
@@ -414,35 +404,35 @@ func (p *peer) _handleTraffic(bs []byte) error {
 }
 
 func (p *peer) sendTraffic(from phony.Actor, tr *traffic) {
+	p.sendQueued(from, tr)
+}
+
+func (p *peer) sendQueued(from phony.Actor, packet pqPacket) {
 	p.Act(from, func() {
-		p._push(tr)
+		p._push(packet)
 	})
 }
 
-func (p *peer) _push(tr *traffic) {
+func (p *peer) _push(packet pqPacket) {
 	if p.ready {
-		var pType wirePacketType
-		pType = wireTraffic
-		p.writer.sendPacket(pType, tr)
+		p.writer.sendPacket(packet.wireType(), packet)
 		p.ready = false
 		return
 	}
 	// We're waiting, so queue the packet up for later
-	sKey, dKey := tr.source, tr.dest
-	size := len(tr.payload)
 	if info, ok := p.queue.peek(); ok && time.Since(info.time) > 25*time.Millisecond {
 		// The queue already has a significant delay
 		// Drop the oldest packet from the larget queue to make room
 		p.queue.drop()
 	}
 	// Add the packet to the queue
-	p.queue.push(sKey, dKey, tr, size)
+	p.queue.push(packet)
 }
 
 func (p *peer) pop() {
 	p.Act(nil, func() {
 		if info, ok := p.queue.pop(); ok {
-			p.writer.sendPacket(wireTraffic, info.packet)
+			p.writer.sendPacket(info.packet.wireType(), info.packet)
 		} else {
 			p.ready = true
 			p.writer.Act(nil, func() {

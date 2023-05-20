@@ -26,6 +26,10 @@ func allocTraffic() *traffic {
 
 func freeTraffic(tr *traffic) {
 	freeBytes(tr.payload)
+	path := tr.path[:0]
+	from := tr.from[:0]
 	*tr = traffic{}
+	tr.path = path
+	tr.from = from
 	trafficPool.Put(tr)
 }

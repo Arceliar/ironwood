@@ -425,7 +425,7 @@ func (info *sessionInfo) _sendInit() {
 	info.mgr.sendInit(&info.ed, &init)
 }
 
-func (info sessionInfo) _sendAck() {
+func (info *sessionInfo) _sendAck() {
 	init := newSessionInit(&info.sendPub, &info.nextPub, info.localKeySeq)
 	ack := sessionAck{init}
 	info.mgr.sendAck(&info.ed, &ack)

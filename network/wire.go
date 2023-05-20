@@ -7,12 +7,13 @@ type wirePacketType byte
 const (
 	wireDummy wirePacketType = iota // unused
 	wireKeepAlive
-	wirePing
 	wireProtoSigReq
 	wireProtoSigRes
 	wireProtoAnnounce
-	wireProtoMerkleReq
-	wireProtoMerkleRes
+	wireProtoBloomFilter
+	wireProtoPathLookup
+	wireProtoPathNotify
+	wireProtoPathBroken
 	wireTraffic
 )
 
@@ -34,7 +35,7 @@ func wireChopBytes(out *[]byte, data *[]byte, size int) bool {
 	return true
 }
 
-func wireChopUvarint(out *uint64, data *[]byte) bool {
+func wireChopUint(out *uint64, data *[]byte) bool {
 	var u uint64
 	var l int
 	if u, l = binary.Uvarint(*data); l <= 0 {
@@ -42,6 +43,15 @@ func wireChopUvarint(out *uint64, data *[]byte) bool {
 	}
 	*out, *data = u, (*data)[l:]
 	return true
+}
+
+func wireSizeUint(u uint64) int {
+	var b [10]byte
+	return binary.PutUvarint(b[:], u)
+}
+
+func wireAppendUint(out []byte, u uint64) []byte {
+	return binary.AppendUvarint(out, u)
 }
 
 type wireEncodeable interface {
@@ -58,52 +68,44 @@ func wireEncode(out []byte, pType uint8, obj wireEncodeable) ([]byte, error) {
 	return out, nil
 }
 
-func wireEncodeUint(dest []byte, u uint64) []byte {
-	var b [10]byte
-	l := binary.PutUvarint(b[:], u)
-	return append(dest, b[:l]...)
-}
-
-func wireDecodeUint(source []byte) (uint64, int) {
-	u, l := binary.Uvarint(source)
-	if l < 0 {
-		l = -l
+func wireSizePath(path []peerPort) int {
+	var size int
+	for _, port := range path {
+		size += wireSizeUint(uint64(port))
 	}
-	return u, l
+	size += wireSizeUint(0)
+	return size
 }
 
-func wireChopUint(out *uint64, data *[]byte) bool {
-	port, length := wireDecodeUint(*data)
-	*out = port
-	*data = (*data)[length:]
-	return true
-}
-
-func wireEncodePath(dest []byte, path []peerPort) []byte {
-	var buf [10]byte
-	for _, p := range path {
-		bs := wireEncodeUint(buf[:0], uint64(p))
-		dest = append(dest, bs...)
+func wireAppendPath(dest []byte, path []peerPort) []byte {
+	for _, port := range path {
+		dest = wireAppendUint(dest, uint64(port))
 	}
+	dest = wireAppendUint(dest, 0)
 	return dest
 }
 
 func wireDecodePath(source []byte) (path []peerPort, length int) {
 	bs := source
-	for len(bs) > 0 {
-		u, l := wireDecodeUint(bs)
-		bs = bs[l:]
-		path = append(path, peerPort(u))
-		length += l
+	for {
+		var u uint64
+		if !wireChopUint(&u, &bs) {
+			return nil, -1 // TODO correct value
+		}
 		if u == 0 {
 			break
 		}
+		path = append(path, peerPort(u))
 	}
+	length = len(source) - len(bs)
 	return
 }
 
 func wireChopPath(out *[]peerPort, data *[]byte) bool {
 	path, length := wireDecodePath(*data)
+	if length < 0 {
+		return false
+	}
 	*out = append(*out, path...)
 	*data = (*data)[length:]
 	return true

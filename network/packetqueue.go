@@ -5,8 +5,15 @@ import (
 	"time"
 )
 
+type pqPacket interface {
+	wireEncodeable
+	wireType() wirePacketType
+	sourceKey() publicKey
+	destKey() publicKey
+}
+
 type pqPacketInfo struct {
-	packet *traffic
+	packet pqPacket
 	size   uint64
 	time   time.Time
 }
@@ -68,13 +75,21 @@ func (q *packetQueue) drop() bool {
 		heap.Remove(q, dIdx)
 	}
 	q.size -= info.size
-	freeTraffic(info.packet)
+	switch p := info.packet.(type) {
+	case *traffic:
+		freeTraffic(p)
+	default:
+		// Nothing to do
+	}
 	return true
 }
 
 // push adds a packet with the provided size to a queue for the provided source and destination keys
 // a new queue will be created if needed
-func (q *packetQueue) push(sKey, dKey publicKey, packet *traffic, size int) {
+func (q *packetQueue) push(packet pqPacket) {
+	sKey := packet.sourceKey()
+	dKey := packet.destKey()
+	size := packet.size()
 	info := pqPacketInfo{packet: packet, size: uint64(size), time: time.Now()}
 	sIdx, dIdx := -1, -1
 	source, dest := pqSource{key: sKey}, pqDest{key: dKey}
