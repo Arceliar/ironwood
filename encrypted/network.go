@@ -67,7 +67,7 @@ func (m *netManager) read() {
 				default:
 				}
 			} else {
-				msg := make([]byte, n)
+				msg := allocBytes(n)
 				copy(msg, buf[:n])
 				var fromKey edPub
 				copy(fromKey[:], from.(types.Addr))
