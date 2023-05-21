@@ -2,21 +2,32 @@ package network
 
 import "sync"
 
-var bytePool = sync.Pool{New: func() interface{} { return []byte(nil) }}
+const byteSize = 65535 * 2
+
+type byteSlice [byteSize]byte
+
+var bytePool = sync.Pool{
+	New: func() interface{} {
+		b := byteSlice{}
+		return &b
+	},
+}
 
 func allocBytes(size int) []byte {
-	bs := bytePool.Get().([]byte)
-	if cap(bs) < size {
-		bs = make([]byte, size)
-	}
+	bs := bytePool.Get().(*byteSlice)
 	return bs[:size]
 }
 
 func freeBytes(bs []byte) {
-	bytePool.Put(bs[:0]) //nolint:staticcheck
+	bu := (*byteSlice)(bs[:byteSize])
+	bytePool.Put(bu)
 }
 
-var trafficPool = sync.Pool{New: func() interface{} { return new(traffic) }}
+var trafficPool = sync.Pool{
+	New: func() interface{} {
+		return new(traffic)
+	},
+}
 
 func allocTraffic() *traffic {
 	tr := trafficPool.Get().(*traffic)
