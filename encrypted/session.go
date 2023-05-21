@@ -292,8 +292,8 @@ func (info *sessionInfo) _handleUpdate(init *sessionInit) {
 func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 	// TODO? some worker pool to multi-thread this
 	info.Act(from, func() {
-		defer freeBytes(msg) // nolint:staticcheck
-		info.sendNonce += 1  // Advance the nonce before anything else
+		defer freeBytes(msg)
+		info.sendNonce += 1 // Advance the nonce before anything else
 		if info.sendNonce == 0 {
 			// Nonce overflowed, so rotate keys
 			info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
@@ -303,7 +303,7 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 			info._fixShared(0, 0)
 		}
 		bs := allocBytes(sessionTrafficOverhead + len(msg))
-		defer freeBytes(bs) // nolint:staticcheck
+		defer freeBytes(bs)
 		bs[0] = sessionTypeTraffic
 		offset := 1
 		offset += binary.PutUvarint(bs[offset:], info.localKeySeq)
@@ -316,7 +316,7 @@ func (info *sessionInfo) doSend(from phony.Actor, msg []byte) {
 		tmp = append(tmp, info.nextPub[:]...)
 		tmp = append(tmp, msg...)
 		bs = boxSeal(bs, tmp, info.sendNonce, &info.sendShared)
-		freeBytes(tmp) // nolint:staticcheck
+		freeBytes(tmp)
 		// send
 		info.mgr.pc.PacketConn.WriteTo(bs, types.Addr(info.ed[:]))
 		info.tx += uint64(len(msg))

@@ -13,7 +13,7 @@ func allocBytes(size int) []byte {
 }
 
 func freeBytes(bs []byte) {
-	bytePool.Put(bs[:0])
+	bytePool.Put(bs[:0]) //nolint:staticcheck
 }
 
 var trafficPool = sync.Pool{New: func() interface{} { return new(traffic) }}
