@@ -65,12 +65,12 @@ func (pf *pathfinder) _handleLookup(fromKey publicKey, lookup *pathLookup) {
 			source:    pf.router.core.crypto.publicKey,
 			dest:      lookup.source,
 			info: pathNotifyInfo{
-				seq:  pf.info.seq,
+				seq:  uint64(time.Now().Unix()), //pf.info.seq,
 				path: path,
 			},
 		}
 		if !pf.info.equal(notify.info) {
-			notify.info.seq++
+			//notify.info.seq++
 			notify.info.sign(pf.router.core.crypto.privateKey)
 			pf.info = notify.info
 		} else {
@@ -113,8 +113,6 @@ func (pf *pathfinder) _handleNotify(fromKey publicKey, notify *pathNotify) {
 			return
 		}
 		info.timer.Reset(pf.router.core.config.pathTimeout)
-		info.path = notify.info.path
-		info.seq = notify.info.seq
 	} else {
 		xform := pf.router.blooms.xKey(notify.source)
 		if _, isIn := pf.rumors[xform]; !isIn {
@@ -148,6 +146,7 @@ func (pf *pathfinder) _handleNotify(fromKey publicKey, notify *pathNotify) {
 	}
 	info.path = notify.info.path
 	info.seq = notify.info.seq
+	info.broken = false
 	if info.traffic != nil {
 		tr := info.traffic
 		info.traffic = nil
@@ -222,7 +221,7 @@ func (pf *pathfinder) _handleTraffic(tr *traffic) {
 
 func (pf *pathfinder) _doBroken(tr *traffic) {
 	broken := pathBroken{
-		path:      append([]peerPort(nil), tr.path...),
+		path:      append([]peerPort(nil), tr.from...),
 		watermark: ^uint64(0),
 		source:    tr.source,
 		dest:      tr.dest,
@@ -240,7 +239,9 @@ func (pf *pathfinder) _handleBroken(broken *pathBroken) {
 	if broken.source != pf.router.core.crypto.publicKey {
 		return
 	}
-	if _, isIn := pf.paths[broken.dest]; isIn {
+	if info, isIn := pf.paths[broken.dest]; isIn {
+		info.broken = true
+		pf.paths[broken.dest] = info
 		pf._sendLookup(broken.dest) // Throttled inside this function
 	}
 }
@@ -255,7 +256,7 @@ func (pf *pathfinder) _resetTimeout(key publicKey) {
 	// Note: We should call this when we receive a packet from this destination
 	// We should *not* reset just because we tried to send a packet
 	// We need things to time out eventually if e.g. a node restarts and resets its seqs
-	if info, isIn := pf.paths[key]; isIn {
+	if info, isIn := pf.paths[key]; isIn && !info.broken {
 		info.timer.Reset(pf.router.core.config.pathTimeout)
 	}
 }
@@ -270,6 +271,7 @@ type pathInfo struct {
 	reqTime time.Time   // Time a request was last sent (to prevent spamming)
 	timer   *time.Timer // time.AfterFunc(cleanup...), reset whenever we receive traffic from this node
 	traffic *traffic
+	broken  bool // Set to true if we receive a pathBroken, which prevents the timer from being reset (we must get a new notify to clear)
 }
 
 /*************
@@ -521,7 +523,7 @@ func (broken *pathBroken) decode(data []byte) error {
 	orig := data
 	if !wireChopPath(&tmp.path, &orig) {
 		return types.ErrDecode
-	} else if !wireChopUint(&tmp.watermark, &data) {
+	} else if !wireChopUint(&tmp.watermark, &orig) {
 		return types.ErrDecode
 	} else if !wireChopSlice(tmp.source[:], &orig) {
 		return types.ErrDecode
