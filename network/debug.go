@@ -50,6 +50,11 @@ type DebugBloomInfo struct {
 	Recv [bloomFilterU]uint64
 }
 
+type DebugLookupInfo struct {
+	Key  ed25519.PublicKey
+	Path []uint64
+}
+
 func (d *Debug) GetSelf() (info DebugSelfInfo) {
 	info.Key = append(info.Key[:0], d.c.crypto.publicKey[:]...)
 	phony.Block(&d.c.router, func() {
@@ -114,4 +119,18 @@ func (d *Debug) GetBlooms() (infos []DebugBloomInfo) {
 		}
 	})
 	return
+}
+
+func (d *Debug) SetDebugLookupLogger(logger func(DebugLookupInfo)) {
+	phony.Block(&d.c.router, func() {
+		d.c.router.pathfinder.logger = func(lookup *pathLookup) {
+			info := DebugLookupInfo{
+				Key: append(ed25519.PublicKey(nil), lookup.source[:]...),
+			}
+			for _, p := range lookup.from {
+				info.Path = append(info.Path, uint64(p))
+			}
+			logger(info)
+		}
+	})
 }

@@ -14,6 +14,7 @@ type pathfinder struct {
 	info   pathNotifyInfo
 	paths  map[publicKey]pathInfo
 	rumors map[publicKey]pathRumor
+	logger func(*pathLookup)
 }
 
 func (pf *pathfinder) init(r *router) {
@@ -50,6 +51,9 @@ func (pf *pathfinder) handleLookup(p *peer, lookup *pathLookup) {
 }
 
 func (pf *pathfinder) _handleLookup(fromKey publicKey, lookup *pathLookup) {
+	if pf.logger != nil {
+		pf.logger(lookup)
+	}
 	// Continue the multicast
 	pf.router.blooms._sendMulticast(lookup, fromKey, lookup.dest)
 	// Check if we should send a response too
