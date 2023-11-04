@@ -248,12 +248,12 @@ func (r *router) _fix() {
 			bestRoot, bestParent = pRoot, pk
 		} else if r.ancSeqs[pk] != r.ancSeqs[bestParent] {
 			continue // less stable path
-		}
-		// TODO? Update parents even if the old one works, if the new one is "better"
-		//  But it has to be by a lot, stability is high priority (affects all downstream nodes)
-		//  For now, if we're forced to select a new parent, then choose the "best" one
-		//  Otherwise, just always keep the current parent if possible
-		if /* r.refresh  || */ bestParent != self.parent {
+		} else if /* r.refresh  || */ bestParent != self.parent {
+			// Equally good path (same anc seqs)
+			// TODO? Update parents even if the old one works, if the new one is "better"
+			//  But it has to be by a lot, stability is high priority (affects all downstream nodes)
+			//  For now, if we're forced to select a new parent, then choose the "best" one
+			//  Otherwise, just always keep the current parent if possible
 			if pRoot == bestRoot && r.resSeqs[pk] < r.resSeqs[bestParent] {
 				bestRoot, bestParent = pRoot, pk
 			}
