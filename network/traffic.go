@@ -19,6 +19,7 @@ func (tr *traffic) copyFrom(original *traffic) {
 	tmp := *tr
 	*tr = *original
 	tr.path = append(tmp.path[:0], tr.path...)
+	tr.from = append(tmp.from[:0], tr.from...)
 	tr.payload = append(tmp.payload[:0], tr.payload...)
 }
 
