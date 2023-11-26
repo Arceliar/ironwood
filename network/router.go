@@ -664,9 +664,20 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 			return nil
 		}
 	}
+	tiebreak := func(key publicKey) bool {
+		// If distances match, keep the peer with the lowest key, just so there's some kind of consistency
+		return bestPeer != nil && key.less(bestPeer.key)
+	}
 	for k, ps := range r.peers {
-		if dist := r._getDist(path, k); dist < bestDist {
+		if dist := r._getDist(path, k); dist < bestDist || (dist == bestDist && tiebreak(k)) {
 			for p := range ps {
+				// Set the next hop to any peer object for this peer
+				bestPeer = p
+				bestDist = dist
+				break
+			}
+			for p := range ps {
+				// Find the best peer object for this peer
 				switch {
 				case bestPeer != nil && p.prio > bestPeer.prio:
 					// Skip worse priority links
@@ -678,10 +689,8 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 					bestPeer = p
 				}
 			}
-			bestDist = dist
 		}
 	}
-
 	return bestPeer
 }
 
