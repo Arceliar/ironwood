@@ -43,7 +43,7 @@ func (b *bloom) size() int {
 	size += bloomFilterF // Flags for chunks that are all 1 bits
 	us := b.filter.BitSet().Bytes()
 	for _, u := range us {
-		if u != 0 {
+		if u != 0 && u != ^uint64(0) {
 			size += 8
 		}
 	}
