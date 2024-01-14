@@ -682,7 +682,7 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 				case bestPeer != nil && p.prio > bestPeer.prio:
 					// Skip worse priority links
 					continue
-				case bestPeer != nil && p.time.After(bestPeer.time):
+				case bestPeer != nil && p.order > bestPeer.order:
 					// Skip links that have been up for less time
 					continue
 				default:
