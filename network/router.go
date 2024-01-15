@@ -676,17 +676,16 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 				bestDist = dist
 				break
 			}
-			if bestPeer == nil {
-				continue
-			}
-			for p := range ps {
-				// Find the best peer object for this peer
-				switch {
-				case p.prio < bestPeer.prio:
-					bestPeer = p // Better priority
-				case p.prio == bestPeer.prio && p.order < bestPeer.order:
-					bestPeer = p // Up for longer
-				}
+		}
+	}
+	if bestPeer != nil {
+		for p := range r.peers[bestPeer.key] {
+			// Find the best peer object for this peer
+			switch {
+			case p.prio < bestPeer.prio:
+				bestPeer = p // Better priority
+			case p.prio == bestPeer.prio && p.order < bestPeer.order:
+				bestPeer = p // Up for longer
 			}
 		}
 	}
