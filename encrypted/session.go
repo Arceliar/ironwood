@@ -212,6 +212,7 @@ type sessionInfo struct {
 	sendNonce    uint64
 	nextPriv     boxPriv // becomes sendPriv
 	nextPub      boxPub  // becomes sendPub
+	nextShared   *boxShared
 	timer        *time.Timer
 	ack          *sessionAck
 	since        time.Time
@@ -353,7 +354,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		fromNext := remoteKeySeq == info.remoteKeySeq+1
 		toRecv := localKeySeq+1 == info.localKeySeq
 		toSend := localKeySeq == info.localKeySeq
-		var sharedKey *boxShared
+		sharedKey := info.nextShared
 		var onSuccess func(boxPub)
 		switch {
 		case fromCurrent && toRecv:
@@ -367,8 +368,11 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			}
 		case fromNext && toSend:
 			// The remote side appears to have ratcheted forward
-			sharedKey = new(boxShared)
-			getShared(sharedKey, &info.next, &info.sendPriv)
+			if sharedKey == nil {
+				sharedKey = new(boxShared)
+				getShared(sharedKey, &info.next, &info.sendPriv)
+				info.nextShared = sharedKey
+			}
 			onSuccess = func(innerKey boxPub) {
 				// Rotate their keys
 				info.current = info.next
@@ -382,13 +386,17 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				info.nextPub, info.nextPriv = newBoxKeys()
 				// Update nonces
 				info._fixShared(nonce, 0)
+				info.nextShared = nil
 			}
 		case fromNext && toRecv:
 			// The remote side appears to have ratcheted forward early
 			// Technically there's no reason we can't handle this
 			//panic("DEBUG") // TODO test this
-			sharedKey = new(boxShared)
-			getShared(sharedKey, &info.next, &info.recvPriv)
+			if sharedKey == nil {
+				sharedKey = new(boxShared)
+				getShared(sharedKey, &info.next, &info.recvPriv)
+				info.nextShared = sharedKey
+			}
 			onSuccess = func(innerKey boxPub) {
 				// Rotate their keys
 				info.current = info.next
@@ -402,6 +410,7 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				info.nextPub, info.nextPriv = newBoxKeys()
 				// Update nonces
 				info._fixShared(nonce, 0)
+				info.nextShared = nil
 			}
 		default:
 			// We can't make sense of their message
