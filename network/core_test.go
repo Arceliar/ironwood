@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"errors"
+	"math/rand"
 
 	//"fmt"
 	"net"
@@ -196,13 +197,14 @@ func TestRandomTreeNetwork(t *testing.T) {
 			linkA, linkB := newDummyConn(keyA, keyB)
 			defer linkA.Close()
 			defer linkB.Close()
+			cost := uint8(rand.Uint32())
 			go func() {
 				<-wait
-				conn.HandleConn(keyB, linkA, 0, 0)
+				conn.HandleConn(keyB, linkA, cost, 0)
 			}()
 			go func() {
 				<-wait
-				p.HandleConn(keyA, linkB, 0, 0)
+				p.HandleConn(keyA, linkB, cost, 0)
 			}()
 		}
 		conns = append(conns, conn)
