@@ -624,13 +624,19 @@ func (r *router) _getDist(destPath []peerPort, key publicKey) uint64 {
 	if len(keyPath) < end {
 		end = len(keyPath)
 	}
-	dist := uint64(len(keyPath) + len(destPath))
-	for idx := 0; idx < end; idx++ {
-		if keyPath[idx] == destPath[idx] {
-			dist -= 2
-		} else {
+	var start int
+	for i := 0; i < end; i++ {
+		if destPath[i] != keyPath[i] {
 			break
 		}
+		start++
+	}
+	var dist uint64 // costed length of keyPath and distPath
+	for _, p := range keyPath[start:] {
+		dist += 1 + (uint64(p) >> 56)
+	}
+	for _, p := range destPath[start:] {
+		dist += 1 + (uint64(p) >> 56)
 	}
 	return dist
 }
