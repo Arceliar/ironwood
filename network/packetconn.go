@@ -145,7 +145,7 @@ func (pc *PacketConn) SetWriteDeadline(t time.Time) error {
 // This function blocks while the net.Conn is in use, and returns an error if any occurs.
 // This function returns (almost) immediately if PacketConn.Close() is called.
 // In all cases, the net.Conn is closed before returning.
-func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn, prio uint8) error {
+func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn, cost, prio uint8) error {
 	defer conn.Close()
 	if len(key) != publicKeySize {
 		return types.ErrBadKey
@@ -159,7 +159,7 @@ func (pc *PacketConn) HandleConn(key ed25519.PublicKey, conn net.Conn, prio uint
 			pk.addr().String(),
 		)
 	}
-	p, err := pc.core.peers.addPeer(pk, conn, prio)
+	p, err := pc.core.peers.addPeer(pk, conn, cost, prio)
 	if err != nil {
 		return err
 	}
