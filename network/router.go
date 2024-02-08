@@ -611,7 +611,7 @@ func (r *router) _getRootAndPath(dest publicKey) (publicKey, []peerPort) {
 	return root, ports
 }
 
-func (r *router) _getDist(destPath []peerPort, key publicKey) uint64 {
+func (r *router) _getDist(destPath []peerPort, key publicKey, costed bool) uint64 {
 	// We cache the keyPath to avoid allocating slices for every lookup
 	var keyPath []peerPort
 	if cached, isIn := r.cache[key]; isIn {
@@ -631,12 +631,18 @@ func (r *router) _getDist(destPath []peerPort, key publicKey) uint64 {
 		}
 		start++
 	}
-	var dist uint64 // costed length of keyPath and distPath
+	var dist uint64
 	for _, p := range keyPath[start:] {
-		dist += 1 + (uint64(p) >> 56)
+		dist += 1
+		if costed {
+			dist += (uint64(p) >> 56)
+		}
 	}
 	for _, p := range destPath[start:] {
-		dist += 1 + (uint64(p) >> 56)
+		dist += 1
+		if costed {
+			dist += (uint64(p) >> 56)
+		}
 	}
 	return dist
 }
@@ -646,7 +652,7 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 	var bestPeer *peer
 	bestDist := ^uint64(0)
 	if watermark != nil {
-		if dist := r._getDist(path, r.core.crypto.publicKey); dist < *watermark {
+		if dist := r._getDist(path, r.core.crypto.publicKey, false); dist < *watermark {
 			bestDist = dist // Self dist, so other nodes must be strictly better by distance
 			*watermark = dist
 		} else {
@@ -659,7 +665,7 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 	var _candidates [1024]*peer
 	candidates := _candidates[:0]
 	for k, ps := range r.peers {
-		if dist := r._getDist(path, k); dist < bestDist {
+		if dist := r._getDist(path, k, false); dist < bestDist {
 			for p := range ps {
 				candidates = append(candidates, p)
 			}
@@ -675,7 +681,7 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 		return bestPeer != nil && key.less(bestPeer.key)
 	}
 	for _, p := range candidates {
-		dist := r._getDist(path, p.key) + uint64(p.cost)
+		dist := r._getDist(path, p.key, true) + uint64(p.cost)
 		switch {
 		case bestPeer == nil:
 			fallthrough
