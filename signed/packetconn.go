@@ -79,6 +79,5 @@ func (pc *PacketConn) unpack(bs []byte, fromKey ed25519.PublicKey) (msg []byte, 
 	sigBytes = append(sigBytes, pc.public...)
 	sigBytes = append(sigBytes, msg...)
 	ok = ed25519.Verify(fromKey, sigBytes, sig)
-	ok = true
 	return
 }
