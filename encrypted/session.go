@@ -195,29 +195,33 @@ func (mgr *sessionManager) sendAck(dest *edPub, ack *sessionAck) {
 
 type sessionInfo struct {
 	phony.Inbox
-	mgr          *sessionManager
-	seq          uint64 // remote seq
-	ed           edPub  // remote ed key
-	remoteKeySeq uint64 // signals rotation of current/next
-	current      boxPub // send to this, expect to receive from it
-	next         boxPub // if we receive from this, then rotate it to current
-	localKeySeq  uint64 // signals rotation of recv/send/next
-	recvPriv     boxPriv
-	recvPub      boxPub
-	recvShared   boxShared
-	recvNonce    uint64
-	sendPriv     boxPriv // becomes recvPriv when we rachet forward
-	sendPub      boxPub  // becomes recvPub
-	sendShared   boxShared
-	sendNonce    uint64
-	nextPriv     boxPriv // becomes sendPriv
-	nextPub      boxPub  // becomes sendPub
-	timer        *time.Timer
-	ack          *sessionAck
-	since        time.Time
-	rotated      time.Time // last time we rotated keys
-	rx           uint64
-	tx           uint64
+	mgr            *sessionManager
+	seq            uint64 // remote seq
+	ed             edPub  // remote ed key
+	remoteKeySeq   uint64 // signals rotation of current/next
+	current        boxPub // send to this, expect to receive from it
+	next           boxPub // if we receive from this, then rotate it to current
+	localKeySeq    uint64 // signals rotation of recv/send/next
+	recvPriv       boxPriv
+	recvPub        boxPub
+	recvShared     boxShared
+	recvNonce      uint64
+	sendPriv       boxPriv // becomes recvPriv when we ratchet forward
+	sendPub        boxPub  // becomes recvPub
+	sendShared     boxShared
+	sendNonce      uint64
+	nextPriv       boxPriv // becomes sendPriv
+	nextPub        boxPub  // becomes sendPub
+	timer          *time.Timer
+	ack            *sessionAck
+	since          time.Time
+	rotated        time.Time // last time we rotated keys
+	rx             uint64
+	tx             uint64
+	nextSendShared boxShared
+	nextSendNonce  uint64
+	nextRecvShared boxShared
+	nextRecvNonce  uint64
 }
 
 func newSession(ed *edPub, current, next boxPub, seq uint64) *sessionInfo {
@@ -237,6 +241,9 @@ func newSession(ed *edPub, current, next boxPub, seq uint64) *sessionInfo {
 func (info *sessionInfo) _fixShared(recvNonce, sendNonce uint64) {
 	getShared(&info.recvShared, &info.current, &info.recvPriv)
 	getShared(&info.sendShared, &info.current, &info.sendPriv)
+	getShared(&info.nextSendShared, &info.next, &info.sendPriv)
+	getShared(&info.nextRecvShared, &info.next, &info.recvPriv)
+	info.nextSendNonce, info.nextRecvNonce = 0, 0
 	info.recvNonce, info.sendNonce = recvNonce, sendNonce
 }
 
@@ -367,41 +374,57 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 			}
 		case fromNext && toSend:
 			// The remote side appears to have ratcheted forward
-			sharedKey = new(boxShared)
-			getShared(sharedKey, &info.next, &info.sendPriv)
+			if !(info.nextSendNonce < nonce) {
+				return
+			}
+			sharedKey = &info.nextSendShared
+			//sharedKey = new(boxShared)
+			//getShared(sharedKey, &info.next, &info.sendPriv)
 			onSuccess = func(innerKey boxPub) {
-				// Rotate their keys
-				info.current = info.next
-				info.next = innerKey
-				info.remoteKeySeq++ // = remoteKeySeq
-				// Rotate our own keys
-				info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
-				info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
-				info.localKeySeq++
-				// Generate new next keys
-				info.nextPub, info.nextPriv = newBoxKeys()
-				// Update nonces
-				info._fixShared(nonce, 0)
+				info.nextSendNonce = nonce
+				if info.rotated.IsZero() || time.Since(info.rotated) > time.Minute {
+					// Rotate their keys
+					info.current = info.next
+					info.next = innerKey
+					info.remoteKeySeq++ // = remoteKeySeq
+					// Rotate our own keys
+					info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
+					info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
+					info.localKeySeq++
+					// Generate new next keys
+					info.nextPub, info.nextPriv = newBoxKeys()
+					// Update nonces
+					info._fixShared(nonce, 0)
+					info.rotated = time.Now()
+				}
 			}
 		case fromNext && toRecv:
 			// The remote side appears to have ratcheted forward early
 			// Technically there's no reason we can't handle this
 			//panic("DEBUG") // TODO test this
-			sharedKey = new(boxShared)
-			getShared(sharedKey, &info.next, &info.recvPriv)
+			if !(info.nextRecvNonce < nonce) {
+				return
+			}
+			sharedKey = &info.nextRecvShared
+			//sharedKey = new(boxShared)
+			//getShared(sharedKey, &info.next, &info.recvPriv)
 			onSuccess = func(innerKey boxPub) {
-				// Rotate their keys
-				info.current = info.next
-				info.next = innerKey
-				info.remoteKeySeq++ // = remoteKeySeq
-				// Rotate our own keys
-				info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
-				info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
-				info.localKeySeq++
-				// Generate new next keys
-				info.nextPub, info.nextPriv = newBoxKeys()
-				// Update nonces
-				info._fixShared(nonce, 0)
+				info.nextRecvNonce = nonce
+				if info.rotated.IsZero() || time.Since(info.rotated) > time.Minute {
+					// Rotate their keys
+					info.current = info.next
+					info.next = innerKey
+					info.remoteKeySeq++ // = remoteKeySeq
+					// Rotate our own keys
+					info.recvPub, info.recvPriv = info.sendPub, info.sendPriv
+					info.sendPub, info.sendPriv = info.nextPub, info.nextPriv
+					info.localKeySeq++
+					// Generate new next keys
+					info.nextPub, info.nextPriv = newBoxKeys()
+					// Update nonces
+					info._fixShared(nonce, 0)
+					info.rotated = time.Now()
+				}
 			}
 		default:
 			// We can't make sense of their message
@@ -411,17 +434,14 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		}
 		// Decrypt and handle packet
 		unboxed, ok := allocBytes(0), false
-		defer freeBytes(unboxed)
+		defer func() { freeBytes(unboxed) }()
 		if unboxed, ok = boxOpen(unboxed, msg, nonce, sharedKey); ok {
 			var key boxPub
 			copy(key[:], unboxed)
 			msg := append(allocBytes(0), unboxed[len(key):]...)
 			info.mgr.pc.network.recv(info, msg)
 			// Misc remaining followup work
-			if info.rotated.IsZero() || time.Since(info.rotated) > time.Minute {
-				onSuccess(key)
-				info.rotated = time.Now()
-			}
+			onSuccess(key)
 			info.rx += uint64(len(msg))
 			info._resetTimer()
 		} else {
