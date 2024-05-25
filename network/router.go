@@ -47,17 +47,17 @@ type router struct {
 	infos      map[publicKey]routerInfo
 	timers     map[publicKey]*time.Timer
 	ancs       map[publicKey][]publicKey // Peer ancestry info
-	ancSeqs    map[publicKey]uint64
-	ancSeqCtr  uint64
-	cache      map[publicKey][]peerPort // Cache path slice for each peer
-	requests   map[publicKey]routerSigReq
-	responses  map[publicKey]routerSigRes
-	resSeqs    map[publicKey]uint64
-	resSeqCtr  uint64
-	refresh    bool
-	doRoot1    bool
-	doRoot2    bool
-	mainTimer  *time.Timer
+	//ancSeqs    map[publicKey]uint64
+	//ancSeqCtr  uint64
+	cache     map[publicKey][]peerPort // Cache path slice for each peer
+	requests  map[publicKey]routerSigReq
+	responses map[publicKey]routerSigRes
+	resSeqs   map[publicKey]uint64
+	resSeqCtr uint64
+	refresh   bool
+	doRoot1   bool
+	doRoot2   bool
+	mainTimer *time.Timer
 }
 
 func (r *router) init(c *core) {
@@ -70,7 +70,7 @@ func (r *router) init(c *core) {
 	r.infos = make(map[publicKey]routerInfo)
 	r.timers = make(map[publicKey]*time.Timer)
 	r.ancs = make(map[publicKey][]publicKey)
-	r.ancSeqs = make(map[publicKey]uint64)
+	//r.ancSeqs = make(map[publicKey]uint64)
 	r.cache = make(map[publicKey][]peerPort)
 	r.requests = make(map[publicKey]routerSigReq)
 	r.responses = make(map[publicKey]routerSigRes)
@@ -118,7 +118,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			r.peers[p.key] = make(map[*peer]struct{})
 			r.sent[p.key] = make(map[publicKey]struct{})
 			r.ports[p.port] = p.key
-			r.ancSeqs[p.key] = r.ancSeqCtr
+			//r.ancSeqs[p.key] = r.ancSeqCtr
 			r.blooms._addInfo(p.key)
 		} else {
 			// Send anything we've already sent over previous peer connections to this node
@@ -155,7 +155,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 			delete(r.responses, p.key)
 			delete(r.resSeqs, p.key)
 			delete(r.ancs, p.key)
-			delete(r.ancSeqs, p.key)
+			//delete(r.ancSeqs, p.key)
 			delete(r.cache, p.key)
 			r.blooms._removeInfo(p.key)
 			//r._fix()
@@ -194,7 +194,7 @@ func (r *router) _sendReqs() {
 }
 
 func (r *router) _updateAncestries() {
-	r.ancSeqCtr++
+	//r.ancSeqCtr++
 	for pkey := range r.peers {
 		anc := r._getAncestry(pkey)
 		old := r.ancs[pkey]
@@ -211,7 +211,7 @@ func (r *router) _updateAncestries() {
 		}
 		if diff {
 			r.ancs[pkey] = anc
-			r.ancSeqs[pkey] = r.ancSeqCtr
+			//r.ancSeqs[pkey] = r.ancSeqCtr
 		}
 	}
 }
@@ -248,22 +248,23 @@ func (r *router) _fix() {
 			// If we're going to change to a better parent, now seems like the time...
 			bestRoot, bestParent = pRoot, pk
 		}
-		continue // Skip the rest for now, not sure how to handle stability...
-		if r.ancSeqs[pk] < r.ancSeqs[bestParent] {
-			// This node is advertising a more stable path, so we should probably switch to it...
-			bestRoot, bestParent = pRoot, pk
-		} else if r.ancSeqs[pk] != r.ancSeqs[bestParent] {
-			continue // less stable path
-		} else if r.refresh || bestParent != self.parent {
-			// Equally good path (same anc seqs)
-			//  Update parents even if the old one works, if the new one is "better"
-			//  But it has to be by a lot, stability is high priority (affects all downstream nodes)
-			//  For now, if we're forced to select a new parent, then choose the "best" one
-			//  Otherwise, just always keep the current parent if possible
-			if pRoot == bestRoot && r.resSeqs[pk] < r.resSeqs[bestParent] {
+		/*
+			if r.ancSeqs[pk] < r.ancSeqs[bestParent] {
+				// This node is advertising a more stable path, so we should probably switch to it...
 				bestRoot, bestParent = pRoot, pk
+			} else if r.ancSeqs[pk] != r.ancSeqs[bestParent] {
+				continue // less stable path
+			} else if r.refresh || bestParent != self.parent {
+				// Equally good path (same anc seqs)
+				//  Update parents even if the old one works, if the new one is "better"
+				//  But it has to be by a lot, stability is high priority (affects all downstream nodes)
+				//  For now, if we're forced to select a new parent, then choose the "best" one
+				//  Otherwise, just always keep the current parent if possible
+				if pRoot == bestRoot && r.resSeqs[pk] < r.resSeqs[bestParent] {
+					bestRoot, bestParent = pRoot, pk
+				}
 			}
-		}
+		*/
 	}
 	/*
 		if r.refresh || bestParent != self.parent {
