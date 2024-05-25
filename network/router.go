@@ -243,14 +243,20 @@ func (r *router) _fix() {
 		} else if pRoot != bestRoot {
 			continue // wrong root
 		}
+		if (r.refresh || bestParent != self.parent) && r.resSeqs[pk] < r.resSeqs[bestParent] {
+			// It's time to refresh our self info
+			// If we're going to change to a better parent, now seems like the time...
+			bestRoot, bestParent = pRoot, pk
+		}
+		continue // Skip the rest for now, not sure how to handle stability...
 		if r.ancSeqs[pk] < r.ancSeqs[bestParent] {
 			// This node is advertising a more stable path, so we should probably switch to it...
 			bestRoot, bestParent = pRoot, pk
 		} else if r.ancSeqs[pk] != r.ancSeqs[bestParent] {
 			continue // less stable path
-		} else if /* r.refresh  || */ bestParent != self.parent {
+		} else if r.refresh || bestParent != self.parent {
 			// Equally good path (same anc seqs)
-			// TODO? Update parents even if the old one works, if the new one is "better"
+			//  Update parents even if the old one works, if the new one is "better"
 			//  But it has to be by a lot, stability is high priority (affects all downstream nodes)
 			//  For now, if we're forced to select a new parent, then choose the "best" one
 			//  Otherwise, just always keep the current parent if possible
@@ -259,6 +265,17 @@ func (r *router) _fix() {
 			}
 		}
 	}
+	/*
+		if r.refresh || bestParent != self.parent {
+			for pk := range r.ancSeqs {
+				if _, isIn := r.responses[pk]; !isIn {
+					// We must update, and we weren't able to consider this node due to not having a response
+					// To avoid flapping, reset the node's anc (stability) info
+					r.ancSeqs[pk] = r.ancSeqCtr
+				}
+			}
+		}
+	*/
 	if r.refresh || r.doRoot1 || r.doRoot2 || self.parent != bestParent {
 		res, isIn := r.responses[bestParent]
 		switch {
