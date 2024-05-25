@@ -378,8 +378,6 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				return
 			}
 			sharedKey = &info.nextSendShared
-			//sharedKey = new(boxShared)
-			//getShared(sharedKey, &info.next, &info.sendPriv)
 			onSuccess = func(innerKey boxPub) {
 				info.nextSendNonce = nonce
 				if info.rotated.IsZero() || time.Since(info.rotated) > time.Minute {
@@ -406,8 +404,6 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 				return
 			}
 			sharedKey = &info.nextRecvShared
-			//sharedKey = new(boxShared)
-			//getShared(sharedKey, &info.next, &info.recvPriv)
 			onSuccess = func(innerKey boxPub) {
 				info.nextRecvNonce = nonce
 				if info.rotated.IsZero() || time.Since(info.rotated) > time.Minute {
