@@ -30,6 +30,7 @@ type DebugPeerInfo struct {
 	TX       uint64
 	Updated  time.Time
 	Conn     net.Conn
+	Latency  time.Duration
 }
 
 type DebugTreeInfo struct {
@@ -73,6 +74,9 @@ func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 				info.Key = append(info.Key[:0], peer.key[:]...)
 				info.Priority = peer.prio
 				info.Conn = peer.conn
+				if rtt := peer.srrt.Sub(peer.srst).Round(time.Millisecond / 100); rtt > 0 {
+					info.Latency = rtt
+				}
 				infos = append(infos, info)
 			}
 		}

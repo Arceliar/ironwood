@@ -108,7 +108,9 @@ type peer struct {
 	order       uint64 // order in which peers were connected (relative uptime)
 	monitor     peerMonitor
 	writer      peerWriter
-	ready       bool // is the writer ready for traffic?
+	ready       bool      // is the writer ready for traffic?
+	srst        time.Time // sigReq send time
+	srrt        time.Time // sigRes receive time
 }
 
 type peerMonitor struct {
@@ -195,7 +197,7 @@ func (w *peerWriter) _write(bs []byte, pType wirePacketType) {
 	})
 }
 
-func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
+func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable, done func()) {
 	w.Act(nil, func() {
 		bufSize := uint64(data.size() + 1)
 		if bufSize > w.peer.peers.core.config.peerMaxMessageSize {
@@ -216,6 +218,9 @@ func (w *peerWriter) sendPacket(pType wirePacketType, data wireEncodeable) {
 			freeTraffic(tr)
 		default:
 			// Not a special case, don't free anything
+		}
+		if done != nil {
+			w.peer.Act(w, done)
 		}
 	})
 }
@@ -295,9 +300,9 @@ func (p *peer) _handlePacket(bs []byte) error {
 	}
 }
 
-func (p *peer) sendDirect(from phony.Actor, pType wirePacketType, data wireEncodeable) {
+func (p *peer) sendDirect(from phony.Actor, pType wirePacketType, data wireEncodeable, done func()) {
 	p.Act(from, func() {
-		p.writer.sendPacket(pType, data)
+		p.writer.sendPacket(pType, data, done)
 	})
 }
 
@@ -311,7 +316,9 @@ func (p *peer) _handleSigReq(bs []byte) error {
 }
 
 func (p *peer) sendSigReq(from phony.Actor, req *routerSigReq) {
-	p.sendDirect(from, wireProtoSigReq, req)
+	p.sendDirect(from, wireProtoSigReq, req, func() {
+		p.srst = time.Now()
+	})
 }
 
 func (p *peer) _handleSigRes(bs []byte) error {
@@ -322,12 +329,13 @@ func (p *peer) _handleSigRes(bs []byte) error {
 	if !res.check(p.peers.core.crypto.publicKey, p.key) {
 		return types.ErrBadMessage
 	}
+	p.srrt = time.Now()
 	p.peers.core.router.handleResponse(p, p, res)
 	return nil
 }
 
 func (p *peer) sendSigRes(from phony.Actor, res *routerSigRes) {
-	p.sendDirect(from, wireProtoSigRes, res)
+	p.sendDirect(from, wireProtoSigRes, res, nil)
 }
 
 func (p *peer) _handleAnnounce(bs []byte) error {
@@ -343,7 +351,7 @@ func (p *peer) _handleAnnounce(bs []byte) error {
 }
 
 func (p *peer) sendAnnounce(from phony.Actor, ann *routerAnnounce) {
-	p.sendDirect(from, wireProtoAnnounce, ann)
+	p.sendDirect(from, wireProtoAnnounce, ann, nil)
 }
 
 func (p *peer) _handleBloom(bs []byte) error {
@@ -356,7 +364,7 @@ func (p *peer) _handleBloom(bs []byte) error {
 }
 
 func (p *peer) sendBloom(from phony.Actor, b *bloom) {
-	p.sendDirect(from, wireProtoBloomFilter, b)
+	p.sendDirect(from, wireProtoBloomFilter, b, nil)
 }
 
 func (p *peer) _handlePathLookup(bs []byte) error {
@@ -417,7 +425,7 @@ func (p *peer) sendQueued(from phony.Actor, packet pqPacket) {
 
 func (p *peer) _push(packet pqPacket) {
 	if p.ready {
-		p.writer.sendPacket(packet.wireType(), packet)
+		p.writer.sendPacket(packet.wireType(), packet, nil)
 		p.ready = false
 		return
 	}
@@ -434,7 +442,7 @@ func (p *peer) _push(packet pqPacket) {
 func (p *peer) pop() {
 	p.Act(nil, func() {
 		if info, ok := p.queue.pop(); ok {
-			p.writer.sendPacket(info.packet.wireType(), info.packet)
+			p.writer.sendPacket(info.packet.wireType(), info.packet, nil)
 		} else {
 			p.ready = true
 			p.writer.Act(nil, func() {
