@@ -25,6 +25,7 @@ type DebugPeerInfo struct {
 	Key      ed25519.PublicKey
 	Root     ed25519.PublicKey
 	Port     uint64
+	Cost     uint64
 	Priority uint8
 	RX       uint64
 	TX       uint64
@@ -71,6 +72,7 @@ func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 			for peer := range peers {
 				var info DebugPeerInfo
 				info.Port = uint64(peer.port)
+				info.Cost = uint64(peer.cost)
 				info.Key = append(info.Key[:0], peer.key[:]...)
 				info.Priority = peer.prio
 				info.Conn = peer.conn

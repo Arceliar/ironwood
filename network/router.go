@@ -611,7 +611,7 @@ func (r *router) _getRootAndPath(dest publicKey) (publicKey, []peerPort) {
 	return root, ports
 }
 
-func (r *router) _getDist(destPath []peerPort, key publicKey) uint64 {
+func (r *router) _getDist(destPath []peerPort, key publicKey, costed bool) uint64 {
 	// We cache the keyPath to avoid allocating slices for every lookup
 	var keyPath []peerPort
 	if cached, isIn := r.cache[key]; isIn {
@@ -624,12 +624,24 @@ func (r *router) _getDist(destPath []peerPort, key publicKey) uint64 {
 	if len(keyPath) < end {
 		end = len(keyPath)
 	}
-	dist := uint64(len(keyPath) + len(destPath))
-	for idx := 0; idx < end; idx++ {
-		if keyPath[idx] == destPath[idx] {
-			dist -= 2
-		} else {
+	var start int
+	for i := 0; i < end; i++ {
+		if destPath[i] != keyPath[i] {
 			break
+		}
+		start++
+	}
+	var dist uint64
+	for _, p := range keyPath[start:] {
+		dist += 1
+		if costed {
+			dist += (uint64(p) >> 56)
+		}
+	}
+	for _, p := range destPath[start:] {
+		dist += 1
+		if costed {
+			dist += (uint64(p) >> 56)
 		}
 	}
 	return dist
@@ -640,36 +652,59 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 	var bestPeer *peer
 	bestDist := ^uint64(0)
 	if watermark != nil {
-		if dist := r._getDist(path, r.core.crypto.publicKey); dist < *watermark {
+		if dist := r._getDist(path, r.core.crypto.publicKey, false); dist < *watermark {
 			bestDist = dist // Self dist, so other nodes must be strictly better by distance
 			*watermark = dist
 		} else {
 			return nil
 		}
 	}
-	tiebreak := func(key publicKey) bool {
-		// If distances match, keep the peer with the lowest key, just so there's some kind of consistency
-		return bestPeer != nil && key.less(bestPeer.key)
-	}
+	// Firstly work out which of the peers take us closer to the destination,
+	// ignoring the link costs altogether, to guarantee loop-free next-hops.
+	// TODO: Over 1024 peers, this may reallocate and escape to the heap.
+	var _candidates [1024]*peer
+	candidates := _candidates[:0]
 	for k, ps := range r.peers {
-		if dist := r._getDist(path, k); dist < bestDist || (dist == bestDist && tiebreak(k)) {
+		if dist := r._getDist(path, k, false); dist < bestDist {
 			for p := range ps {
-				// Set the next hop to any peer object for this peer
-				bestPeer = p
-				bestDist = dist
-				break
+				candidates = append(candidates, p)
 			}
 		}
 	}
-	if bestPeer != nil {
-		for p := range r.peers[bestPeer.key] {
-			// Find the best peer object for this peer
-			switch {
-			case p.prio < bestPeer.prio:
-				bestPeer = p // Better priority
-			case p.prio == bestPeer.prio && p.order < bestPeer.order:
-				bestPeer = p // Up for longer
-			}
+	// Then take a look at the candidates and work out which is the best
+	// tree distance, accounting for the link cost.
+	bestPeer = nil
+	bestDist = ^uint64(0)
+	tiebreak := func(key publicKey) bool {
+		// If distances match, keep the peer with the lowest key, just so
+		// there's some kind of consistency
+		return bestPeer != nil && key.less(bestPeer.key)
+	}
+	for _, p := range candidates {
+		dist := r._getDist(path, p.key, true) + uint64(p.cost)
+		switch {
+		case bestPeer == nil:
+			fallthrough
+		case dist < bestDist, dist == bestDist && tiebreak(p.key):
+			// We're either closer to the destination, or we're the same
+			// distance but we've selected the lower key for consistency.
+			bestPeer = p
+			bestDist = dist
+		case dist > bestDist:
+			// This is here so that by the next case, dist == bestDist.
+			continue
+		case p.prio < bestPeer.prio:
+			// Next, select the link with the lowest priority.
+			bestPeer = p
+			bestDist = dist
+		case p.prio > bestPeer.prio:
+			// This is here so that by the next case, p.prio == bestPeer.prio.
+			continue
+		case p.order < bestPeer.order:
+			// Next, if the priority is equal, select the link that has been
+			// up the longest.
+			bestPeer = p
+			bestDist = dist
 		}
 	}
 	return bestPeer

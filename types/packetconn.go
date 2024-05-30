@@ -11,7 +11,7 @@ type PacketConn interface {
 	// This function blocks while the net.Conn is in use, and returns an error if any occurs.
 	// This function returns (almost) immediately if PacketConn.Close() is called.
 	// In all cases, the net.Conn is closed before returning.
-	HandleConn(key ed25519.PublicKey, conn net.Conn, prio uint8) error
+	HandleConn(key ed25519.PublicKey, conn net.Conn, cost, prio uint8) error
 
 	// IsClosed returns true if and only if the connection is closed.
 	// This is to check if the PacketConn is closed without potentially being stuck on a blocking operation (e.g. a read or write).

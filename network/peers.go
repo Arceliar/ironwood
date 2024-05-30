@@ -32,7 +32,7 @@ func (ps *peers) init(c *core) {
 	ps.peers = make(map[publicKey]map[*peer]struct{})
 }
 
-func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error) {
+func (ps *peers) addPeer(key publicKey, conn net.Conn, cost, prio uint8) (*peer, error) {
 	var p *peer
 	var err error
 	ps.core.pconn.closeMutex.Lock()
@@ -51,11 +51,12 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 			}
 		} else {
 			// Allocate port
-			for idx := 1; ; idx++ { // skip 0
-				if _, isIn := ps.ports[peerPort(idx)]; isIn {
+			for idx := uint64(1); ; idx++ { // skip 0
+				idx := peerPort(idx | uint64(cost)<<56)
+				if _, isIn := ps.ports[idx]; isIn {
 					continue
 				}
-				port = peerPort(idx)
+				port = idx
 				break
 			}
 			ps.ports[port] = struct{}{}
@@ -67,6 +68,7 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error
 		p.done = make(chan struct{})
 		p.key = key
 		p.port = port
+		p.cost = cost
 		p.prio = prio
 		p.monitor.peer = p
 		p.monitor.pDelay = ps.core.config.peerTimeout // It doesn't make sense to start the ping delay any shorter than this
@@ -103,6 +105,7 @@ type peer struct {
 	done        chan struct{}
 	key         publicKey
 	port        peerPort
+	cost        uint8
 	prio        uint8
 	queue       packetQueue
 	order       uint64 // order in which peers were connected (relative uptime)
