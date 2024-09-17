@@ -32,7 +32,7 @@ func (ps *peers) init(c *core) {
 	ps.peers = make(map[publicKey]map[*peer]struct{})
 }
 
-func (ps *peers) addPeer(key publicKey, conn net.Conn, cost, prio uint8) (*peer, error) {
+func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error) {
 	var p *peer
 	var err error
 	ps.core.pconn.closeMutex.Lock()
@@ -67,7 +67,6 @@ func (ps *peers) addPeer(key publicKey, conn net.Conn, cost, prio uint8) (*peer,
 		p.done = make(chan struct{})
 		p.key = key
 		p.port = port
-		p.cost = cost
 		p.prio = prio
 		p.monitor.peer = p
 		p.monitor.pDelay = ps.core.config.peerTimeout // It doesn't make sense to start the ping delay any shorter than this
@@ -104,7 +103,6 @@ type peer struct {
 	done        chan struct{}
 	key         publicKey
 	port        peerPort
-	cost        uint8
 	prio        uint8
 	queue       packetQueue
 	order       uint64 // order in which peers were connected (relative uptime)
@@ -113,6 +111,7 @@ type peer struct {
 	ready       bool      // is the writer ready for traffic?
 	srst        time.Time // sigReq send time
 	srrt        time.Time // sigRes receive time
+	ewma        float64   // Exponential weighted moving average of RTT from srst/srrt in milliseconds
 }
 
 type peerMonitor struct {
@@ -332,12 +331,29 @@ func (p *peer) _handleSigRes(bs []byte) error {
 		return types.ErrBadMessage
 	}
 	p.srrt = time.Now()
-	p.peers.core.router.handleResponse(p, p, res)
+	rtt := p.srrt.Sub(p.srst).Round(time.Millisecond)
+	cost := uint64(p._addRTTAndRecalculateCost(rtt)) // TODO: think about future resolution here
+	p.peers.core.router.handleResponse(p, p, res, cost)
 	return nil
 }
 
 func (p *peer) sendSigRes(from phony.Actor, res *routerSigRes) {
 	p.sendDirect(from, wireProtoSigRes, res, nil)
+}
+
+func (p *peer) _addRTTAndRecalculateCost(rtt time.Duration) float64 {
+	// Exponentially weighted moving average alpha value of ~0.2
+	// responds fairly well to new values but keeps smoothness.
+	// If we need to respond slower, try a higher value, like 0.5.
+	const alpha float64 = 0.2
+	if p.ewma == 0 {
+		// Initially we'll penalise the RTT by a bit, so that if the
+		// link is flapping, it looks slightly worse than it should.
+		p.ewma = float64(rtt.Milliseconds()) * 2.0
+		return p.ewma
+	}
+	p.ewma = float64(rtt.Milliseconds())*alpha + (1.0-alpha)*p.ewma
+	return p.ewma
 }
 
 func (p *peer) _handleAnnounce(bs []byte) error {

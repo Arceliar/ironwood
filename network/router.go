@@ -48,6 +48,7 @@ type router struct {
 	timers     map[publicKey]*time.Timer
 	ancs       map[publicKey][]publicKey // Peer ancestry info
 	cache      map[publicKey][]peerPort  // Cache path slice for each peer
+	costs      map[*peer]uint64
 	requests   map[publicKey]routerSigReq
 	responses  map[publicKey]routerSigRes
 	resSeqs    map[publicKey]uint64
@@ -69,6 +70,7 @@ func (r *router) init(c *core) {
 	r.timers = make(map[publicKey]*time.Timer)
 	r.ancs = make(map[publicKey][]publicKey)
 	r.cache = make(map[publicKey][]peerPort)
+	r.costs = make(map[*peer]uint64)
 	r.requests = make(map[publicKey]routerSigReq)
 	r.responses = make(map[publicKey]routerSigRes)
 	r.resSeqs = make(map[publicKey]uint64)
@@ -127,6 +129,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			}
 		}
 		r.peers[p.key][p] = struct{}{}
+		r.costs[p] = uint64(^uint32(0)) // High enough but not high enough to overflow uint64
 		if _, isIn := r.requests[p.key]; !isIn {
 			r.requests[p.key] = *r._newReq()
 		}
@@ -141,6 +144,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 		//r._resetCache()
 		ps := r.peers[p.key]
 		delete(ps, p)
+		delete(r.costs, p)
 		if len(ps) == 0 {
 			delete(r.peers, p.key)
 			delete(r.sent, p.key)
@@ -414,8 +418,9 @@ func (r *router) _useResponse(peerKey publicKey, res *routerSigRes) bool {
 	return false
 }
 
-func (r *router) handleResponse(from phony.Actor, p *peer, res *routerSigRes) {
+func (r *router) handleResponse(from phony.Actor, p *peer, res *routerSigRes, cost uint64) {
 	r.Act(from, func() {
+		r.costs[p] = cost
 		r._handleResponse(p, res)
 	})
 }
@@ -667,30 +672,27 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 		return bestPeer != nil && key.less(bestPeer.key)
 	}
 	for _, p := range candidates {
-		dist := r._getDist(path, p.key) + uint64(p.cost)
+		dist := r._getDist(path, p.key) * uint64(r.costs[p])
 		switch {
 		case bestPeer == nil:
-			fallthrough
+			// Start with the first candidate to try & improve upon.
+			bestPeer, bestDist = p, dist
+		case p.key == bestPeer.key && p.prio < bestPeer.prio:
+			// If the key is the same, select the link with the lowest priority.
+			bestPeer, bestDist = p, dist
+		case p.key == bestPeer.key && p.prio > bestPeer.prio:
+			// If the key is the same, ignore links with higher priorities.
+			continue
 		case dist < bestDist, dist == bestDist && tiebreak(p.key):
 			// We're either closer to the destination, or we're the same
 			// distance but we've selected the lower key for consistency.
-			bestPeer = p
-			bestDist = dist
+			bestPeer, bestDist = p, dist
 		case dist > bestDist:
 			// This is here so that by the next case, dist == bestDist.
 			continue
-		case p.prio < bestPeer.prio:
-			// Next, select the link with the lowest priority.
-			bestPeer = p
-			bestDist = dist
-		case p.prio > bestPeer.prio:
-			// This is here so that by the next case, p.prio == bestPeer.prio.
-			continue
 		case p.order < bestPeer.order:
-			// Next, if the priority is equal, select the link that has been
-			// up the longest.
-			bestPeer = p
-			bestDist = dist
+			// If all else is equal, pick the peer that has been up the longest.
+			bestPeer, bestDist = p, dist
 		}
 	}
 	return bestPeer
