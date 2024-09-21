@@ -127,13 +127,11 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			}
 		}
 		r.peers[p.key][p] = struct{}{}
-		if _, isIn := r.responses[p.key]; !isIn {
-			if _, isIn := r.requests[p.key]; !isIn {
-				r.requests[p.key] = *r._newReq()
-			}
-			req := r.requests[p.key]
-			p.sendSigReq(r, &req)
+		if _, isIn := r.requests[p.key]; !isIn {
+			r.requests[p.key] = *r._newReq()
 		}
+		req := r.requests[p.key]
+		p.sendSigReq(r, &req)
 		r.blooms._sendBloom(p)
 	})
 }
