@@ -331,8 +331,8 @@ func (p *peer) _handleSigRes(bs []byte) error {
 		return types.ErrBadMessage
 	}
 	p.srrt = time.Now()
-	rtt := p.srrt.Sub(p.srst).Round(time.Millisecond)
-	cost := uint64(p._addRTTAndRecalculateCost(rtt)) // TODO: think about future resolution here
+	rtt := p.srrt.Sub(p.srst)
+	cost := p._addRTTAndRecalculateCost(rtt)
 	p.peers.core.router.handleResponse(p, p, res, cost)
 	return nil
 }
@@ -341,7 +341,7 @@ func (p *peer) sendSigRes(from phony.Actor, res *routerSigRes) {
 	p.sendDirect(from, wireProtoSigRes, res, nil)
 }
 
-func (p *peer) _addRTTAndRecalculateCost(rtt time.Duration) float64 {
+func (p *peer) _addRTTAndRecalculateCost(rtt time.Duration) uint64 {
 	// Exponentially weighted moving average alpha value of ~0.2
 	// responds fairly well to new values but keeps smoothness.
 	// If we need to respond slower, try a higher value, like 0.5.
@@ -349,11 +349,11 @@ func (p *peer) _addRTTAndRecalculateCost(rtt time.Duration) float64 {
 	if p.ewma == 0 {
 		// Initially we'll penalise the RTT by a bit, so that if the
 		// link is flapping, it looks slightly worse than it should.
-		p.ewma = float64(rtt.Milliseconds()) * 2.0
-		return p.ewma
+		p.ewma = float64(rtt) * 2.0
+	} else {
+		p.ewma = float64(rtt)*alpha + (1.0-alpha)*p.ewma
 	}
-	p.ewma = float64(rtt.Milliseconds())*alpha + (1.0-alpha)*p.ewma
-	return p.ewma
+	return uint64(time.Duration(p.ewma).Milliseconds())
 }
 
 func (p *peer) _handleAnnounce(bs []byte) error {
