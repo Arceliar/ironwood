@@ -353,7 +353,12 @@ func (p *peer) _addRTTAndRecalculateCost(rtt time.Duration) uint64 {
 	} else {
 		p.ewma = float64(rtt)*alpha + (1.0-alpha)*p.ewma
 	}
-	return uint64(time.Duration(p.ewma).Milliseconds())
+	ms := time.Duration(p.ewma).Milliseconds()
+	if ms < 1 {
+		// Minimum cost must always be 1 to avoid multiplying by zero.
+		return 1
+	}
+	return uint64(ms)
 }
 
 func (p *peer) _handleAnnounce(bs []byte) error {
