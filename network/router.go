@@ -223,7 +223,10 @@ func (r *router) _fix() {
 			cost := ^uint64(0)
 			for p := range r.peers[self.parent] {
 				// Use the path to the root as our benchmark for parent selection
-				c := dists[root] * r.costs[p]
+				c := dists[root]
+				if co := r.costs[p]; co > 0 {
+					c *= co
+				}
 				if c < cost {
 					cost = c
 				}
@@ -245,7 +248,10 @@ func (r *router) _fix() {
 		cost := ^uint64(0)
 		for p := range r.peers[pk] {
 			// Use the path to the root as our benchmark for parent selection
-			c := pDists[pRoot] * r.costs[p]
+			c := pDists[pRoot]
+			if co := r.costs[p]; co > 0 {
+				c *= co
+			}
 			if c < cost {
 				cost = c
 			}
@@ -689,7 +695,10 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 		return bestPeer != nil && key.less(bestPeer.key)
 	}
 	for _, p := range candidates {
-		dist := r._getDist(path, p.key) * uint64(r.costs[p])
+		dist := r._getDist(path, p.key)
+		if co := uint64(r.costs[p]); co > 0 {
+			dist *= co
+		}
 		switch {
 		case bestPeer == nil:
 			// Start with the first candidate to try & improve upon.
