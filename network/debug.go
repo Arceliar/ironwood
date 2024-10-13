@@ -69,8 +69,8 @@ func (d *Debug) GetSelf() (info DebugSelfInfo) {
 func (d *Debug) GetPeers() (infos []DebugPeerInfo) {
 	costs := map[*peer]uint64{}
 	phony.Block(&d.c.router, func() {
-		for p, c := range d.c.router.costs {
-			costs[p] = c
+		for p := range d.c.router.lags {
+			costs[p] = d.c.router._getCost(p)
 		}
 	})
 	phony.Block(&d.c.peers, func() {

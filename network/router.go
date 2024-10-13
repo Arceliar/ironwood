@@ -36,6 +36,8 @@ Potential showstopping issue (long term):
 
 */
 
+const routerUnknownLatency = time.Duration(^uint32(0))
+
 type router struct {
 	phony.Inbox
 	core       *core
@@ -48,7 +50,7 @@ type router struct {
 	timers     map[publicKey]*time.Timer
 	ancs       map[publicKey][]publicKey // Peer ancestry info
 	cache      map[publicKey][]peerPort  // Cache path slice for each peer
-	costs      map[*peer]uint64
+	lags       map[*peer]time.Duration   // Latency for a given *peer to respond with a valid sigres, exponentially weighted average
 	requests   map[publicKey]routerSigReq
 	responses  map[publicKey]routerSigRes
 	responded  map[*peer]struct{}
@@ -71,7 +73,7 @@ func (r *router) init(c *core) {
 	r.timers = make(map[publicKey]*time.Timer)
 	r.ancs = make(map[publicKey][]publicKey)
 	r.cache = make(map[publicKey][]peerPort)
-	r.costs = make(map[*peer]uint64)
+	r.lags = make(map[*peer]time.Duration)
 	r.requests = make(map[publicKey]routerSigReq)
 	r.responses = make(map[publicKey]routerSigRes)
 	r.responded = make(map[*peer]struct{})
@@ -131,7 +133,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			}
 		}
 		r.peers[p.key][p] = struct{}{}
-		r.costs[p] = uint64(^uint32(0)) // High enough but not high enough to overflow uint64
+		r.lags[p] = routerUnknownLatency // High enough but not high enough to overflow uint64
 		if _, isIn := r.requests[p.key]; !isIn {
 			r.requests[p.key] = *r._newReq()
 		}
@@ -147,7 +149,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 		//r._resetCache()
 		ps := r.peers[p.key]
 		delete(ps, p)
-		delete(r.costs, p)
+		delete(r.lags, p)
 		if len(ps) == 0 {
 			delete(r.peers, p.key)
 			delete(r.sent, p.key)
@@ -215,6 +217,10 @@ func (r *router) _updateAncestries() {
 	}
 }
 
+func (r *router) _getCost(p *peer) uint64 {
+	return uint64(r.lags[p].Milliseconds())
+}
+
 func (r *router) _fix() {
 	bestRoot := r.core.crypto.publicKey
 	bestParent := r.core.crypto.publicKey
@@ -228,7 +234,7 @@ func (r *router) _fix() {
 			for p := range r.peers[self.parent] {
 				// Use the path to the root as our benchmark for parent selection
 				c := dists[root]
-				if co := r.costs[p]; co > 0 {
+				if co := r._getCost(p); co > 0 {
 					c *= co
 				}
 				if c < cost {
@@ -253,7 +259,7 @@ func (r *router) _fix() {
 		for p := range r.peers[pk] {
 			// Use the path to the root as our benchmark for parent selection
 			c := pDists[pRoot]
-			if co := r.costs[p]; co > 0 {
+			if co := r._getCost(p); co > 0 {
 				c *= co
 			}
 			if c < cost {
@@ -424,14 +430,13 @@ func (r *router) _handleResponse(p *peer, res *routerSigRes, rtt time.Duration) 
 	}
 	if _, isIn := r.responded[p]; !isIn && r.requests[p.key] == res.routerSigReq {
 		r.responded[p] = struct{}{}
-		c := r.costs[p]
-		cost := time.Duration(c) * time.Millisecond // use cost as duration in milliseconds
-		if c == uint64(^uint32(0)) {
-			cost = rtt
+		lag := r.lags[p]
+		if lag == routerUnknownLatency {
+			lag = rtt
 		}
-		cost = cost * 7 / 8
-		cost += rtt / 8
-		r.costs[p] = uint64(cost.Milliseconds())
+		lag = lag * 3 / 4
+		lag += rtt / 4
+		r.lags[p] = lag
 	}
 }
 
@@ -710,7 +715,7 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 	}
 	for _, p := range candidates {
 		dist := r._getDist(path, p.key)
-		if co := uint64(r.costs[p]); co > 0 {
+		if co := r._getCost(p); co > 0 {
 			dist *= co
 		}
 		switch {
