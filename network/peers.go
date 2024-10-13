@@ -111,7 +111,6 @@ type peer struct {
 	ready       bool      // is the writer ready for traffic?
 	srst        time.Time // sigReq send time
 	srrt        time.Time // sigRes receive time
-	ewma        float64   // Exponential weighted moving average of RTT from srst/srrt in milliseconds
 }
 
 type peerMonitor struct {
@@ -332,7 +331,6 @@ func (p *peer) _handleSigRes(bs []byte) error {
 	}
 	p.srrt = time.Now()
 	rtt := p.srrt.Sub(p.srst)
-	//cost := p._addRTTAndRecalculateCost(rtt)
 	p.peers.core.router.handleResponse(p, p, res, rtt)
 	return nil
 }
@@ -340,28 +338,6 @@ func (p *peer) _handleSigRes(bs []byte) error {
 func (p *peer) sendSigRes(from phony.Actor, res *routerSigRes) {
 	p.sendDirect(from, wireProtoSigRes, res, nil)
 }
-
-/*
-func (p *peer) _addRTTAndRecalculateCost(rtt time.Duration) uint64 {
-	// Exponentially weighted moving average alpha value of ~0.2
-	// responds fairly well to new values but keeps smoothness.
-	// If we need to respond slower, try a higher value, like 0.5.
-	const alpha float64 = 0.2
-	if p.ewma == 0 {
-		// Initially we'll penalise the RTT by a bit, so that if the
-		// link is flapping, it looks slightly worse than it should.
-		p.ewma = float64(rtt) * 2.0
-	} else {
-		p.ewma = float64(rtt)*alpha + (1.0-alpha)*p.ewma
-	}
-	ms := time.Duration(p.ewma).Milliseconds()
-	if ms < 1 {
-		// Minimum cost must always be 1 to avoid multiplying by zero.
-		return 1
-	}
-	return uint64(ms)
-}
-*/
 
 func (p *peer) _handleAnnounce(bs []byte) error {
 	ann := new(routerAnnounce)
