@@ -332,8 +332,8 @@ func (p *peer) _handleSigRes(bs []byte) error {
 	}
 	p.srrt = time.Now()
 	rtt := p.srrt.Sub(p.srst)
-	cost := p._addRTTAndRecalculateCost(rtt)
-	p.peers.core.router.handleResponse(p, p, res, cost)
+	//cost := p._addRTTAndRecalculateCost(rtt)
+	p.peers.core.router.handleResponse(p, p, res, rtt)
 	return nil
 }
 
@@ -341,6 +341,7 @@ func (p *peer) sendSigRes(from phony.Actor, res *routerSigRes) {
 	p.sendDirect(from, wireProtoSigRes, res, nil)
 }
 
+/*
 func (p *peer) _addRTTAndRecalculateCost(rtt time.Duration) uint64 {
 	// Exponentially weighted moving average alpha value of ~0.2
 	// responds fairly well to new values but keeps smoothness.
@@ -360,6 +361,7 @@ func (p *peer) _addRTTAndRecalculateCost(rtt time.Duration) uint64 {
 	}
 	return uint64(ms)
 }
+*/
 
 func (p *peer) _handleAnnounce(bs []byte) error {
 	ann := new(routerAnnounce)

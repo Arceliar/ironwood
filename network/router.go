@@ -51,6 +51,7 @@ type router struct {
 	costs      map[*peer]uint64
 	requests   map[publicKey]routerSigReq
 	responses  map[publicKey]routerSigRes
+	responded  map[*peer]struct{}
 	resSeqs    map[publicKey]uint64
 	resSeqCtr  uint64
 	refresh    bool
@@ -73,6 +74,7 @@ func (r *router) init(c *core) {
 	r.costs = make(map[*peer]uint64)
 	r.requests = make(map[publicKey]routerSigReq)
 	r.responses = make(map[publicKey]routerSigRes)
+	r.responded = make(map[*peer]struct{})
 	r.resSeqs = make(map[publicKey]uint64)
 	// Kick off actor to do initial work / become root
 	r.mainTimer = time.AfterFunc(time.Second, func() {
@@ -134,6 +136,7 @@ func (r *router) addPeer(from phony.Actor, p *peer) {
 			r.requests[p.key] = *r._newReq()
 		}
 		req := r.requests[p.key]
+		delete(r.responded, p)
 		p.sendSigReq(r, &req)
 		r.blooms._sendBloom(p)
 	})
@@ -185,6 +188,7 @@ func (r *router) _sendReqs() {
 		req := r._newReq()
 		r.requests[pk] = *req
 		for p := range ps {
+			delete(r.responded, p)
 			p.sendSigReq(r, req)
 		}
 	}
@@ -411,12 +415,23 @@ func (r *router) handleRequest(from phony.Actor, p *peer, req *routerSigReq) {
 	})
 }
 
-func (r *router) _handleResponse(p *peer, res *routerSigRes) {
+func (r *router) _handleResponse(p *peer, res *routerSigRes, rtt time.Duration) {
 	if _, isIn := r.responses[p.key]; !isIn && r.requests[p.key] == res.routerSigReq {
 		r.resSeqCtr++
 		r.resSeqs[p.key] = r.resSeqCtr
 		r.responses[p.key] = *res
 		//r._fix() // This could become our new parent
+	}
+	if _, isIn := r.responded[p]; !isIn && r.requests[p.key] == res.routerSigReq {
+		r.responded[p] = struct{}{}
+		c := r.costs[p]
+		cost := time.Duration(c) * time.Millisecond // use cost as duration in milliseconds
+		if c == uint64(^uint32(0)) {
+			cost = rtt
+		}
+		cost = cost * 7 / 8
+		cost += rtt / 8
+		r.costs[p] = uint64(cost.Milliseconds())
 	}
 }
 
@@ -441,10 +456,9 @@ func (r *router) _useResponse(peerKey publicKey, res *routerSigRes) bool {
 	return false
 }
 
-func (r *router) handleResponse(from phony.Actor, p *peer, res *routerSigRes, cost uint64) {
+func (r *router) handleResponse(from phony.Actor, p *peer, res *routerSigRes, rtt time.Duration) {
 	r.Act(from, func() {
-		r.costs[p] = cost
-		r._handleResponse(p, res)
+		r._handleResponse(p, res, rtt)
 	})
 }
 
