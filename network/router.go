@@ -433,8 +433,9 @@ func (r *router) _handleResponse(p *peer, res *routerSigRes, rtt time.Duration) 
 		if lag == routerUnknownLatency {
 			r.lags[p] = rtt * 2 // Start new links with a penalty to prioritize stability
 		} else {
-			lag = lag * 3 / 4
-			lag += rtt / 4
+			prev := lag
+			lag = lag * 7 / 8
+			lag += min(rtt, prev*2) / 8
 			r.lags[p] = lag
 		}
 	}
