@@ -270,7 +270,7 @@ func (r *router) _fix() {
 		} else if pRoot != bestRoot {
 			continue // wrong root
 		}
-		if (r.refresh || bestParent != self.parent) && cost < bestCost {
+		if (r.refresh && cost*2 < bestCost) || (bestParent != self.parent && cost < bestCost) {
 			// It's time to refresh our self info
 			// If we're going to change to a better parent, now seems like the time...
 			bestRoot, bestParent, bestCost = pRoot, pk, cost

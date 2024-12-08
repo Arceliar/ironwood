@@ -220,30 +220,36 @@ func (bs *blooms) _getBloomFor(key publicKey, keepOnes bool) (*bloom, bool) {
 		panic("this should never happen")
 	}
 	b := newBloom()
-	xform := bs.xKey(bs.router.core.crypto.publicKey)
-	b.addKey(xform)
-	for k, pbi := range bs.blooms {
-		if !pbi.onTree {
-			continue
+	if pbi.onTree {
+		xform := bs.xKey(bs.router.core.crypto.publicKey)
+		b.addKey(xform)
+		for k, pbi := range bs.blooms {
+			if !pbi.onTree {
+				continue
+			}
+			if k == key {
+				continue
+			}
+			b.addFilter(bs.blooms[k].recv.filter)
 		}
-		if k == key {
-			continue
-		}
-		b.addFilter(bs.blooms[k].recv.filter)
-	}
-	if keepOnes {
-		// Don't reset existing 1 bits, we'll set anything unnecessairy to 0 next time
-		// Ensures that 1s travel faster than 0s, to help prevent flapping
-		if !pbi.zDirty {
-			c := b.filter.Copy()
-			b.addFilter(pbi.send.filter)
-			if !b.filter.Equal(c) {
-				// We're keeping unnecessairy 1 bits, so set the dirty flag
-				pbi.zDirty = true
+		if keepOnes {
+			// Don't reset existing 1 bits, we'll set anything unnecessairy to 0 next time
+			// Ensures that 1s travel faster than 0s, to help prevent flapping
+			if !pbi.zDirty {
+				c := b.filter.Copy()
+				b.addFilter(pbi.send.filter)
+				if !b.filter.Equal(c) {
+					// We're keeping unnecessairy 1 bits, so set the dirty flag
+					pbi.zDirty = true
+				}
+			} else {
+				b.addFilter(pbi.send.filter)
 			}
 		} else {
-			b.addFilter(pbi.send.filter)
+			pbi.zDirty = false
 		}
+	} else {
+		pbi.zDirty = false
 	}
 	isNew := true
 	if b.filter.Equal(pbi.send.filter) {
