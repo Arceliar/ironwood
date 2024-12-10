@@ -150,6 +150,7 @@ func (r *router) removePeer(from phony.Actor, p *peer) {
 		ps := r.peers[p.key]
 		delete(ps, p)
 		delete(r.lags, p)
+		delete(r.responded, p)
 		if len(ps) == 0 {
 			delete(r.peers, p.key)
 			delete(r.sent, p.key)
