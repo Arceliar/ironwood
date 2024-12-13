@@ -221,33 +221,29 @@ func (bs *blooms) _getBloomFor(key publicKey, keepOnes bool) (*bloom, bool) {
 		panic("this should never happen")
 	}
 	b := newBloom()
-	if pbi.onTree {
-		xform := bs.xKey(bs.router.core.crypto.publicKey)
-		b.addKey(xform)
-		for k, pbi := range bs.blooms {
-			if !pbi.onTree {
-				continue
-			}
-			if k == key {
-				continue
-			}
-			b.addFilter(bs.blooms[k].recv.filter)
+	xform := bs.xKey(bs.router.core.crypto.publicKey)
+	b.addKey(xform)
+	for k, pbi := range bs.blooms {
+		if !pbi.onTree {
+			continue
 		}
-		if keepOnes {
-			// Don't reset existing 1 bits, we'll set anything unnecessairy to 0 next time
-			// Ensures that 1s travel faster than 0s, to help prevent flapping
-			if !pbi.zDirty {
-				c := b.filter.Copy()
-				b.addFilter(pbi.send.filter)
-				if !b.filter.Equal(c) {
-					// We're keeping unnecessairy 1 bits, so set the dirty flag
-					pbi.zDirty = true
-				}
-			} else {
-				b.addFilter(pbi.send.filter)
+		if k == key {
+			continue
+		}
+		b.addFilter(bs.blooms[k].recv.filter)
+	}
+	if keepOnes {
+		// Don't reset existing 1 bits, we'll set anything unnecessairy to 0 next time
+		// Ensures that 1s travel faster than 0s, to help prevent flapping
+		if !pbi.zDirty {
+			c := b.filter.Copy()
+			b.addFilter(pbi.send.filter)
+			if !b.filter.Equal(c) {
+				// We're keeping unnecessairy 1 bits, so set the dirty flag
+				pbi.zDirty = true
 			}
 		} else {
-			pbi.zDirty = false
+			b.addFilter(pbi.send.filter)
 		}
 	} else {
 		pbi.zDirty = false
@@ -275,9 +271,11 @@ func (bs *blooms) _sendAllBlooms() {
 		if !pbi.onTree {
 			continue
 		}
-		pbi.seq++
 		keepOnes := !pbi.zDirty
-		if b, isNew := bs._getBloomFor(k, keepOnes); isNew || pbi.seq >= 3600 {
+		b, isNew := bs._getBloomFor(k, keepOnes)
+		pbi = bs.blooms[k] // Changed during call to getBloomFor
+		pbi.seq++
+		if isNew || pbi.seq >= 3600 {
 			if ps, isIn := bs.router.peers[k]; isIn {
 				for p := range ps {
 					p.sendBloom(bs.router, b)
