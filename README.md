@@ -24,7 +24,7 @@ The `signed` package is a small proof-of-concept wrapper around `network`. This 
 
 ### Encrypted
 
-The `encrypted` package wraps `network` with ephemeral key [nacl/box]](https://pkg.go.dev/golang.org/x/crypto/nacl/box) (X25519/XSalsa20/Poly1305) for authenticated encryption, with ratcheting for improved forward secrecy and replay protection.
+The `encrypted` package wraps `network` with ephemeral key [nacl/box](https://pkg.go.dev/golang.org/x/crypto/nacl/box) (X25519/XSalsa20/Poly1305) for authenticated encryption, with ratcheting for improved forward secrecy and replay protection.
 
 ## Routing
 
