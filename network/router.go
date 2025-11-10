@@ -753,16 +753,16 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 
 func (r *router) _getAncestry(key publicKey) []publicKey {
 	// Returns the ancestry starting with the root side, ordering is important for how we send over the network / GC info...
-	anc := r._backwardsAncestry(key)
+	var _anc [32]publicKey
+	anc := r._backwardsAncestry(_anc[:0], key)
 	for left, right := 0, len(anc)-1; left < right; left, right = left+1, right-1 {
 		anc[left], anc[right] = anc[right], anc[left]
 	}
 	return anc
 }
 
-func (r *router) _backwardsAncestry(key publicKey) []publicKey {
+func (r *router) _backwardsAncestry(anc []publicKey, key publicKey) []publicKey {
 	// Return an ordered list of node ancestry, starting with the given key and ending at the root (or the end of the line)
-	var anc []publicKey
 	here := key
 	for {
 		// TODO? use a map or something to check visited nodes faster?
