@@ -85,7 +85,7 @@ func wireAppendPath(dest []byte, path []peerPort) []byte {
 	return dest
 }
 
-func wireDecodePath(source []byte) (path []peerPort, length int) {
+func wireDecodePath(path []peerPort, source []byte) ([]peerPort, int) {
 	bs := source
 	for {
 		var u uint64
@@ -97,12 +97,13 @@ func wireDecodePath(source []byte) (path []peerPort, length int) {
 		}
 		path = append(path, peerPort(u))
 	}
-	length = len(source) - len(bs)
-	return
+	length := len(source) - len(bs)
+	return path, length
 }
 
 func wireChopPath(out *[]peerPort, data *[]byte) bool {
-	path, length := wireDecodePath(*data)
+	var _path [128]peerPort
+	path, length := wireDecodePath(_path[:0], *data)
 	if length < 0 {
 		return false
 	}
