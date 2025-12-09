@@ -193,7 +193,9 @@ func (pf *pathfinder) _rumorSendLookup(dest publicKey) {
 
 func (pf *pathfinder) _handleTraffic(tr *traffic) {
 	const cache = pathfinderTrafficCache // TODO make this unconditional, this is just to easily toggle the cache on/off for now
-	if info, isIn := pf.paths[tr.dest]; isIn {
+	if tr.dest.equal(pf.router.core.crypto.publicKey) {
+		pf.router.handleTraffic(nil, tr)
+	} else if info, isIn := pf.paths[tr.dest]; isIn {
 		tr.path = append(tr.path[:0], info.path...)
 		_, from := pf.router._getRootAndPath(pf.router.core.crypto.publicKey)
 		tr.from = append(tr.from[:0], from...)
