@@ -709,16 +709,16 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 	// Then take a look at the candidates and work out which is the best
 	// tree distance, accounting for the link cost.
 	bestPeer = nil
-	selfDist := bestDist
-	bestCPD := ^uint64(0)
+	//selfDist := bestDist
+	bestCost := ^uint64(0)
 	bestDist = ^uint64(0)
 	for _, p := range candidates {
-		// We want to minimize cost per distance traveled towards the destinaton
+		// We want to minimize cost of the link and the remaining distance to the destination
 		// If cost == latency, this is the same as maximizing velocity in treespace towards the destination
 		dist := r._getDist(path, p.key)
-		cpd := r._getCost(p) / (selfDist - dist)
+		cost := r._getCost(p)
 		accept := func() {
-			bestPeer, bestCPD, bestDist = p, cpd, dist
+			bestPeer, bestCost, bestDist = p, cost, dist
 		}
 		switch {
 		case bestPeer == nil:
@@ -730,21 +730,27 @@ func (r *router) _lookup(path []peerPort, watermark *uint64) *peer {
 		case p.key == bestPeer.key && p.prio > bestPeer.prio:
 			// If the key is the same, ignore links with higher priorities.
 			continue
-		case cpd < bestCPD:
-			// Costed distance is better.
+		case cost*dist < bestCost*bestDist:
+			// This is the main goal, minimize cost of link * remaining distance to destination.
 			accept()
-		case cpd > bestCPD:
-			// Costed distance is worse.
+		case cost*dist > bestCost*bestDist:
+			// The cost*dist is worse, so skip.
 			continue
 		case dist < bestDist:
-			// Costed distance is the same but the tree distance is better.
+			// The cost*dist is the same but the tree distance is better.
 			accept()
 		case dist > bestDist:
-			// Costed distance is the same but tree distance is worse.
+			// Tree distance is worse, so skip.
+			continue
+		case cost < bestCost:
+			// The cost*dist and tree dist are the same, which probably means tree dist is 0.
+			// In that case, just go with the better cost.
+			accept()
+		case cost > bestCost:
 			continue
 		case p.order < bestPeer.order:
-			// Both costed distance and tree distance are the same, so pick
-			// the peer that has been up the longest.
+			// Both cost and distance are the same,
+			// so use the peer that has been up the longest.
 			accept()
 		}
 	}
