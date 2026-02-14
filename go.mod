@@ -1,6 +1,6 @@
 module github.com/Arceliar/ironwood
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/Arceliar/phony v0.0.0-20220903101357-530938a4b13d

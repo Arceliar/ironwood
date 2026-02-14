@@ -3,6 +3,7 @@ package encrypted
 import (
 	"crypto/ed25519"
 	"net"
+	"time"
 
 	"github.com/Arceliar/phony"
 
@@ -13,11 +14,13 @@ import (
 type PacketConn struct {
 	actor phony.Inbox
 	*network.PacketConn
-	secretEd  edPriv
-	secretBox boxPriv
-	sessions  sessionManager
-	network   netManager
-	Debug     Debug
+	secretEd    edPriv
+	secretPQ    *pqPriv
+	publicPQ    pqPub
+	publicPQSeq uint64
+	sessions    sessionManager
+	network     netManager
+	Debug       Debug
 }
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
@@ -26,11 +29,15 @@ func NewPacketConn(secret ed25519.PrivateKey, options ...network.Option) (*Packe
 	if err != nil {
 		return nil, err
 	}
+	pubPQ, privPQ := newPQKeys()
 	pc := &PacketConn{PacketConn: npc}
 	copy(pc.secretEd[:], secret[:])
-	pc.secretBox = *pc.secretEd.toBox()
+	pc.secretPQ = privPQ
+	pc.publicPQ = pubPQ
+	pc.publicPQSeq = uint64(time.Now().Unix())
 	pc.sessions.init(pc)
 	pc.network.init(pc)
+	pc.network.read()
 	pc.Debug.init(pc)
 	return pc, nil
 }
