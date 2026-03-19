@@ -40,6 +40,7 @@ func NewPacketConn(secret ed25519.PrivateKey, options ...Option) (*PacketConn, e
 func (pc *PacketConn) init(c *core) {
 	pc.core = c
 	pc.recv = make(chan *traffic, 1)
+	pc.recvq.init(c.config.peerMaxMessageSize)
 	pc.readDeadline = newDeadline()
 	pc.closed = make(chan struct{})
 	pc.Debug.init(c)
