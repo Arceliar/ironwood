@@ -59,6 +59,7 @@ func (q *packetQueue) drop() bool {
 	info := source.infos[0]
 	source.size -= info.size
 	if len(source.infos) > 0 {
+		source.infos[0] = pqPacketInfo{}
 		source.infos = source.infos[1:]
 	}
 	dest.sources[sIdx] = source

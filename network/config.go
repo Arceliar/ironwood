@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const defaultMaxMessageSize = 1048576 // 1 megabyte
+
 type config struct {
 	routerRefresh      time.Duration
 	routerTimeout      time.Duration
@@ -25,7 +27,7 @@ func configDefaults() Option {
 		c.routerTimeout = 5 * time.Minute
 		c.peerKeepAliveDelay = time.Second
 		c.peerTimeout = 3 * time.Second
-		c.peerMaxMessageSize = 1048576 // 1 megabyte
+		c.peerMaxMessageSize = defaultMaxMessageSize
 		c.bloomTransform = func(key ed25519.PublicKey) ed25519.PublicKey { return key }
 		c.pathNotify = func(key ed25519.PublicKey) {}
 		c.pathTimeout = time.Minute

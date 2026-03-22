@@ -210,12 +210,17 @@ func (pc *PacketConn) handleTraffic(from phony.Actor, tr *traffic) {
 			case <-pc.closed:
 			}
 		} else {
+			/*
 			if info, ok := pc.recvq.peek(); ok && time.Since(info.time) > 25*time.Millisecond {
 				// The queue already has a significant delay
 				// Drop the oldest packet from the larget queue to make room
 				pc.recvq.drop()
 			}
+			*/
 			pc.recvq.push(tr)
+			for pc.recvq.size > pc.core.config.peerMaxMessageSize {
+				pc.recvq.drop()
+			}
 		}
 	})
 }
