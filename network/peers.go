@@ -431,13 +431,19 @@ func (p *peer) _push(packet pqPacket) {
 		return
 	}
 	// We're waiting, so queue the packet up for later
+	/*
 	if info, ok := p.queue.peek(); ok && time.Since(info.time) > 25*time.Millisecond {
 		// The queue already has a significant delay
 		// Drop the oldest packet from the larget queue to make room
 		p.queue.drop()
 	}
+	*/
 	// Add the packet to the queue
 	p.queue.push(packet)
+	// Drop any excess
+	for p.queue.size > p.peers.core.config.peerMaxMessageSize {
+		p.queue.drop()
+	}
 }
 
 func (p *peer) pop() {
