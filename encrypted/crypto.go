@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 
 	"golang.org/x/crypto/nacl/box"
@@ -43,14 +44,22 @@ type edPub [edPubSize]byte
 type edPriv [edPrivSize]byte
 type edSig [edSigSize]byte
 
-func edSign(msg []byte, priv *edPriv) *edSig {
+func edSign(msg []byte, priv *edPriv, preimage []byte) *edSig {
 	var sig edSig
-	copy(sig[:], ed25519.Sign(priv[:], msg))
+	if len(preimage) > 0 {
+		copy(sig[:], ed25519.Sign(priv[:], append(preimage, msg...)))
+	} else {
+		copy(sig[:], ed25519.Sign(priv[:], msg))
+	}
 	return &sig
 }
 
-func edCheck(msg []byte, sig *edSig, pub *edPub) bool {
-	return ed25519.Verify(pub[:], msg, sig[:])
+func edCheck(msg []byte, sig *edSig, pub *edPub, preimage []byte) bool {
+	if len(preimage) > 0 {
+		return ed25519.Verify(pub[:], append(preimage, msg...), sig[:])
+	} else {
+		return ed25519.Verify(pub[:], msg, sig[:])
+	}
 }
 
 func (pub *edPub) asKey() ed25519.PublicKey {
@@ -126,4 +135,30 @@ func nonceForUint64(u64 uint64) boxNonce {
 	slice := nonce[boxNonceSize-8:]
 	binary.BigEndian.PutUint64(slice, u64)
 	return nonce
+}
+
+/*********
+ * group *
+ *********/
+
+type groupAuth struct {
+	enabled bool
+	secret  [32]byte
+}
+
+func newGroupAuth(password string) groupAuth {
+	if password == "" {
+		return groupAuth{}
+	}
+	return groupAuth{
+		enabled: true,
+		secret:  sha256.Sum256(append([]byte("ironwood/encrypted\x00"), []byte(password)...)),
+	}
+}
+
+func (auth groupAuth) preimage() []byte {
+	if auth.enabled {
+		return auth.secret[:]
+	}
+	return nil
 }
