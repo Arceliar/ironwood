@@ -84,13 +84,13 @@ func (mgr *sessionManager) handleData(from phony.Actor, pub *edPub, data []byte)
 		case sessionTypeDummy:
 		case sessionTypeInit:
 			init := new(sessionInit)
-			if init.decrypt(&mgr.pc.secretBox, pub, data) {
+			if init.decrypt(&mgr.pc.secretBox, pub, data, mgr.pc.groupAuth) {
 				mgr._handleInit(pub, init)
 			}
 			freeBytes(data)
 		case sessionTypeAck:
 			ack := new(sessionAck)
-			if ack.decrypt(&mgr.pc.secretBox, pub, data) {
+			if ack.decrypt(&mgr.pc.secretBox, pub, data, mgr.pc.groupAuth) {
 				mgr._handleAck(pub, ack)
 			}
 			freeBytes(data)
@@ -178,13 +178,13 @@ func (mgr *sessionManager) _bufferAndInit(toKey edPub, msg []byte) {
 }
 
 func (mgr *sessionManager) sendInit(dest *edPub, init *sessionInit) {
-	if bs, err := init.encrypt(&mgr.pc.secretEd, dest); err == nil {
+	if bs, err := init.encrypt(&mgr.pc.secretEd, dest, mgr.pc.groupAuth); err == nil {
 		mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
 	}
 }
 
 func (mgr *sessionManager) sendAck(dest *edPub, ack *sessionAck) {
-	if bs, err := ack.encrypt(&mgr.pc.secretEd, dest); err == nil {
+	if bs, err := ack.encrypt(&mgr.pc.secretEd, dest, mgr.pc.groupAuth); err == nil {
 		mgr.pc.PacketConn.WriteTo(bs, types.Addr(dest.asKey()))
 	}
 }
@@ -480,7 +480,7 @@ func newSessionInit(current, next *boxPub, keySeq uint64) sessionInit {
 	return init
 }
 
-func (init *sessionInit) encrypt(from *edPriv, to *edPub) ([]byte, error) {
+func (init *sessionInit) encrypt(from *edPriv, to *edPub, auth groupAuth) ([]byte, error) {
 	fromPub, fromPriv := newBoxKeys()
 	var toBox *boxPub
 	var err error
@@ -499,7 +499,7 @@ func (init *sessionInit) encrypt(from *edPriv, to *edPub) ([]byte, error) {
 	sigBytes = sigBytes[:offset+8]
 	binary.BigEndian.PutUint64(sigBytes[offset:offset+8], init.seq)
 	// Sign
-	sig := edSign(sigBytes, from)
+	sig := edSign(sigBytes, from, auth.preimage())
 	// Prepare the payload (to be encrypted)
 	var payload []byte // TODO initialize to correct size
 	payload = append(payload, sig[:]...)
@@ -519,7 +519,7 @@ func (init *sessionInit) encrypt(from *edPriv, to *edPub) ([]byte, error) {
 	return data, nil
 }
 
-func (init *sessionInit) decrypt(priv *boxPriv, from *edPub, data []byte) bool {
+func (init *sessionInit) decrypt(priv *boxPriv, from *edPub, data []byte, auth groupAuth) bool {
 	if len(data) != sessionInitSize {
 		return false
 	}
@@ -547,7 +547,7 @@ func (init *sessionInit) decrypt(priv *boxPriv, from *edPub, data []byte) bool {
 	var sigBytes []byte
 	sigBytes = append(sigBytes, fromBox[:]...)
 	sigBytes = append(sigBytes, tmp...)
-	return edCheck(sigBytes, &sig, from)
+	return edCheck(sigBytes, &sig, from, auth.preimage())
 }
 
 /**************
@@ -558,8 +558,8 @@ type sessionAck struct {
 	sessionInit
 }
 
-func (ack *sessionAck) encrypt(from *edPriv, to *edPub) ([]byte, error) {
-	data, err := ack.sessionInit.encrypt(from, to)
+func (ack *sessionAck) encrypt(from *edPriv, to *edPub, auth groupAuth) ([]byte, error) {
+	data, err := ack.sessionInit.encrypt(from, to, auth)
 	if err == nil {
 		data[0] = sessionTypeAck
 	}

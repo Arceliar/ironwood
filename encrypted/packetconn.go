@@ -15,6 +15,7 @@ type PacketConn struct {
 	*network.PacketConn
 	secretEd  edPriv
 	secretBox boxPriv
+	groupAuth groupAuth
 	sessions  sessionManager
 	network   netManager
 	Debug     Debug
@@ -22,11 +23,22 @@ type PacketConn struct {
 
 // NewPacketConn returns a *PacketConn struct which implements the types.PacketConn interface.
 func NewPacketConn(secret ed25519.PrivateKey, options ...network.Option) (*PacketConn, error) {
+	return newPacketConn(secret, groupAuth{}, options...)
+}
+
+// NewPacketConnWithPassword returns a *PacketConn that only completes handshakes
+// with peers configured with the same password. The packet format is unchanged;
+// the password is folded into the handshake signature preimage.
+func NewPacketConnWithPassword(secret ed25519.PrivateKey, password string, options ...network.Option) (*PacketConn, error) {
+	return newPacketConn(secret, newGroupAuth(password), options...)
+}
+
+func newPacketConn(secret ed25519.PrivateKey, auth groupAuth, options ...network.Option) (*PacketConn, error) {
 	npc, err := network.NewPacketConn(secret, options...)
 	if err != nil {
 		return nil, err
 	}
-	pc := &PacketConn{PacketConn: npc}
+	pc := &PacketConn{PacketConn: npc, groupAuth: auth}
 	copy(pc.secretEd[:], secret[:])
 	pc.secretBox = *pc.secretEd.toBox()
 	pc.sessions.init(pc)
