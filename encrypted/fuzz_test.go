@@ -26,6 +26,6 @@ func FuzzSessionInitDecrypt(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var init sessionInit
-		_ = init.decrypt(bPriv, &ePub, data)
+		_ = init.decrypt(bPriv, &ePub, data, groupAuth{})
 	})
 }
