@@ -234,8 +234,9 @@ func (r *router) _fix() {
 	self := r.infos[r.core.crypto.publicKey]
 	// Check if our current parent leads to a better root than ourself
 	if _, isIn := r.peers[self.parent]; isIn {
-		root, dists := r._getRootAndDists(r.core.crypto.publicKey)
-		if root.less(bestRoot) {
+		root, dists, valid := r._getRootAndDists(r.core.crypto.publicKey)
+		// Only retain the current path when it reaches a confirmed root.
+		if valid && root.less(bestRoot) {
 			cost := ^uint64(0)
 			for p := range r.peers[self.parent] {
 				// Use the path to the root as our benchmark for parent selection
@@ -253,7 +254,12 @@ func (r *router) _fix() {
 			// We don't know where this peer is
 			continue
 		}
-		pRoot, pDists := r._getRootAndDists(pk)
+		pRoot, pDists, valid := r._getRootAndDists(pk)
+		if !valid {
+			// The ancestry is incomplete or contains a loop, so it does not
+			// identify a valid root and cannot be used for parent selection.
+			continue
+		}
 		if _, isIn := pDists[r.core.crypto.publicKey]; isIn {
 			// This would loop through us already
 			continue
@@ -604,27 +610,27 @@ func (r *router) handleTraffic(from phony.Actor, tr *traffic) {
 	})
 }
 
-func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint64) {
-	// This returns the distances from the destination's root for the destination and each of its ancestors
-	// Note that we skip any expired infos
+func (r *router) _getRootAndDists(dest publicKey) (publicKey, map[publicKey]uint64, bool) {
+	// This returns each known ancestor's distance from the destination. The result
+	// is only valid if the ancestry terminates at a node that identifies itself as root.
 	dists := make(map[publicKey]uint64)
 	next := dest
-	var root publicKey
 	var dist uint64
 	for {
 		if _, isIn := dists[next]; isIn {
-			break
+			return publicKey{}, dists, false
 		}
 		if info, isIn := r.infos[next]; isIn {
-			root = next
 			dists[next] = dist
+			if info.parent == next {
+				return next, dists, true
+			}
 			dist++
 			next = info.parent
 		} else {
-			break
+			return publicKey{}, dists, false
 		}
 	}
-	return root, dists
 }
 
 func (r *router) _getRootAndPath(dest publicKey) (publicKey, []peerPort) {
