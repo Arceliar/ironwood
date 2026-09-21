@@ -267,7 +267,7 @@ func (r *router) _fix() {
 		cost := ^uint64(0)
 		for p := range r.peers[pk] {
 			// Use the path to the root as our benchmark for parent selection
-			c := pDists[pRoot] * r._getCost(p)
+			c := (pDists[pRoot] + 1) * r._getCost(p)
 			if c < cost {
 				cost = c
 			}
