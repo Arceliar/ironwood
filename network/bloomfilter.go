@@ -254,8 +254,8 @@ func (bs *blooms) _getBloomFor(key publicKey, keepOnes bool) (*bloom, bool) {
 		isNew = false
 	} else {
 		pbi.send = *b
-		bs.blooms[key] = pbi
 	}
+	bs.blooms[key] = pbi
 	return b, isNew
 }
 
