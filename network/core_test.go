@@ -290,19 +290,24 @@ func waitForRoot(conns []*PacketConn, timeout time.Duration) {
 			panic("timeout")
 		}
 		var root publicKey
+		var rootValid bool
 		for _, conn := range conns {
 			phony.Block(&conn.core.router, func() {
-				root, _ = conn.core.router._getRootAndDists(conn.core.crypto.publicKey)
+				root, _, rootValid = conn.core.router._getRootAndDists(conn.core.crypto.publicKey)
 			})
 			break
+		}
+		if !rootValid {
+			continue
 		}
 		var bad bool
 		for _, conn := range conns {
 			var croot publicKey
+			var valid bool
 			phony.Block(&conn.core.router, func() {
-				croot, _ = conn.core.router._getRootAndDists(conn.core.crypto.publicKey)
+				croot, _, valid = conn.core.router._getRootAndDists(conn.core.crypto.publicKey)
 			})
-			if !croot.equal(root) {
+			if !valid || !croot.equal(root) {
 				bad = true
 				break
 			}
