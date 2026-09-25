@@ -30,6 +30,8 @@ func (pf *pathfinder) _sendLookup(dest publicKey) {
 			// Don't flood with request, wait a bit
 			return
 		}
+		info.reqTime = time.Now()
+		pf.paths[dest] = info
 	}
 	selfKey := pf.router.core.crypto.publicKey
 	_, from := pf.router._getRootAndPath(selfKey)
