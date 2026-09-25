@@ -872,6 +872,9 @@ type routerSigRes struct {
 }
 
 func (res *routerSigRes) check(node, parent publicKey) bool {
+	if res.port == 0 && node != parent {
+		return false
+	}
 	bs := res.bytesForSig(node, parent)
 	return parent.verify(bs, &res.psig)
 }
