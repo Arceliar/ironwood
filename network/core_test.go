@@ -280,6 +280,28 @@ func TestRandomTreeNetwork(t *testing.T) {
 	}
 }
 
+func TestNodeSendsToSelf(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	node, _ := NewPacketConn(priv)
+	addr := node.LocalAddr()
+	expect := []byte{1, 2, 3, 4, 5}
+	got := make([]byte, 5)
+	if _, err := node.WriteTo(expect, addr); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.SetReadDeadline(time.Now().Add(time.Second * 3)); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, err := node.ReadFrom(got); err != nil {
+		t.Fatal(err)
+	} else {
+		got = got[:n]
+	}
+	if !bytes.Equal(got, expect) {
+		t.Fatalf("expected %v, got %v", expect, got)
+	}
+}
+
 // waitForRoot is a helper function that waits until all nodes are using the same root
 // that should usually mean the network has settled into a stable state, at least for static network tests
 func waitForRoot(conns []*PacketConn, timeout time.Duration) {
