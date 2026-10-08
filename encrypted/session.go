@@ -205,7 +205,7 @@ type sessionInfo struct {
 	recvPriv       boxPriv
 	recvPub        boxPub
 	recvShared     boxShared
-	recvNonce      uint64
+	recvWindow     replayWindow
 	sendPriv       boxPriv // becomes recvPriv when we ratchet forward
 	sendPub        boxPub  // becomes recvPub
 	sendShared     boxShared
@@ -244,7 +244,11 @@ func (info *sessionInfo) _fixShared(recvNonce, sendNonce uint64) {
 	getShared(&info.nextSendShared, &info.next, &info.sendPriv)
 	getShared(&info.nextRecvShared, &info.next, &info.recvPriv)
 	info.nextSendNonce, info.nextRecvNonce = 0, 0
-	info.recvNonce, info.sendNonce = recvNonce, sendNonce
+	info.recvWindow.reset()
+	if recvNonce != 0 {
+		info.recvWindow.commit(recvNonce)
+	}
+	info.sendNonce = sendNonce
 }
 
 func (info *sessionInfo) _resetTimer() {
@@ -364,13 +368,18 @@ func (info *sessionInfo) doRecv(from phony.Actor, msg []byte) {
 		var onSuccess func(boxPub)
 		switch {
 		case fromCurrent && toRecv:
-			// The boring case, nothing to ratchet, just update nonce
-			if !(info.recvNonce < nonce) {
+			// The boring case, nothing to ratchet, just update nonce.
+			// The replay window (rather than a strict high-water mark)
+			// tolerates packets reordered in transit, at the cost of
+			// tracking a bitmap of recent nonces.
+			if !info.recvWindow.check(nonce) {
 				return
 			}
 			sharedKey = &info.recvShared
 			onSuccess = func(_ boxPub) {
-				info.recvNonce = nonce
+				// Commit only after the packet has decrypted, so a
+				// corrupted packet cannot burn a window slot.
+				info.recvWindow.commit(nonce)
 			}
 		case fromNext && toSend:
 			// The remote side appears to have ratcheted forward
