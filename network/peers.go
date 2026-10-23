@@ -33,6 +33,9 @@ func (ps *peers) init(c *core) {
 }
 
 func (ps *peers) addPeer(key publicKey, conn net.Conn, prio uint8) (*peer, error) {
+	if !types.IsPublicKeyValid(key) {
+		return nil, types.ErrBadKey
+	}
 	var p *peer
 	var err error
 	ps.core.pconn.closeMutex.Lock()

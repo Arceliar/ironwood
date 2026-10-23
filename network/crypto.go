@@ -56,9 +56,13 @@ func (key publicKey) addr() types.Addr {
 	return types.Addr(key[:])
 }
 
-func (c *crypto) init(secret ed25519.PrivateKey) {
+func (c *crypto) init(secret ed25519.PrivateKey) error {
 	copy(c.privateKey[:], secret)
 	copy(c.publicKey[:], secret.Public().(ed25519.PublicKey))
+	if !types.IsPublicKeyValid(c.publicKey) {
+		return types.ErrBadKey
+	}
+	return nil
 }
 
 func (key publicKey) toEd() ed25519.PublicKey {

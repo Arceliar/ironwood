@@ -9,6 +9,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 )
