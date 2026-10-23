@@ -15,7 +15,9 @@ func (c *core) init(secret ed25519.PrivateKey, opts ...Option) error {
 	for _, opt := range opts {
 		opt(&c.config)
 	}
-	c.crypto.init(secret)
+	if err := c.crypto.init(secret); err != nil {
+		return err
+	}
 	c.router.init(c)
 	c.peers.init(c)
 	c.pconn.init(c)

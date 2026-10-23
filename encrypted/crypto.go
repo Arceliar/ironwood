@@ -10,6 +10,7 @@ import (
 	"golang.org/x/crypto/nacl/box"
 
 	"github.com/Arceliar/ironwood/encrypted/internal/e2c"
+	"github.com/Arceliar/ironwood/types"
 )
 
 /********
@@ -55,6 +56,11 @@ func edSign(msg []byte, priv *edPriv, preimage []byte) *edSig {
 }
 
 func edCheck(msg []byte, sig *edSig, pub *edPub, preimage []byte) bool {
+	// edCheck is only called when decrypting session inits, so no real
+	// performance penalty from doing this each time.
+	if !types.IsPublicKeyValid(*pub) {
+		return false
+	}
 	if len(preimage) > 0 {
 		return ed25519.Verify(pub[:], append(preimage, msg...), sig[:])
 	} else {
